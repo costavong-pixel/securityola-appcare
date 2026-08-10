@@ -27,13 +27,38 @@ Inside AppCare, keep `development → staging → production` isolated. Developm
 
 Do not touch the WordPress repositories or production runtime unless a future explicit integration specification authorizes it.
 
+## Cost-aware engineering roles
+
+Use `WORKER_PROTOCOL.md` as the delegation contract.
+
+### Codex owns
+- architecture and product decisions
+- security boundaries and threat-model decisions
+- task decomposition and acceptance criteria
+- dependency and third-party skill approval
+- production/deployment logic
+- review of every worker diff
+- final merge/release decisions
+
+### OpenCode + DeepSeek V4 Flash is the bounded cheap worker
+Delegate clearly specified, reversible repository work when it reduces Codex token usage, including scaffolding, repetitive implementation, tests, docs, mechanical refactors, and first-pass fixes after Codex identifies the problem.
+
+Do **not** delegate architecture, security-policy decisions, production access, deployment authorization, credential handling, third-party skill acceptance, or final review.
+
+For a delegated task, Codex creates a minimal packet under `.codex/tasks/` and runs `scripts/deepseek-worker.sh <task-file>`. Inspect the resulting diff and test evidence directly; never trust the worker summary as proof.
+
+Maximum three DeepSeek repair passes for the same defect. After three failed passes, Codex takes over root-cause/fix work.
+
+### Codex CLI final gate
+Before closing a beta issue or merging/releasing its changes, use Codex CLI for an independent final review of the complete diff and deterministic test evidence. Security-sensitive changes also require the applicable Codex Security review/validation workflow.
+
 ## Closed-loop beta execution
 
 Primary work queue: GitHub issue **#12 `[BETA-MASTER]`** and its ordered BETA-00 through BETA-10 issues.
 
 For every issue, repeat this loop until its acceptance criteria pass:
 
-`/saveruflo preflight → /graphify . --update/query → /speckit task/spec as needed → Codex implement → deterministic tests → security/failure pressure tests → independent review → exact-head CI → Saveruflo checkpoint → Graphify update/impact review → close issue → next open beta issue`
+`/saveruflo preflight → /graphify . --update/query → /speckit task/spec as needed → Codex scopes work → OpenCode/DeepSeek executes bounded cheap tasks where safe → Codex implements sensitive/remaining work → deterministic tests → security/failure pressure tests → independent Codex review → Codex CLI final gate → exact-head CI → Saveruflo checkpoint → Graphify update/impact review → close issue → next open beta issue`
 
 If validation fails, remain on the same issue, diagnose, patch, and retest. Do not skip ahead.
 
