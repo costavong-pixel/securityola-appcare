@@ -6,6 +6,27 @@ SecurityOla AppCare: **Scan → Fix → Backup → Monitor → Recover** for sup
 
 Initial supported stack: GitHub + Vercel + Supabase + Lovable-generated/similar apps.
 
+## Hard server/runtime boundary
+
+AppCare is isolated from the SecurityOla WordPress plugin/backend that is still under development.
+
+Do not reuse or modify the WordPress product's:
+- server/application runtime
+- database/schema
+- `.env` or secrets
+- queues/workers
+- writable volumes
+- deploy/SSH credentials
+- service accounts
+- production API routes
+- backup credentials
+
+AppCare uses its own server/runtime, deployment path, database, workers, secrets, logs, provider credentials, backup namespace, and hostnames.
+
+Inside AppCare, keep `development → staging → production` isolated. Development jobs must never receive production credentials.
+
+Do not touch the WordPress repositories or production runtime unless a future explicit integration specification authorizes it.
+
 ## Closed-loop beta execution
 
 Primary work queue: GitHub issue **#12 `[BETA-MASTER]`** and its ordered BETA-00 through BETA-10 issues.
