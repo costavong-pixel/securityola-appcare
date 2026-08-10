@@ -1,0 +1,29 @@
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Runtime
+node_modules/
+.next/
+dist/
+build/
+coverage/
+__pycache__/
+.venv/
+venv/
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Local operational data
+backups/
+artifacts/
+logs/
+tmp/
