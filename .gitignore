@@ -17,6 +17,11 @@ __pycache__/
 .venv/
 venv/
 
+# Graphify generated maps
+# Regenerate locally; do not churn the public repository/cache on every update.
+graphify-out/
+graph.json
+
 # IDE / OS
 .DS_Store
 .idea/
