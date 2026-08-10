@@ -6,11 +6,26 @@ SecurityOla AppCare: **Scan → Fix → Backup → Monitor → Recover** for sup
 
 Initial supported stack: GitHub + Vercel + Supabase + Lovable-generated/similar apps.
 
+## Closed-loop beta execution
+
+Primary work queue: GitHub issue **#12 `[BETA-MASTER]`** and its ordered BETA-00 through BETA-10 issues.
+
+For every issue, repeat this loop until its acceptance criteria pass:
+
+`/saveruflo preflight → /graphify . --update/query → /speckit task/spec as needed → Codex implement → deterministic tests → security/failure pressure tests → independent review → exact-head CI → Saveruflo checkpoint → Graphify update/impact review → close issue → next open beta issue`
+
+If validation fails, remain on the same issue, diagnose, patch, and retest. Do not skip ahead.
+
+Only stop for a genuine external blocker that cannot be resolved from repository/server context, such as missing owner-controlled credentials/KYC/domain authorization or an unsafe ambiguous production authorization boundary. Normal bugs, failed tests, dependency problems, skill bugs, and implementation choices are not stop conditions.
+
+Private beta is complete only when BETA-10 passes and the exact release commit/test evidence is recorded.
+
 ## Required development workflow
 
-- Use `/saveruflo` as a bounded read-only preflight before implementation work.
+- Use `/saveruflo` as a bounded read-only preflight before implementation work and save a checkpoint after each bounded task/phase.
 - Use `/speckit` for feature specification, clarification, planning, tasks, consistency analysis, and implementation.
-- Use LangGraph only where durable/resumable workflow orchestration is justified.
+- Install/use Graphify with Codex to maintain a persistent code graph; query it for architecture/impact and update it after meaningful structural changes.
+- Use LangGraph only where durable/resumable workflow orchestration is justified: scan → backup gate → findings → remediation → approval → deploy → verify/rollback → monitor/report.
 - Use `/impeccable` after functional flows work for website/portal UX and visual QA.
 
 ## Production safety
