@@ -2,9 +2,17 @@
 
 Master queue: GitHub issue #12.
 
+## Server/runtime isolation gate
+
+AppCare is developed and deployed independently from the SecurityOla WordPress plugin/backend.
+
+Before BETA-01 starts, Codex must verify and record that AppCare has its own server/runtime path, service user, secrets, database, workers, logs, provider credentials, backup namespace, and environment boundaries. No WordPress production resource may be reused or modified.
+
+Inside AppCare keep `development → staging → production` isolated; development must not receive production credentials.
+
 ## Ordered beta gates
 
-- [ ] BETA-00 — bootstrap Codex, Saveruflo, Spec Kit, Graphify, audited skills, CI
+- [ ] BETA-00 — bootstrap Codex, Saveruflo, Spec Kit, Graphify, audited skills, CI, and AppCare/WordPress runtime isolation
 - [ ] BETA-01 — control plane, tenancy, audit trail
 - [ ] BETA-02 — read-only GitHub/Vercel/Supabase connectors
 - [ ] BETA-03 — security scanning and normalized evidence-backed findings
@@ -59,6 +67,7 @@ Private beta is complete only when BETA-10 passes and records:
 - exact release commit
 - exact test/CI evidence
 - tenant-isolation result
+- AppCare/WordPress runtime-isolation evidence
 - backup + restore evidence
 - production-failure rollback evidence
 - supported-stack/known-limitations document
