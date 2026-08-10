@@ -4,13 +4,11 @@
 
 Build SecurityOla AppCare to private beta by executing GitHub issue #12 `[BETA-MASTER]` in order until BETA-10 passes.
 
-Do not wait for the owner between normal engineering decisions. Follow `AGENTS.md`, `BETA_LOOP.md`, `PRODUCT.md`, `ARCHITECTURE.md`, `DEVELOPMENT.md`, and `SECURITY.md` as the source of truth.
+Do not wait for the owner between normal engineering decisions. Follow `AGENTS.md`, `WORKER_PROTOCOL.md`, `BETA_LOOP.md`, `PRODUCT.md`, `ARCHITECTURE.md`, `DEVELOPMENT.md`, and `SECURITY.md` as the source of truth.
 
 ## Environment boundary
 
-Dedicated SecurityOla AppCare server:
-
-`51.161.32.138`
+The AppCare server address is owner-controlled server-local configuration. Do not commit the IP/hostname or production credentials into this public repository.
 
 AppCare must remain isolated from the WordPress SecurityOla/plugin development environment.
 
@@ -36,13 +34,38 @@ AppCare must have its own:
 
 Development, staging, and production must also be isolated from each other. Development must not hold production credentials.
 
+## Cost-aware worker bootstrap
+
+Codex is the coordinator. OpenCode + DeepSeek V4 Flash is the bounded low-cost implementation worker. Codex CLI is the final review gate.
+
+On the AppCare development environment:
+
+1. Check `opencode --version`.
+2. The audited bootstrap pin is **OpenCode 1.18.16**. `scripts/deepseek-worker.sh` refuses a different version until Codex intentionally reviews and updates the pin.
+3. If OpenCode is missing, install the official `anomalyco/opencode` release matching the pin; verify the installed version before continuing.
+4. Configure the DeepSeek credential through OpenCode `/connect` on that machine. Credentials remain in OpenCode's user-local auth store and must never be committed.
+5. Worker model is **DeepSeek V4 Flash** (`deepseek-v4-flash`) through the project agent `.opencode/agents/deepseek-worker.md`.
+6. Smoke-test the worker on a harmless read/edit/test task before delegating implementation.
+
+Delegated tasks use:
+
+```bash
+scripts/deepseek-worker.sh .codex/tasks/<task>.md
+```
+
+Do not use the DeepSeek worker for architecture, security-policy decisions, production/deployment authorization, credentials, third-party skill acceptance, or final review.
+
+Maximum three DeepSeek repair passes on the same defect; then Codex takes over.
+
+Before an issue is closed or a change is merged/released, Codex CLI independently reviews the complete diff and deterministic test evidence. Security-sensitive work also runs the applicable Codex Security scan/validation flow.
+
 ## Start task
 
 Start with GitHub issue #1 `BETA-00`.
 
 For each beta issue, run:
 
-`/saveruflo preflight → /graphify . --update/query → /speckit task/spec as needed → implement smallest safe task → deterministic tests → security/failure pressure tests → independent review → exact-head CI → Saveruflo checkpoint → Graphify update/impact review → close issue → next issue`
+`/saveruflo preflight → /graphify . --update/query → /speckit task/spec as needed → Codex scopes → DeepSeek/OpenCode handles bounded cheap work → Codex reviews/handles sensitive work → deterministic tests → security/failure pressure tests → independent review → Codex CLI final gate → exact-head CI → Saveruflo checkpoint → Graphify update/impact review → close issue → next issue`
 
 If anything fails, remain on that issue, diagnose, patch, retest, and continue. Do not skip ahead.
 
