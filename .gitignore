@@ -22,6 +22,10 @@ venv/
 graphify-out/
 graph.json
 
+# Local Codex worker packets
+# These may contain transient investigation context; keep them out of the public repo.
+.codex/tasks/
+
 # IDE / OS
 .DS_Store
 .idea/
