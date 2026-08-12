@@ -123,4 +123,4 @@ Absence of a runtime implementation lowers confidence in runtime claims; it
 does not justify inventing a vulnerability or claiming a clean future system.
 
 Repository: github.com/costavong-pixel/securityola-appcare
-Version: codex-security-snapshot/v1:sha256:0537f95546451044afdb576d96500cd06d2713376919575540a86789e4def486
+Version: BETA-00 final source review; immutable revision is recorded in the sealed scan manifest.
