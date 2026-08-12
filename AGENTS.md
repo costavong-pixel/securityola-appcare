@@ -6,26 +6,44 @@ SecurityOla AppCare: **Scan → Fix → Backup → Monitor → Recover** for sup
 
 Initial supported stack: GitHub + Vercel + Supabase + Lovable-generated/similar apps.
 
-## Hard server/runtime boundary
+## Shared physical server, isolated applications
 
-AppCare is isolated from the SecurityOla WordPress plugin/backend that is still under development.
+SecurityOla AppCare and the SecurityOla WordPress plugin/backend share the same physical SecurityOla server, but they are separate applications and must remain isolated at the application/runtime level.
 
-Do not reuse or modify the WordPress product's:
-- server/application runtime
-- database/schema
+For every server, DNS, deployment, database, worker, backup, or service action, explicitly state the target application before acting:
+- `TARGET=AppCare`, or
+- `TARGET=WordPress Security`
+
+For AppCare work, do not reuse or modify the WordPress product's:
+- application/repository directory
+- database/schema/user
 - `.env` or secrets
-- queues/workers
+- queues/workers/services
 - writable volumes
-- deploy/SSH credentials
+- deploy credentials
 - service accounts
 - production API routes
-- backup credentials
+- backup credentials/namespaces
+- logs or staging paths
 
-AppCare uses its own server/runtime, deployment path, database, workers, secrets, logs, provider credentials, backup namespace, and hostnames.
+AppCare must have its own application path, runtime/service identity, deployment path, database, workers, secrets, logs, provider credentials, backup namespace, and staging/development paths on the shared server.
 
 Inside AppCare, keep `development → staging → production` isolated. Development jobs must never receive production credentials.
 
-Do not touch the WordPress repositories or production runtime unless a future explicit integration specification authorizes it.
+Do not touch the WordPress repositories or runtime unless a future explicit integration specification authorizes it.
+
+## Public product routing
+
+SecurityOla remains one brand with two products. Marketing does not require separate product subdomains.
+
+Preferred public structure:
+- `securityola.com` — SecurityOla homepage presenting both products
+- `securityola.com/appcare` — AppCare marketing/product page
+- `securityola.com/wordpress` — WordPress Security marketing/product page
+- `app.securityola.com` — AppCare customer dashboard/login when needed
+- `api.securityola.com` — API entrypoint; AppCare and WordPress API routes/services must remain technically isolated behind it
+
+Do not create additional product subdomains unless there is a concrete technical or product requirement.
 
 ## Cost-aware engineering roles
 
