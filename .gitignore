@@ -13,6 +13,7 @@ node_modules/
 dist/
 build/
 coverage/
+*.egg-info/
 __pycache__/
 .venv/
 venv/
@@ -25,6 +26,10 @@ graph.json
 # Local Codex worker packets
 # These may contain transient investigation context; keep them out of the public repo.
 .codex/tasks/
+.codex/PROGRAM-CHARTER.md
+.codex/checkpoints/
+.codex/worker-smoke/
+.token-saver/
 
 # IDE / OS
 .DS_Store
@@ -36,3 +41,5 @@ backups/
 artifacts/
 logs/
 tmp/
+.pytest_cache/
+.mypy_cache/

@@ -41,14 +41,24 @@ Security-sensitive changes also receive the applicable Codex Security scan/valid
 1. Codex chooses the current BETA issue.
 2. Codex performs Saveruflo preflight and Graphify impact review.
 3. Codex creates a small task packet under `.codex/tasks/`.
-4. Run `scripts/deepseek-worker.sh .codex/tasks/<task>.md`.
-5. DeepSeek edits/tests only inside the AppCare worktree and returns exact evidence.
-6. Codex inspects the diff. Never accept the worker summary as proof.
-7. If wrong: Codex narrows/corrects the task and sends another bounded worker pass.
-8. Maximum three DeepSeek repair passes on the same defect. After that Codex takes over the fix/root-cause analysis.
-9. Codex runs the full deterministic gate and security/failure tests.
-10. Codex CLI performs the final independent review.
-11. Only after all gates pass may Codex commit/push/close the issue according to the repository workflow.
+4. `scripts/deepseek-worker.sh` validates the packet for secrets/private data,
+   requires it to resolve to a regular file inside the checkout's own
+   `.codex/tasks/` directory, and snapshots the worktree before the worker runs.
+5. The launcher requires a clean coordinator checkout, creates a disposable
+   Git worktree, and copies only the validated task packet into that isolated
+   workspace. It never gives the worker the coordinator's ignored files or
+   credentials and discards the disposable worktree after the run.
+6. Run `scripts/deepseek-worker.sh .codex/tasks/<task>.md`.
+7. The launcher verifies the post-run isolated worktree against the packet's
+   pre-run allowed paths before promoting permitted changes.
+8. DeepSeek may edit test files inside the AppCare worktree, but Codex owns
+   test execution and evaluates the resulting evidence independently.
+9. Codex inspects the diff. Never accept the worker summary as proof.
+10. If wrong: Codex narrows/corrects the task and sends another bounded worker pass.
+11. Maximum three DeepSeek repair passes on the same defect. After that Codex takes over the fix/root-cause analysis.
+12. Codex runs the full deterministic gate and security/failure tests.
+13. Codex CLI performs the final independent review.
+14. Only after all gates pass may Codex commit/push/close the issue according to the repository workflow.
 
 ## Worker task packet
 

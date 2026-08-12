@@ -5,11 +5,44 @@ model: deepseek/deepseek-v4-flash
 temperature: 0.1
 permission:
   "*": deny
-  read: allow
-  edit: allow
-  glob: allow
-  grep: allow
-  lsp: allow
+  read:
+    "*": deny
+    "AGENTS.md": allow
+    "BETA_LOOP.md": allow
+    "PRODUCT.md": allow
+    "ARCHITECTURE.md": allow
+    "DEVELOPMENT.md": allow
+    "SECURITY.md": allow
+    "WORKER_PROTOCOL.md": allow
+    "CODEX_START.md": allow
+    "CODEX_BOOTSTRAP.md": allow
+    "appcare/*": allow
+    "tests/*": allow
+    "docs/*": allow
+    "pyproject.toml": allow
+    "requirements-dev.txt": allow
+    "opencode.json": allow
+    "scripts/deepseek-worker.sh": allow
+    "scripts/validate_task_packet.py": allow
+    "scripts/verify_worker_policy.py": allow
+    ".opencode/agents/deepseek-worker.md": allow
+    "*.env": deny
+    "*.env.*": deny
+    "*.pem": deny
+    "*.key": deny
+  edit:
+    "*": deny
+    "appcare/*": allow
+    "tests/*": allow
+    "docs/*": allow
+    "docs/security/*": deny
+    "*.env": deny
+    "*.env.*": deny
+    "*.pem": deny
+    "*.key": deny
+  glob: deny
+  grep: deny
+  lsp: deny
   external_directory: deny
   question: deny
   webfetch: deny
@@ -20,27 +53,16 @@ permission:
   bash:
     "*": deny
     "git status*": allow
-    "git diff*": allow
-    "git log*": allow
-    "git show*": allow
-    "git grep*": allow
+    "git diff --no-ext-diff*": allow
+    "git log --oneline*": allow
+    "git show --stat*": allow
     "git branch --show-current*": allow
-    "rg *": allow
-    "grep *": allow
-    "find *": allow
-    "ls*": allow
-    "pwd": allow
-    "npm test*": allow
-    "npm run *": allow
-    "pnpm test*": allow
-    "pnpm run *": allow
-    "bun test*": allow
-    "bun run *": allow
-    "pytest*": allow
-    "python -m pytest*": allow
-    "ruff *": allow
-    "mypy *": allow
-    "uv run *": allow
+    "ruff check appcare*": allow
+    "ruff check tests*": allow
+    "ruff format --check appcare*": allow
+    "ruff format --check tests*": allow
+    "mypy appcare*": allow
+    "mypy tests*": allow
 ---
 
 You are the low-cost implementation worker for SecurityOla AppCare.

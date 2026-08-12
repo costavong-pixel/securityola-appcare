@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PINNED_OPENCODE_VERSION="${OPENCODE_PIN:-1.18.16}"
-MODEL="${OPENCODE_WORKER_MODEL:-deepseek/deepseek-v4-flash}"
+PINNED_OPENCODE_VERSION="1.18.16"
+MODEL="deepseek/deepseek-v4-flash"
 AGENT="deepseek-worker"
 
 if ! command -v opencode >/dev/null 2>&1; then
@@ -22,24 +22,148 @@ if [[ "$actual_version" != "$PINNED_OPENCODE_VERSION" && "$actual_version" != "v
   exit 3
 fi
 
-if [[ $# -lt 1 ]]; then
-  echo "Usage: scripts/deepseek-worker.sh <task-file | task text>" >&2
+if [[ $# -ne 1 || ! -f "$1" ]]; then
+  echo "Usage: scripts/deepseek-worker.sh <task-file under .codex/tasks>" >&2
   exit 2
 fi
 
-if [[ $# -eq 1 && -f "$1" ]]; then
-  prompt="$(cat "$1")"
-else
-  prompt="$*"
+repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+if ! git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "ERROR: launcher must resolve an AppCare Git checkout." >&2
+  exit 4
+fi
+cd -- "$repo_root"
+coordinator_head="$(git -C "$repo_root" rev-parse HEAD)"
+
+repo_root_real="$(realpath -e -- "$repo_root" 2>/dev/null || true)"
+task_root="$repo_root/.codex/tasks"
+if [[ -L "$task_root" ]]; then
+  echo "ERROR: task directory must not be a symlink." >&2
+  exit 4
+fi
+task_root="$(realpath -e -- "$task_root" 2>/dev/null || true)"
+task_file="$(realpath -e -- "$1" 2>/dev/null || true)"
+if [[ -z "$repo_root_real" || -z "$task_root" || -z "$task_file" ]]; then
+  echo "ERROR: task file or task directory does not resolve." >&2
+  exit 4
+fi
+case "$task_root" in
+  "$repo_root_real/.codex/tasks"|"$repo_root_real/.codex/tasks/"*) ;;
+  *)
+    echo "ERROR: task directory must resolve beneath the repository .codex/tasks directory." >&2
+    exit 4
+    ;;
+esac
+case "$task_file" in
+  "$task_root"/*) ;;
+  *)
+    echo "ERROR: task file must resolve beneath the repository .codex/tasks directory." >&2
+    exit 4
+    ;;
+esac
+task_file_recheck="$(realpath -e -- "$1" 2>/dev/null || true)"
+if [[ "$task_file_recheck" != "$task_file" || ! -f "$task_file" || -L "$task_file" ]]; then
+  echo "ERROR: task file changed or is not a regular non-symlink file." >&2
+  exit 4
 fi
 
+python_cmd="$(command -v python3 || command -v python || true)"
+if [[ -z "$python_cmd" ]]; then
+  echo "ERROR: Python is required to validate the task packet." >&2
+  exit 127
+fi
+if ! "$python_cmd" scripts/validate_task_packet.py "$task_file" >/dev/null; then
+  echo "ERROR: task packet failed the secret and private-data safety check." >&2
+  exit 5
+fi
+
+if [[ -n "$(git -C "$repo_root" status --porcelain --untracked-files=all)" ]]; then
+  echo "ERROR: worker launcher requires a clean AppCare checkout before isolation." >&2
+  echo "Commit or otherwise checkpoint the reviewed coordinator changes first." >&2
+  exit 7
+fi
+
+prompt="$(<"$task_file")"
 if [[ -z "${prompt//[[:space:]]/}" ]]; then
   echo "ERROR: empty task." >&2
   exit 2
 fi
 
-exec opencode run \
+run_root="$(mktemp -d "${TMPDIR:-/tmp}/securityola-appcare-worker.XXXXXX")"
+worker_root="$run_root/worktree"
+scope_dir="$run_root/scope"
+mkdir -p "$scope_dir"
+
+cleanup() {
+  exit_code=$?
+  worktree_cleanup_status=0
+  if [[ -n "${worker_root:-}" && -d "$worker_root" ]]; then
+    git -C "$repo_root" worktree remove --force "$worker_root" >/dev/null 2>&1 || {
+      worktree_cleanup_status=1
+      echo "WARNING: isolated worker worktree cleanup did not complete." >&2
+    }
+  fi
+  if [[ "$worktree_cleanup_status" -eq 0 && -n "${run_root:-}" && -d "$run_root" ]]; then
+    run_parent="$(realpath -e -- "$(dirname -- "$run_root")" 2>/dev/null || true)"
+    run_root_real="$(realpath -e -- "$run_root" 2>/dev/null || true)"
+    case "$run_root_real" in
+      "$run_parent"/securityola-appcare-worker.*)
+        if [[ "$run_root_real" != "/" && "$run_root_real" != "$repo_root_real" ]]; then
+          rm -rf -- "$run_root_real"
+        fi
+        ;;
+      *)
+        echo "WARNING: refusing to remove an unverified temporary worker path." >&2
+        ;;
+    esac
+  fi
+  trap - EXIT
+  exit "$exit_code"
+}
+trap cleanup EXIT
+
+git -C "$repo_root" worktree add --detach "$worker_root" HEAD >/dev/null
+mkdir -p "$worker_root/.codex/tasks"
+worker_task="$worker_root/.codex/tasks/$(basename -- "$task_file")"
+cp -- "$task_file" "$worker_task"
+cp -- "$task_file" "$scope_dir/task-before.md"
+
+scope_snapshot="$scope_dir/before.json"
+"$python_cmd" "$repo_root/scripts/verify_task_scope.py" snapshot \
+  --root "$worker_root" \
+  --out "$scope_snapshot" >/dev/null
+
+worker_status=0
+cd -- "$worker_root"
+opencode run \
   --agent "$AGENT" \
   --model "$MODEL" \
   --format default \
-  "$prompt"
+  "$prompt" || worker_status=$?
+cd -- "$repo_root"
+
+scope_status=0
+"$python_cmd" "$repo_root/scripts/verify_task_scope.py" verify \
+  --root "$worker_root" \
+  --before "$scope_snapshot" \
+  --task "$worker_task" \
+  --baseline-task "$scope_dir/task-before.md" || scope_status=$?
+if [[ "$scope_status" -ne 0 ]]; then
+  echo "ERROR: worker scope verification failed; isolated worktree was discarded." >&2
+  exit 6
+fi
+if [[ "$worker_status" -ne 0 ]]; then
+  exit "$worker_status"
+fi
+
+if [[ "$(git -C "$repo_root" rev-parse HEAD)" != "$coordinator_head" || -n "$(git -C "$repo_root" status --porcelain --untracked-files=all)" ]]; then
+  echo "ERROR: coordinator checkout changed while worker was running; nothing was promoted." >&2
+  exit 8
+fi
+
+"$python_cmd" "$repo_root/scripts/verify_task_scope.py" promote \
+  --source-root "$worker_root" \
+  --target-root "$repo_root" \
+  --before "$scope_snapshot" \
+  --task "$worker_task" \
+  --baseline-task "$scope_dir/task-before.md"

@@ -119,3 +119,8 @@ Drop any skill that cannot be made safe, maintainable, and testable.
 - Keep customer-specific vulnerability evidence out of this public repository.
 - Prefer small, reviewable changes with exact test evidence.
 - Do not expand product scope or add new product names without an explicit product decision.
+
+<!-- SPECKIT START -->
+For additional context about technologies to be used, project structure,
+shell commands, and other important information, read the current plan
+<!-- SPECKIT END -->
