@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PINNED_OPENCODE_VERSION="1.18.16"
-MODEL="deepseek/deepseek-v4-flash"
+MODEL="opencode/deepseek-v4-flash-free"
 AGENT="deepseek-worker"
 
 if ! command -v opencode >/dev/null 2>&1; then

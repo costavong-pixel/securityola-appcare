@@ -44,7 +44,7 @@ On the AppCare development environment:
 2. The audited bootstrap pin is **OpenCode 1.18.16**. `scripts/deepseek-worker.sh` refuses a different version until Codex intentionally reviews and updates the pin.
 3. If OpenCode is missing, install the official `anomalyco/opencode` release matching the pin; verify the installed version before continuing.
 4. Configure the DeepSeek credential through OpenCode `/connect` on that machine. Credentials remain in OpenCode's user-local auth store and must never be committed.
-5. Worker model is **DeepSeek V4 Flash** (`deepseek-v4-flash`) through the project agent `.opencode/agents/deepseek-worker.md`.
+5. Worker model is **DeepSeek V4 Flash** (`opencode/deepseek-v4-flash-free`) through the project agent `.opencode/agents/deepseek-worker.md`; this exact provider/model ID must be rechecked against the installed catalog before use.
 6. Smoke-test the worker on a harmless read/edit/test task before delegating implementation.
 
 Delegated tasks use:

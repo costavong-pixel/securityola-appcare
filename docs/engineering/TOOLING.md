@@ -9,7 +9,7 @@ All versions below are the versions verified for this BETA-00 checkout. A newer 
 | Spec Kit | `0.11.3`, tag `7d71d25b5f265389484ed5a41f2aea8cdafe5453` | `github/spec-kit`; bundled templates used without an online fetch |
 | Codex CLI | `0.147.0-alpha.6.6` | Local OpenAI CLI; independent final review only |
 | OpenCode | `1.18.16`, tag `a3647eb025c7615159d417dcc49fc39fdaeba65b` | `anomalyco/opencode`; npm package integrity verified before installation; worker runs in a disposable Git worktree |
-| Worker model | `deepseek/deepseek-v4-flash` | Selected only by the bounded project launcher |
+| Worker model | `opencode/deepseek-v4-flash-free` | Exact DeepSeek V4 Flash catalog entry selected only by the bounded project launcher; provider availability and rate limits remain a live smoke gate |
 | pip | `26.2.1` | Pinned in `requirements-dev.txt`; CI does not perform an unpinned upgrade |
 | Ruff | `0.16.2` | User-local `uv` tool; pinned in `requirements-dev.txt` |
 | mypy | `2.3.0` | User-local `uv` tool; pinned in `requirements-dev.txt` |

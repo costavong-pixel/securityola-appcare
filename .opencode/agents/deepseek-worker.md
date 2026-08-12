@@ -1,7 +1,7 @@
 ---
 description: Bounded low-cost implementation worker for SecurityOla AppCare. Use only for clearly scoped repository tasks delegated by Codex.
 mode: primary
-model: deepseek/deepseek-v4-flash
+model: opencode/deepseek-v4-flash-free
 temperature: 0.1
 permission:
   "*": deny

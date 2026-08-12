@@ -6,7 +6,7 @@ import hashlib
 import sys
 from pathlib import Path
 
-EXPECTED_FRONTMATTER_SHA256 = "40723eeca42ced684235ed98f1b095b4a183e06f21ce84bc86ede3d155f0ceed"
+EXPECTED_FRONTMATTER_SHA256 = "661a83e0a8f250cf870273dcf8d3d253159d36a6ff636de0c7ca139a562d5d27"
 REQUIRED_DENIALS = (
     "external_directory: deny",
     "webfetch: deny",
@@ -120,8 +120,8 @@ def verify(root: Path) -> list[str]:
             findings.append(f"missing task-path guard: {marker}")
     if 'PINNED_OPENCODE_VERSION="1.18.16"' not in launcher:
         findings.append("launcher pin is not 1.18.16")
-    if 'MODEL="deepseek/deepseek-v4-flash"' not in launcher:
-        findings.append("launcher model is not DeepSeek V4 Flash")
+    if 'MODEL="opencode/deepseek-v4-flash-free"' not in launcher:
+        findings.append("launcher model is not the reviewed OpenCode DeepSeek V4 Flash catalog entry")
     if 'AGENT="deepseek-worker"' not in launcher:
         findings.append("launcher does not select the bounded deepseek-worker agent")
     return findings

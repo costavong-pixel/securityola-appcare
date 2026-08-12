@@ -98,6 +98,6 @@ The launcher refuses another OpenCode version until Codex intentionally reviews 
 
 ## Model
 
-Low-cost worker: **DeepSeek V4 Flash** (`deepseek-v4-flash`).
+Low-cost worker: **DeepSeek V4 Flash** (`opencode/deepseek-v4-flash-free`), the exact model ID exposed by the audited OpenCode catalog.
 
 Credentials are configured on the machine through OpenCode `/connect`; never commit API keys to this repository.
