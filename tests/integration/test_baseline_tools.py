@@ -106,6 +106,24 @@ def test_task_scope_detects_out_of_scope_changes(tmp_path: Path) -> None:
     assert allowed.read_text(encoding="utf-8") == "worker change"
 
 
+def test_task_scope_ignores_opencode_managed_node_modules(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    task = root / ".codex" / "tasks" / "task.md"
+    task.parent.mkdir(parents=True)
+    task.write_text("Allowed files/paths:\n- allowed.md\n", encoding="utf-8")
+
+    before_path = tmp_path / "before.json"
+    baseline_task = tmp_path / "task-before.md"
+    before_path.write_text(json.dumps(snapshot(root)), encoding="utf-8")
+    baseline_task.write_text(task.read_text(encoding="utf-8"), encoding="utf-8")
+    generated = root / ".opencode" / "node_modules" / "provider" / "index.js"
+    generated.parent.mkdir(parents=True)
+    generated.write_text("generated", encoding="utf-8")
+
+    assert verify(root, before_path, task, baseline_task) == []
+
+
 def test_task_scope_promotes_allowed_new_tree(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     root.mkdir()
