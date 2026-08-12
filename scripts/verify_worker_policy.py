@@ -121,7 +121,9 @@ def verify(root: Path) -> list[str]:
     if 'PINNED_OPENCODE_VERSION="1.18.16"' not in launcher:
         findings.append("launcher pin is not 1.18.16")
     if 'MODEL="opencode/deepseek-v4-flash-free"' not in launcher:
-        findings.append("launcher model is not the reviewed OpenCode DeepSeek V4 Flash catalog entry")
+        findings.append(
+            "launcher model is not the reviewed OpenCode DeepSeek V4 Flash catalog entry"
+        )
     if 'AGENT="deepseek-worker"' not in launcher:
         findings.append("launcher does not select the bounded deepseek-worker agent")
     return findings
