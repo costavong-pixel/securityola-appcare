@@ -120,6 +120,8 @@ def test_task_scope_ignores_opencode_managed_node_modules(tmp_path: Path) -> Non
     generated = root / ".opencode" / "node_modules" / "provider" / "index.js"
     generated.parent.mkdir(parents=True)
     generated.write_text("generated", encoding="utf-8")
+    (root / ".opencode" / "package.json").write_text("{}", encoding="utf-8")
+    (root / ".opencode" / "package-lock.json").write_text("{}", encoding="utf-8")
 
     assert verify(root, before_path, task, baseline_task) == []
 

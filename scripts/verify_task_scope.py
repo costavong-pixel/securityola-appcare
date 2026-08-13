@@ -11,14 +11,20 @@ from pathlib import Path, PurePosixPath
 
 IGNORED_LOCAL_DIRS = {".git", ".token-saver", "graphify-out", "__pycache__"}
 IGNORED_CODEX_DIRS = {"checkpoints", "worker-smoke"}
+IGNORED_TOOL_STATE_PATHS = {
+    (".opencode", "package.json"),
+    (".opencode", "package-lock.json"),
+}
 IGNORED_TOOL_STATE_PREFIXES = {(".opencode", "node_modules")}
 
 
 def _is_ignored(relative: Path) -> bool:
     if any(part in IGNORED_LOCAL_DIRS for part in relative.parts):
         return True
-    if relative.parts == (".opencode",) or any(
-        relative.parts[: len(prefix)] == prefix for prefix in IGNORED_TOOL_STATE_PREFIXES
+    if (
+        relative.parts == (".opencode",)
+        or relative.parts in IGNORED_TOOL_STATE_PATHS
+        or any(relative.parts[: len(prefix)] == prefix for prefix in IGNORED_TOOL_STATE_PREFIXES)
     ):
         return True
     parts = relative.parts
