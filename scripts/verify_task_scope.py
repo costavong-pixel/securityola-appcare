@@ -7,6 +7,8 @@ import hashlib
 import json
 import os
 import shutil
+import stat
+import tempfile
 from pathlib import Path, PurePosixPath
 
 IGNORED_LOCAL_DIRS = {".git", ".token-saver", "graphify-out", "__pycache__"}
@@ -35,9 +37,9 @@ def _is_ignored(relative: Path) -> bool:
     return len(parts) > codex_index + 1 and parts[codex_index + 1] in IGNORED_CODEX_DIRS
 
 
-def _inventory(root: Path) -> dict[str, dict[str, str]]:
+def _inventory(root: Path) -> dict[str, dict[str, object]]:
     root = root.resolve()
-    entries: dict[str, dict[str, str]] = {}
+    entries: dict[str, dict[str, object]] = {}
     for path in root.rglob("*"):
         relative_path = path.relative_to(root)
         if _is_ignored(relative_path):
@@ -50,12 +52,17 @@ def _inventory(root: Path) -> dict[str, dict[str, str]]:
                     raise ValueError("repository inventory encountered an escaping symlink")
                 entries[relative] = {"kind": "symlink", "target": os.readlink(path)}
             elif path.is_file():
+                file_stat = path.stat()
                 entries[relative] = {
                     "kind": "file",
                     "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    "mode": stat.S_IMODE(file_stat.st_mode),
                 }
             elif path.is_dir():
-                entries[relative] = {"kind": "directory"}
+                entries[relative] = {
+                    "kind": "directory",
+                    "mode": stat.S_IMODE(path.stat().st_mode),
+                }
         except OSError as exc:
             raise ValueError("repository inventory encountered an unreadable path") from exc
     return entries
@@ -205,6 +212,215 @@ def _remove_target(target: Path) -> None:
         target.rmdir()
 
 
+def _path_exists(path: Path) -> bool:
+    return path.exists() or path.is_symlink()
+
+
+def _validate_removal_targets(
+    target_root: Path,
+    changed: list[str],
+    after_files: dict[str, object],
+) -> None:
+    """Reject removals that would silently delete untracked target content."""
+
+    planned_deletes = {relative for relative in changed if relative not in after_files}
+    for relative in planned_deletes:
+        target = _safe_target(target_root, relative)
+        if not target.is_dir() or target.is_symlink():
+            continue
+        for descendant in target.rglob("*"):
+            descendant_relative = descendant.relative_to(target_root).as_posix()
+            if descendant_relative not in planned_deletes:
+                raise ValueError(
+                    "refusing to remove a non-empty target directory containing "
+                    f"unplanned content: {relative}"
+                )
+
+    # Replacing a directory with a file is also a removal operation.  The
+    # directory must contain only paths already accounted for by the worker
+    # snapshot so promotion cannot erase local state accidentally.
+    for relative in changed:
+        entry = after_files.get(relative)
+        if not isinstance(entry, dict) or entry.get("kind") != "file":
+            continue
+        target = _safe_target(target_root, relative)
+        if not target.is_dir() or target.is_symlink():
+            continue
+        for descendant in target.rglob("*"):
+            descendant_relative = descendant.relative_to(target_root).as_posix()
+            if descendant_relative not in planned_deletes:
+                raise ValueError(
+                    "refusing to replace a non-empty target directory containing "
+                    f"unplanned content: {relative}"
+                )
+
+
+def _validate_source_entries(
+    source_root: Path,
+    changed: list[str],
+    after_files: dict[str, object],
+) -> None:
+    for relative in changed:
+        entry = after_files.get(relative)
+        if entry is None:
+            continue
+        if not isinstance(entry, dict):
+            raise ValueError("invalid worker inventory entry")
+        source = _safe_target(source_root, relative)
+        kind = entry.get("kind")
+        if kind == "directory":
+            if source.is_symlink() or not source.is_dir():
+                raise ValueError("refusing to promote a symlink or non-directory worker path")
+        elif kind == "file":
+            if source.is_symlink() or not source.is_file():
+                raise ValueError("refusing to promote a symlink or non-regular worker path")
+        else:
+            raise ValueError("refusing to promote an unsupported worker path kind")
+
+
+def _stage_files(
+    source_root: Path,
+    changed: list[str],
+    after_files: dict[str, object],
+    stage_root: Path,
+) -> dict[str, Path]:
+    staged: dict[str, Path] = {}
+    for relative in changed:
+        entry = after_files.get(relative)
+        if not isinstance(entry, dict) or entry.get("kind") != "file":
+            continue
+        source = _safe_target(source_root, relative)
+        staged_path = _safe_target(stage_root, relative)
+        staged_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, staged_path)
+        shutil.copymode(source, staged_path)
+        staged[relative] = staged_path
+    return staged
+
+
+def _backup_target_state(
+    target_root: Path,
+    changed: list[str],
+    backup_root: Path,
+) -> dict[str, dict[str, object]]:
+    states: dict[str, dict[str, object]] = {}
+    for relative in changed:
+        target = _safe_target(target_root, relative)
+        if target.is_symlink():
+            states[relative] = {
+                "kind": "symlink",
+                "target": os.readlink(target),
+                "target_is_directory": target.is_dir(),
+            }
+        elif target.is_file():
+            backup_path = _safe_target(backup_root, relative)
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(target, backup_path)
+            shutil.copymode(target, backup_path)
+            states[relative] = {
+                "kind": "file",
+                "backup": backup_path,
+                "mode": stat.S_IMODE(target.stat().st_mode),
+            }
+        elif target.is_dir():
+            states[relative] = {
+                "kind": "directory",
+                "mode": stat.S_IMODE(target.stat().st_mode),
+            }
+        else:
+            states[relative] = {"kind": "absent"}
+    return states
+
+
+def _restore_target_state(
+    target_root: Path,
+    states: dict[str, dict[str, object]],
+) -> None:
+    for relative in sorted(states, key=lambda value: (value.count("/"), value), reverse=True):
+        target = _safe_target(target_root, relative)
+        state = states[relative]
+        kind = state["kind"]
+        if kind == "absent":
+            if _path_exists(target):
+                _remove_target(target)
+            continue
+        if kind == "directory":
+            if _path_exists(target) and (target.is_symlink() or not target.is_dir()):
+                _remove_target(target)
+            if not _path_exists(target):
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.mkdir()
+            mode = state.get("mode")
+            if not isinstance(mode, int):
+                raise ValueError("invalid directory backup mode")
+            os.chmod(target, mode)
+        elif kind == "file":
+            if _path_exists(target):
+                _remove_target(target)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            backup_path = state["backup"]
+            if not isinstance(backup_path, Path):
+                raise ValueError("invalid file backup path")
+            shutil.copyfile(backup_path, target)
+            mode = state.get("mode")
+            if not isinstance(mode, int):
+                raise ValueError("invalid file backup mode")
+            os.chmod(target, mode)
+        elif kind == "symlink":
+            if _path_exists(target):
+                _remove_target(target)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.symlink(
+                str(state["target"]),
+                target,
+                target_is_directory=bool(state["target_is_directory"]),
+            )
+        else:
+            raise ValueError("invalid target backup kind")
+
+
+def _apply_staged_changes(
+    source_root: Path,
+    target_root: Path,
+    changed: list[str],
+    after_files: dict[str, object],
+    staged: dict[str, Path],
+) -> None:
+    deletions = [relative for relative in changed if relative not in after_files]
+    for relative in sorted(deletions, key=lambda value: (value.count("/"), value), reverse=True):
+        target = _safe_target(target_root, relative)
+        if _path_exists(target):
+            _remove_target(target)
+
+    directories: list[str] = []
+    for relative in changed:
+        entry = after_files.get(relative)
+        if isinstance(entry, dict) and entry.get("kind") == "directory":
+            directories.append(relative)
+    for relative in sorted(directories, key=lambda value: (value.count("/"), value)):
+        source = _safe_target(source_root, relative)
+        target = _safe_target(target_root, relative)
+        if _path_exists(target) and (target.is_symlink() or not target.is_dir()):
+            _remove_target(target)
+        target.mkdir(parents=True, exist_ok=True)
+
+    files = [relative for relative in changed if relative in staged]
+    for relative in sorted(files, key=lambda value: (value.count("/"), value)):
+        target = _safe_target(target_root, relative)
+        if _path_exists(target):
+            _remove_target(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(staged[relative], target)
+        shutil.copymode(staged[relative], target)
+
+    # Apply directory modes last so restrictive worker modes cannot prevent
+    # creation of the files that belong beneath those directories.
+    for relative in sorted(directories, key=lambda value: (value.count("/"), value), reverse=True):
+        source = _safe_target(source_root, relative)
+        target = _safe_target(target_root, relative)
+        shutil.copymode(source, target)
+
+
 def promote(
     source_root: Path,
     target_root: Path,
@@ -226,26 +442,23 @@ def promote(
         raise ValueError("invalid scope snapshot")
 
     changed = _changed_paths(before, after)
-    for relative in sorted(changed, key=lambda value: (value.count("/"), value), reverse=True):
-        source = _safe_target(source_root, relative)
-        target = _safe_target(target_root, relative)
-        entry = after_files.get(relative)
-        if entry is None:
-            if target.exists() or target.is_symlink():
-                _remove_target(target)
-            continue
-        if not isinstance(entry, dict):
-            raise ValueError("invalid worker inventory entry")
-        kind = entry.get("kind")
-        if kind == "directory":
-            target.mkdir(parents=True, exist_ok=True)
-            continue
-        if kind != "file" or source.is_symlink() or not source.is_file():
-            raise ValueError("refusing to promote a symlink or non-regular worker path")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if target.exists() or target.is_symlink():
-            _remove_target(target)
-        shutil.copyfile(source, target)
+    _validate_source_entries(source_root, changed, after_files)
+    _validate_removal_targets(target_root, changed, after_files)
+
+    with tempfile.TemporaryDirectory(prefix="securityola-appcare-promote-") as temporary:
+        temporary_root = Path(temporary)
+        staged = _stage_files(source_root, changed, after_files, temporary_root / "staged")
+        states = _backup_target_state(target_root, changed, temporary_root / "backup")
+        try:
+            _apply_staged_changes(source_root, target_root, changed, after_files, staged)
+        except Exception:
+            try:
+                _restore_target_state(target_root, states)
+            except Exception as rollback_exc:
+                raise RuntimeError(
+                    "worker promotion failed and rollback also failed"
+                ) from rollback_exc
+            raise
     return []
 
 

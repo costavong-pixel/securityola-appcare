@@ -1,11 +1,13 @@
 import json
+import os
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
-from scripts import check_public_safety
+from scripts import check_public_safety, verify_task_scope
 from scripts.validate_task_packet import validate
 from scripts.verify_task_scope import promote, snapshot, verify
 
@@ -148,6 +150,143 @@ def test_task_scope_promotes_allowed_new_tree(tmp_path: Path) -> None:
     assert verify(root, before_path, task, baseline_task) == []
     assert promote(root, target, before_path, task, baseline_task) == []
     assert (target / "new-tree" / "child.md").read_text(encoding="utf-8") == "created"
+
+
+def test_task_scope_promotion_preserves_file_mode(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    worker_file = root / "worker.sh"
+    worker_file.write_text("#!/bin/sh\necho worker\n", encoding="utf-8")
+    task = root / ".codex" / "tasks" / "task.md"
+    task.parent.mkdir(parents=True)
+    task.write_text("Allowed files/paths:\n- worker.sh\n", encoding="utf-8")
+
+    target = tmp_path / "target"
+    shutil.copytree(root, target)
+    before_path = tmp_path / "before.json"
+    baseline_task = tmp_path / "task-before.md"
+    before_path.write_text(json.dumps(snapshot(root)), encoding="utf-8")
+    baseline_task.write_text(task.read_text(encoding="utf-8"), encoding="utf-8")
+    os.chmod(worker_file, 0o751)  # noqa: S103 - mode preservation fixture
+    os.chmod(target / "worker.sh", 0o640)
+
+    assert promote(root, target, before_path, task, baseline_task) == []
+    assert stat.S_IMODE((target / "worker.sh").stat().st_mode) == stat.S_IMODE(
+        worker_file.stat().st_mode
+    )
+
+
+def test_task_scope_promotion_rolls_back_after_apply_failure(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    for name in ("first.txt", "second.txt"):
+        (root / name).write_text("before", encoding="utf-8")
+    task = root / ".codex" / "tasks" / "task.md"
+    task.parent.mkdir(parents=True)
+    task.write_text("Allowed files/paths:\n- first.txt\n- second.txt\n", encoding="utf-8")
+
+    target = tmp_path / "target"
+    shutil.copytree(root, target)
+    before_path = tmp_path / "before.json"
+    baseline_task = tmp_path / "task-before.md"
+    before_path.write_text(json.dumps(snapshot(root)), encoding="utf-8")
+    baseline_task.write_text(task.read_text(encoding="utf-8"), encoding="utf-8")
+    (root / "first.txt").write_text("after-first", encoding="utf-8")
+    (root / "second.txt").write_text("after-second", encoding="utf-8")
+
+    real_apply = verify_task_scope._apply_staged_changes
+
+    def apply_then_fail(*args: Any, **kwargs: Any) -> None:
+        real_apply(*args, **kwargs)
+        raise OSError("injected promotion failure")
+
+    monkeypatch.setattr(verify_task_scope, "_apply_staged_changes", apply_then_fail)
+    try:
+        promote(root, target, before_path, task, baseline_task)
+    except OSError as exc:
+        assert str(exc) == "injected promotion failure"
+    else:
+        raise AssertionError("promotion unexpectedly succeeded")
+
+    assert (target / "first.txt").read_text(encoding="utf-8") == "before"
+    assert (target / "second.txt").read_text(encoding="utf-8") == "before"
+
+
+def test_task_scope_rejects_unplanned_target_content_before_mutation(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    first = root / "first.txt"
+    first.write_text("before", encoding="utf-8")
+    removable = root / "removable"
+    removable.mkdir()
+    (removable / "tracked.txt").write_text("tracked", encoding="utf-8")
+    task = root / ".codex" / "tasks" / "task.md"
+    task.parent.mkdir(parents=True)
+    task.write_text("Allowed files/paths:\n- first.txt\n- removable/**\n", encoding="utf-8")
+
+    target = tmp_path / "target"
+    shutil.copytree(root, target)
+    (target / "removable" / "local-state.txt").write_text("keep", encoding="utf-8")
+    before_path = tmp_path / "before.json"
+    baseline_task = tmp_path / "task-before.md"
+    before_path.write_text(json.dumps(snapshot(root)), encoding="utf-8")
+    baseline_task.write_text(task.read_text(encoding="utf-8"), encoding="utf-8")
+    shutil.rmtree(removable)
+    first.write_text("after", encoding="utf-8")
+
+    try:
+        promote(root, target, before_path, task, baseline_task)
+    except ValueError as exc:
+        assert "unplanned content" in str(exc)
+    else:
+        raise AssertionError("promotion unexpectedly succeeded")
+
+    assert (target / "first.txt").read_text(encoding="utf-8") == "before"
+    assert (target / "removable" / "tracked.txt").read_text(encoding="utf-8") == "tracked"
+    assert (target / "removable" / "local-state.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_task_scope_nested_directory_rollback_restores_parent_and_child(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    nested = root / "nested"
+    nested.mkdir()
+    child = nested / "child.txt"
+    child.write_text("before", encoding="utf-8")
+    task = root / ".codex" / "tasks" / "task.md"
+    task.parent.mkdir(parents=True)
+    task.write_text("Allowed files/paths:\n- nested/**\n", encoding="utf-8")
+
+    target = tmp_path / "target"
+    shutil.copytree(root, target)
+    before_path = tmp_path / "before.json"
+    baseline_task = tmp_path / "task-before.md"
+    before_path.write_text(json.dumps(snapshot(root)), encoding="utf-8")
+    baseline_task.write_text(task.read_text(encoding="utf-8"), encoding="utf-8")
+    before_nested_mode = stat.S_IMODE((target / "nested").stat().st_mode)
+    child.write_text("after", encoding="utf-8")
+    os.chmod(nested, 0o751)  # noqa: S103 - nested rollback fixture
+
+    real_apply = verify_task_scope._apply_staged_changes
+
+    def apply_then_fail(*args: Any, **kwargs: Any) -> None:
+        real_apply(*args, **kwargs)
+        raise OSError("injected nested promotion failure")
+
+    monkeypatch.setattr(verify_task_scope, "_apply_staged_changes", apply_then_fail)
+    try:
+        promote(root, target, before_path, task, baseline_task)
+    except OSError as exc:
+        assert str(exc) == "injected nested promotion failure"
+    else:
+        raise AssertionError("promotion unexpectedly succeeded")
+
+    assert (target / "nested" / "child.txt").read_text(encoding="utf-8") == "before"
+    assert stat.S_IMODE((target / "nested").stat().st_mode) == before_nested_mode
 
 
 def test_task_scope_uses_the_pre_worker_packet_rules(tmp_path: Path) -> None:
