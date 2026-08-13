@@ -9,7 +9,7 @@ The project does not treat a registry listing or model recommendation as an acce
 | Graphify | Accepted | Local package `0.9.32` produced and diagnosed the initial graph; generated caches stay out of Git. |
 | Spec Kit | Accepted at pinned `0.11.3` | Official bundled templates were initialized; the CLI `init` wrapper hung twice, so the verified local package API performed the same bounded scaffold without network access. |
 | Spec Kit task-to-issues extension | Dropped | It can publish repository-controlled task text as GitHub issues; it is unnecessary for BETA-00 and is not accepted without a separate owner-approved, public-safety-checked publication workflow. |
-| OpenCode | Accepted at pinned `1.18.16` pending worker smoke gate | Official upstream release/tag and package integrity were verified. Static and negative permission tests pass; DeepSeek worker authentication remains required before issue closure. |
+| OpenCode | Accepted at pinned `1.18.16`, worker smoke pending | Official upstream release/tag and package integrity were verified. The exact catalog model `opencode/deepseek-v4-flash-free` resolves, static/negative permission tests pass, and the live provider has returned rate-limit responses before a complete smoke. |
 | Supabase skills | Deferred, not installed | BETA-02/BETA-03 will inspect official Supabase material and implement least-privilege connector checks; no customer credentials are needed for BETA-00. |
 | Vercel skills | Deferred, not installed | BETA-06 will audit preview/promotion/rollback behavior before acceptance. |
 | Database/cloud-backup skills | Deferred, not installed | BETA-04 will inspect the named raw material and prefer AppCare-owned B2/S3 wrappers if safe immutable-restore evidence is not available. |
