@@ -6,7 +6,7 @@ import hashlib
 import sys
 from pathlib import Path
 
-EXPECTED_FRONTMATTER_SHA256 = "7a43b3a68e4ea20a41f70b4b545c89b5f0d5661fec5b340dbf3b2bed3968f710"
+EXPECTED_FRONTMATTER_SHA256 = "34913603bf3a38d281c2bf27ebba8f734ac75dd1f70533a26efff70a19baee4a"
 REQUIRED_DENIALS = (
     "external_directory: deny",
     "webfetch: deny",
@@ -34,6 +34,7 @@ REQUIRED_PATH_BOUNDARIES = (
     '"appcare/*": allow',
     '"tests/*": allow',
     '"docs/security/*": deny',
+    '"scripts/check_build_lock.py": allow',
 )
 FORBIDDEN_POLICY_MARKERS = (
     "read: allow",

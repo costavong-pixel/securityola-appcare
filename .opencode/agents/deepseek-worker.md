@@ -23,6 +23,7 @@ permission:
     "requirements-dev.txt": allow
     "opencode.json": allow
     "scripts/deepseek-worker.sh": allow
+    "scripts/check_build_lock.py": allow
     "scripts/validate_task_packet.py": allow
     "scripts/verify_worker_policy.py": allow
     ".opencode/agents/deepseek-worker.md": allow
