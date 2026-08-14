@@ -85,6 +85,7 @@ REQUIRED_LAUNCHER_GUARDS = (
     'task_file="$(realpath -e -- "$1"',
     'case "$task_file" in',
     '"$task_root"/*)',
+    '"$python_cmd" scripts/verify_worker_policy.py',
     "scripts/validate_task_packet.py",
     "scripts/verify_task_scope.py",
     "mktemp -d",

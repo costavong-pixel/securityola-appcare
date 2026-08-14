@@ -78,6 +78,10 @@ if [[ -n "$(git -C "$repo_root" status --porcelain --untracked-files=all)" ]]; t
   echo "Commit or otherwise checkpoint the reviewed coordinator changes first." >&2
   exit 7
 fi
+if ! "$python_cmd" scripts/verify_worker_policy.py >/dev/null; then
+  echo "ERROR: worker policy verification failed before isolation." >&2
+  exit 5
+fi
 
 run_root="$(mktemp -d "${TMPDIR:-/tmp}/securityola-appcare-worker.XXXXXX")"
 worker_root="$run_root/worktree"

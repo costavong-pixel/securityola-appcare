@@ -14,7 +14,15 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
-IGNORED_LOCAL_DIRS = {".git", ".token-saver", "graphify-out", "__pycache__"}
+IGNORED_LOCAL_DIRS = {
+    ".git",
+    ".token-saver",
+    "graphify-out",
+    "__pycache__",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".pytest_cache",
+}
 IGNORED_CODEX_DIRS = {"checkpoints", "worker-smoke"}
 IGNORED_TOOL_STATE_PATHS = {
     (".opencode", "package.json"),
