@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from appcare.routes.common import safe_reference
 from appcare.services.audit import MetadataError, sanitize_metadata, sanitize_text
 
 
@@ -22,3 +23,10 @@ def test_free_text_rejects_private_key_markers_without_echoing_value() -> None:
     with pytest.raises(MetadataError) as error:
         sanitize_text("-----BEGIN PRIVATE KEY----- fake-fixture -----END PRIVATE KEY-----")
     assert "fake-fixture" not in str(error.value)
+
+
+def test_safe_reference_rejects_encoded_and_fragment_credentials() -> None:
+    assert not safe_reference("https://example.test/repo?client%5Fsecret=fake-fixture-value")
+    assert not safe_reference("https://example.test/repo#signature=fake-fixture-value")
+    assert not safe_reference("https://example.test/repo?sig=fake-fixture-value")
+    assert safe_reference("https://github.com/example/app#readme")

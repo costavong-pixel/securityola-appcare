@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 
 _ALLOWED_ENVIRONMENTS = {"development", "staging", "test"}
 _FORBIDDEN_PATH_MARKERS = ("wordpress", "barnd", "shield", "production", "deploy")
+_APPCARE_DATABASE_MARKER = "appcare"
 
 
 def _integer_env(name: str, default: int, *, minimum: int, maximum: int) -> int:
@@ -43,9 +44,19 @@ class Settings:
             database_path = (parsed.path or "").casefold()
             if any(marker in database_path for marker in _FORBIDDEN_PATH_MARKERS):
                 raise ValueError("database path is outside the AppCare boundary")
+            if environment != "test" and database_path not in {"", "/:memory:"}:
+                if _APPCARE_DATABASE_MARKER not in database_path:
+                    raise ValueError("database path is not AppCare-owned")
         elif parsed.scheme in {"postgresql", "postgres"} or parsed.scheme.startswith("postgresql+"):
             host = (parsed.hostname or "").casefold()
-            if not host or any(marker in host for marker in _FORBIDDEN_PATH_MARKERS):
+            username = (parsed.username or "").casefold()
+            database_name = (parsed.path.rsplit("/", 1)[-1] or "").casefold()
+            if (
+                not host
+                or any(marker in host for marker in _FORBIDDEN_PATH_MARKERS)
+                or any(marker in username for marker in _FORBIDDEN_PATH_MARKERS)
+                or (environment != "test" and _APPCARE_DATABASE_MARKER not in database_name)
+            ):
                 raise ValueError("database host is outside the AppCare boundary")
         else:
             raise ValueError("database URL must use an isolated SQLite or PostgreSQL scheme")

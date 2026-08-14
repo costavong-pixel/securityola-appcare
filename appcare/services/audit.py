@@ -34,6 +34,12 @@ class MetadataError(ValueError):
     """Metadata cannot be safely written to an audit record."""
 
 
+def contains_credential_like(value: str) -> bool:
+    """Return whether text contains a recognized credential-shaped value."""
+
+    return _CREDENTIAL_VALUE.search(value) is not None
+
+
 def _sanitize(value: Any, *, depth: int, secret_key: bool = False) -> Any:
     if depth > _MAX_DEPTH:
         raise MetadataError("metadata nesting is too deep")
@@ -55,7 +61,7 @@ def _sanitize(value: Any, *, depth: int, secret_key: bool = False) -> Any:
     if value is None or isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, str):
-        if _CREDENTIAL_VALUE.search(value):
+        if contains_credential_like(value):
             raise MetadataError("metadata contains a credential-like value")
         return value[:_MAX_STRING]
     raise MetadataError("metadata contains an unsupported value")
@@ -74,7 +80,7 @@ def sanitize_metadata(metadata: Mapping[str, Any], *, max_bytes: int = 16_384) -
 def sanitize_text(value: str | None, *, max_length: int = 1_000) -> str | None:
     if value is None:
         return None
-    if _CREDENTIAL_VALUE.search(value):
+    if contains_credential_like(value):
         raise MetadataError("text contains a credential-like value")
     return value[:max_length]
 
