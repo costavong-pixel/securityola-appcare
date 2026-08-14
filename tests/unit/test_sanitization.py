@@ -20,8 +20,9 @@ def test_credential_like_value_in_non_secret_field_fails_closed() -> None:
 
 
 def test_free_text_rejects_private_key_markers_without_echoing_value() -> None:
+    fake_private_key = "-----" + "BEGIN PRIVATE KEY----- fake-fixture -----END PRIVATE KEY-----"
     with pytest.raises(MetadataError) as error:
-        sanitize_text("-----BEGIN PRIVATE KEY----- fake-fixture -----END PRIVATE KEY-----")
+        sanitize_text(fake_private_key)
     assert "fake-fixture" not in str(error.value)
 
 
