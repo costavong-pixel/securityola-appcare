@@ -7,7 +7,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from scripts import check_public_safety, verify_task_scope
+from scripts import (
+    check_public_safety,
+    generate_worker_policy,
+    scan_worker_changes,
+    verify_task_scope,
+)
 from scripts.check_build_lock import validate as validate_build_lock
 from scripts.validate_task_packet import seal, validate
 from scripts.verify_task_scope import promote, snapshot, verify
@@ -88,10 +93,30 @@ def test_task_packet_seal_requires_scope_and_preserves_exact_bytes(tmp_path: Pat
     task_root = repo / ".codex" / "tasks"
     task_root.mkdir(parents=True)
     packet = task_root / "task.md"
-    packet.write_bytes(b"Allowed files/paths:\n- appcare/*\n\nRead-only bounded review.\n")
+    packet.write_bytes(
+        b"TARGET=AppCare\n"
+        b"Repository root: .\n"
+        b"Branch: codex/test\n"
+        b"HEAD: 0123456789abcdef0123456789abcdef01234567\n\n"
+        b"Allowed files/paths:\n- appcare/*\n\n"
+        b"Do not touch:\n- WordPress Security resources\n\n"
+        b"Forbidden commands/capabilities:\n"
+        b"- no network, credentials, production, or deployment\n\n"
+        b"Read-only bounded review.\n"
+    )
     sealed = tmp_path / "run" / "task.md"
 
-    assert seal(packet, sealed, repo, task_root) == []
+    assert (
+        seal(
+            packet,
+            sealed,
+            repo,
+            task_root,
+            expected_head="0123456789abcdef0123456789abcdef01234567",
+            expected_branch="codex/test",
+        )
+        == []
+    )
     assert sealed.read_bytes() == packet.read_bytes()
 
 
@@ -100,11 +125,122 @@ def test_task_packet_seal_rejects_missing_scope(tmp_path: Path) -> None:
     task_root = repo / ".codex" / "tasks"
     task_root.mkdir(parents=True)
     packet = task_root / "task.md"
-    packet.write_text("Read-only task without a scope.", encoding="utf-8")
+    packet.write_text(
+        "TARGET=AppCare\n"
+        "Repository root: .\n"
+        "Branch: codex/test\n"
+        "HEAD: 0123456789abcdef0123456789abcdef01234567\n\n"
+        "Do not touch:\n- WordPress Security resources\n\n"
+        "Forbidden commands/capabilities:\n"
+        "- no network, credentials, production, or deployment\n\n"
+        "Read-only task without a scope.",
+        encoding="utf-8",
+    )
 
     assert seal(packet, tmp_path / "run" / "task.md", repo, task_root) == [
         "task packet must contain an Allowed files section"
     ]
+
+
+def test_task_packet_seal_rejects_context_drift(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    task_root = repo / ".codex" / "tasks"
+    task_root.mkdir(parents=True)
+    packet = task_root / "task.md"
+    packet.write_text(
+        "TARGET=AppCare\n"
+        "Repository root: .\n"
+        "Branch: codex/test\n"
+        "HEAD: 0123456789abcdef0123456789abcdef01234567\n\n"
+        "Allowed files/paths:\n- tests/*\n\n"
+        "Do not touch:\n- WordPress Security resources\n\n"
+        "Forbidden commands/capabilities:\n"
+        "- no network, credentials, production, or deployment\n",
+        encoding="utf-8",
+    )
+    findings = seal(
+        packet,
+        tmp_path / "run" / "task.md",
+        repo,
+        task_root,
+        expected_head="fedcba9876543210fedcba9876543210fedcba98",
+        expected_branch="codex/other",
+    )
+    assert findings == [
+        "task packet branch does not match the coordinator branch",
+        "task packet HEAD does not match the coordinator HEAD",
+    ]
+
+
+def test_task_specific_policy_binds_read_and_edit_paths(tmp_path: Path) -> None:
+    task = tmp_path / "task.md"
+    task.write_text(
+        "Allowed files/paths:\n- tests/*\n"
+        "\nRead-only files/paths:\n- scripts/check_build_lock.py\n",
+        encoding="utf-8",
+    )
+    policy = generate_worker_policy.render(task)
+    assert '"tests/*": allow' in policy
+    assert '"scripts/check_build_lock.py": allow' in policy
+    assert 'edit:\n    "*": deny' in policy
+    assert '"docs/security/*": deny' in policy
+
+
+def test_task_specific_policy_rejects_security_document_edits(tmp_path: Path) -> None:
+    task = tmp_path / "task.md"
+    task.write_text("Allowed files/paths:\n- docs/security/*\n", encoding="utf-8")
+    try:
+        generate_worker_policy.render(task)
+    except ValueError as exc:
+        assert "forbidden" in str(exc)
+    else:
+        raise AssertionError("security documentation path unexpectedly accepted")
+
+
+def test_worker_secret_scan_fails_closed_when_gitleaks_is_missing(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    changed = root / "changed.txt"
+    changed.write_text("fake fixture", encoding="utf-8")
+    before = snapshot(root)
+    changed.write_text("worker fixture", encoding="utf-8")
+    before_path = tmp_path / "before.json"
+    before_path.write_text(json.dumps(before), encoding="utf-8")
+    monkeypatch.setattr(scan_worker_changes, "find_scanner", lambda: None)
+
+    code, message = scan_worker_changes.scan(root, before_path)
+    assert code == 127
+    assert message == "worker secret scan unavailable: gitleaks is not installed"
+
+
+def test_worker_secret_scan_redacts_report_and_does_not_log_values(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    changed = root / "changed.txt"
+    changed.write_text("before", encoding="utf-8")
+    before = snapshot(root)
+    changed.write_text("after", encoding="utf-8")
+    before_path = tmp_path / "before.json"
+    before_path.write_text(json.dumps(before), encoding="utf-8")
+    monkeypatch.setattr(scan_worker_changes, "find_scanner", lambda: "gitleaks")
+    captured: dict[str, list[str]] = {}
+
+    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        captured["command"] = command
+        report = Path(command[command.index("--report-path") + 1])
+        report.write_text('[{"Description":"redacted fixture"}]', encoding="utf-8")
+        return subprocess.CompletedProcess(command, 1, "secret-value", "secret-value")
+
+    monkeypatch.setattr(scan_worker_changes, "execute_scanner", fake_run)
+    code, message = scan_worker_changes.scan(root, before_path)
+
+    assert code == 1
+    assert message == "worker secret scan rejected 1 finding(s)"
+    assert "--redact" in captured["command"]
 
 
 def test_build_lock_accepts_fresh_hashed_inputs(tmp_path: Path) -> None:

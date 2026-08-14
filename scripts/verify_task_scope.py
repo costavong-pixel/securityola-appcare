@@ -284,7 +284,7 @@ def _coordinator_lock(target_root: Path) -> Iterator[None]:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
 
 
-def _coordinator_state(target_root: Path) -> tuple[str, str]:
+def _coordinator_state(target_root: Path) -> tuple[str, str, str]:
     git_executable = shutil.which("git")
     if git_executable is None:
         raise ValueError("Git executable is unavailable")
@@ -296,6 +296,14 @@ def _coordinator_state(target_root: Path) -> tuple[str, str]:
     )
     if head_result.returncode != 0:
         raise ValueError("coordinator checkout has no readable Git HEAD")
+    branch_result = subprocess.run(  # noqa: S603
+        [git_executable, "-C", str(target_root), "branch", "--show-current"],  # noqa: S603
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if branch_result.returncode != 0 or not branch_result.stdout.strip():
+        raise ValueError("coordinator checkout is detached or has no readable branch")
     status_result = subprocess.run(  # noqa: S603
         [git_executable, "-C", str(target_root), "status", "--porcelain", "--untracked-files=all"],  # noqa: S603
         check=False,
@@ -304,7 +312,7 @@ def _coordinator_state(target_root: Path) -> tuple[str, str]:
     )
     if status_result.returncode != 0:
         raise ValueError("coordinator checkout status could not be read")
-    return head_result.stdout.strip(), status_result.stdout
+    return head_result.stdout.strip(), branch_result.stdout.strip(), status_result.stdout
 
 
 def _validate_removal_targets(
@@ -519,12 +527,17 @@ def _promote_unlocked(
     task: Path,
     baseline_task: Path | None = None,
     expected_head: str | None = None,
+    expected_branch: str | None = None,
 ) -> list[str]:
     source_root = source_root.resolve()
     target_root = target_root.resolve()
     if expected_head is not None:
-        actual_head, status = _coordinator_state(target_root)
-        if actual_head != expected_head or status:
+        actual_head, actual_branch, status = _coordinator_state(target_root)
+        if (
+            actual_head != expected_head
+            or (expected_branch is not None and actual_branch != expected_branch)
+            or status
+        ):
             raise ValueError("coordinator changed before worker promotion")
     before = json.loads(before_path.read_text(encoding="utf-8"))
     after = snapshot(source_root)
@@ -571,6 +584,7 @@ def promote(
     task: Path,
     baseline_task: Path | None = None,
     expected_head: str | None = None,
+    expected_branch: str | None = None,
 ) -> list[str]:
     with _coordinator_lock(target_root.resolve()):
         return _promote_unlocked(
@@ -580,6 +594,7 @@ def promote(
             task,
             baseline_task,
             expected_head,
+            expected_branch,
         )
 
 
@@ -604,6 +619,7 @@ def main() -> int:
     promote_parser.add_argument("--task", type=Path, required=True)
     promote_parser.add_argument("--baseline-task", type=Path)
     promote_parser.add_argument("--expected-head")
+    promote_parser.add_argument("--expected-branch")
 
     args = parser.parse_args()
     if args.command == "snapshot":
@@ -628,6 +644,7 @@ def main() -> int:
         args.task,
         args.baseline_task,
         args.expected_head,
+        args.expected_branch,
     )
     if violations:
         print("worker changed files outside the task scope:")

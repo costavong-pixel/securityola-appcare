@@ -79,14 +79,20 @@ REQUIRED_LAUNCHER_GUARDS = (
     'repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"',
     'git -C "$repo_root" rev-parse --is-inside-work-tree',
     'cd -- "$repo_root"',
+    'coordinator_branch="$(git -C "$repo_root" branch --show-current)"',
     'git -C "$repo_root" status --porcelain --untracked-files=all',
     'coordinator_head="$(git -C "$repo_root" rev-parse HEAD)"',
+    '--expected-branch "$coordinator_branch"',
     '--expected-head "$coordinator_head"',
     'task_root="$repo_root/.codex/tasks"',
     'task_file="$(realpath -e -- "$1"',
     'case "$task_file" in',
     '"$task_root"/*)',
     '"$python_cmd" scripts/verify_worker_policy.py',
+    "scripts.generate_worker_policy",
+    "scripts/run_worker_sandbox.sh",
+    "scripts.scan_worker_changes",
+    "--agent deepseek-worker-task",
     "scripts/validate_task_packet.py",
     "scripts/verify_task_scope.py",
     "mktemp -d",
@@ -95,6 +101,22 @@ REQUIRED_LAUNCHER_GUARDS = (
     "promote",
     "worktree remove --force",
     'rm -rf -- "$run_root_real"',
+)
+REQUIRED_SANDBOX_GUARDS = (
+    "--unshare-user",
+    "--unshare-pid",
+    "--unshare-uts",
+    "--unshare-ipc",
+    "--cap-drop ALL",
+    "--clearenv",
+    "--tmpfs /home",
+    "--tmpfs /var",
+    "--tmpfs /run",
+    '"$state_root_real" /run/appcare-opencode-state',
+    '"$worker_root_real" /workspace',
+    "timeout --signal=TERM --kill-after=10s",
+    "EUID:-$(id -u)",
+    "worker root is not a launcher-created disposable AppCare worktree",
 )
 
 
@@ -112,6 +134,7 @@ def verify(root: Path) -> list[str]:
     launcher_path = root / "scripts" / "deepseek-worker.sh"
     agent = agent_path.read_text(encoding="utf-8")
     launcher = launcher_path.read_text(encoding="utf-8")
+    sandbox = (root / "scripts" / "run_worker_sandbox.sh").read_text(encoding="utf-8")
     findings: list[str] = []
     actual_hash = hashlib.sha256(frontmatter(agent).encode("utf-8")).hexdigest()
     if actual_hash != EXPECTED_FRONTMATTER_SHA256:
@@ -134,6 +157,9 @@ def verify(root: Path) -> list[str]:
     for marker in REQUIRED_LAUNCHER_GUARDS:
         if marker not in launcher:
             findings.append(f"missing task-path guard: {marker}")
+    for marker in REQUIRED_SANDBOX_GUARDS:
+        if marker not in sandbox:
+            findings.append(f"missing OS sandbox guard: {marker}")
     if 'PINNED_OPENCODE_VERSION="1.18.16"' not in launcher:
         findings.append("launcher pin is not 1.18.16")
     if 'MODEL="opencode/deepseek-v4-flash-free"' not in launcher:

@@ -34,6 +34,144 @@ FORBIDDEN_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 _ALLOWED_SECTION_NAMES = {"allowed files:", "allowed files/paths:"}
+_READ_ONLY_SECTION_NAMES = {"read-only files:", "read-only files/paths:"}
+_DO_NOT_TOUCH_SECTION_NAMES = {"do not touch:"}
+_FORBIDDEN_CAPABILITY_SECTION_NAMES = {"forbidden commands/capabilities:"}
+_HEAD_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+_BRANCH_PATTERN = re.compile(r"^[A-Za-z0-9._/-]+$")
+_FORBIDDEN_SCOPE_MARKERS = (
+    ".git",
+    ".env",
+    "wordpress",
+    "barnd",
+    "shield",
+    "ssh",
+    "credential",
+    "secret",
+)
+_REQUIRED_FORBIDDEN_MARKERS = ("network", "credential", "production", "deployment")
+
+
+def _section_items(text: str, names: set[str]) -> list[str]:
+    lines = text.splitlines()
+    try:
+        start = next(index for index, line in enumerate(lines) if line.strip().casefold() in names)
+    except StopIteration as exc:
+        raise ValueError(f"task packet must contain a {'/'.join(sorted(names))} section") from exc
+
+    items: list[str] = []
+    for line in lines[start + 1 :]:
+        stripped = line.strip()
+        if not stripped:
+            if items:
+                break
+            continue
+        if stripped.endswith(":") and not stripped.startswith("-"):
+            break
+        if stripped.startswith("-"):
+            value = stripped[1:].strip().strip("`")
+            if value:
+                items.append(value)
+    if not items:
+        raise ValueError(f"section {sorted(names)[0]!r} must list at least one item")
+    return items
+
+
+def _optional_section_items(text: str, names: set[str]) -> list[str]:
+    if not any(line.strip().casefold() in names for line in text.splitlines()):
+        return []
+    return _section_items(text, names)
+
+
+def _scope_path_errors(paths: list[str]) -> list[str]:
+    findings: list[str] = []
+    for raw_path in paths:
+        value = raw_path.replace("\\", "/")
+        candidate = PurePosixPath(value)
+        if (
+            candidate.is_absolute()
+            or re.match(r"^(?:[A-Za-z]:/|//)", value)
+            or ".." in candidate.parts
+            or not re.fullmatch(r"[A-Za-z0-9._/*-]+", value)
+        ):
+            findings.append(f"task packet contains an invalid scope path: {raw_path}")
+            continue
+        lowered = value.casefold()
+        if any(marker in lowered for marker in _FORBIDDEN_SCOPE_MARKERS):
+            findings.append(f"task packet scope names a forbidden path: {raw_path}")
+    return findings
+
+
+def _validate_context(
+    text: str,
+    *,
+    expected_head: str | None = None,
+    expected_branch: str | None = None,
+) -> list[str]:
+    findings: list[str] = []
+    lines = [line.strip() for line in text.splitlines()]
+
+    target_values = [
+        line.split("=", 1)[1].strip() for line in lines if line.casefold().startswith("target=")
+    ]
+    target_values.extend(
+        line.split(":", 1)[1].strip() for line in lines if line.casefold().startswith("target:")
+    )
+    if target_values != ["AppCare"]:
+        findings.append("task packet must declare exactly TARGET=AppCare")
+
+    repository_values = [
+        line.split(":", 1)[1].strip()
+        for line in lines
+        if line.casefold().startswith("repository root:")
+    ]
+    if repository_values != ["."]:
+        findings.append("task packet repository root must be exactly .")
+
+    branch_values = [
+        line.split(":", 1)[1].strip() for line in lines if line.casefold().startswith("branch:")
+    ]
+    if len(branch_values) != 1 or not _BRANCH_PATTERN.fullmatch(branch_values[0]):
+        findings.append("task packet must declare one safe, non-detached branch")
+    elif expected_branch is not None and branch_values[0] != expected_branch:
+        findings.append("task packet branch does not match the coordinator branch")
+
+    head_values = [
+        line.split(":", 1)[1].strip() for line in lines if line.casefold().startswith("head:")
+    ]
+    if len(head_values) != 1 or not _HEAD_PATTERN.fullmatch(head_values[0].casefold()):
+        findings.append("task packet must declare one full Git HEAD SHA")
+    elif expected_head is not None and head_values[0].casefold() != expected_head.casefold():
+        findings.append("task packet HEAD does not match the coordinator HEAD")
+
+    try:
+        scope_paths = allowed_paths(text)
+    except ValueError as exc:
+        findings.append(str(exc))
+    else:
+        findings.extend(_scope_path_errors(scope_paths))
+
+    findings.extend(_scope_path_errors(_optional_section_items(text, _READ_ONLY_SECTION_NAMES)))
+
+    try:
+        do_not_touch = _section_items(text, _DO_NOT_TOUCH_SECTION_NAMES)
+    except ValueError as exc:
+        findings.append(str(exc))
+    else:
+        joined = " ".join(do_not_touch).casefold()
+        if "wordpress security" not in joined:
+            findings.append("Do not touch section must explicitly exclude WordPress Security")
+
+    try:
+        forbidden_capabilities = _section_items(text, _FORBIDDEN_CAPABILITY_SECTION_NAMES)
+    except ValueError as exc:
+        findings.append(str(exc))
+    else:
+        joined = " ".join(forbidden_capabilities).casefold()
+        for marker in _REQUIRED_FORBIDDEN_MARKERS:
+            if marker not in joined:
+                findings.append(f"forbidden commands/capabilities section must include {marker}")
+    return findings
 
 
 def allowed_paths(text: str) -> list[str]:
@@ -74,8 +212,20 @@ def allowed_paths(text: str) -> list[str]:
     return paths
 
 
+def read_only_paths(text: str) -> list[str]:
+    """Parse optional paths the worker may inspect but must not modify."""
+
+    return _optional_section_items(text, _READ_ONLY_SECTION_NAMES)
+
+
 def _validate_bytes(
-    path: Path, data: bytes, *, require_scope: bool = False
+    path: Path,
+    data: bytes,
+    *,
+    require_scope: bool = False,
+    require_context: bool = False,
+    expected_head: str | None = None,
+    expected_branch: str | None = None,
 ) -> tuple[str, list[str]]:
     if path.suffix.casefold() != ".md":
         return "", ["task packet must be Markdown"]
@@ -92,6 +242,16 @@ def _validate_bytes(
             allowed_paths(text)
         except ValueError as exc:
             findings.append(str(exc))
+    if require_context:
+        findings.extend(
+            finding
+            for finding in _validate_context(
+                text,
+                expected_head=expected_head,
+                expected_branch=expected_branch,
+            )
+            if finding not in findings
+        )
     return text, findings
 
 
@@ -125,7 +285,15 @@ def _read_stable(path: Path) -> bytes:
             os.close(descriptor)
 
 
-def seal(path: Path, output: Path, repo_root: Path, task_root: Path) -> list[str]:
+def seal(
+    path: Path,
+    output: Path,
+    repo_root: Path,
+    task_root: Path,
+    *,
+    expected_head: str | None = None,
+    expected_branch: str | None = None,
+) -> list[str]:
     """Validate one stable packet and write the exact validated bytes once."""
 
     repo_root = repo_root.resolve()
@@ -140,7 +308,14 @@ def seal(path: Path, output: Path, repo_root: Path, task_root: Path) -> list[str
     except (OSError, RuntimeError, ValueError) as exc:
         return [str(exc)]
 
-    _text, findings = _validate_bytes(path, data, require_scope=True)
+    _text, findings = _validate_bytes(
+        path,
+        data,
+        require_scope=True,
+        require_context=True,
+        expected_head=expected_head,
+        expected_branch=expected_branch,
+    )
     if findings:
         return findings
 
@@ -167,22 +342,37 @@ def validate(path: Path) -> list[str]:
 
 
 def main() -> int:
-    expected_flags = ("--seal-output", "--repo-root", "--task-root")
-    if len(sys.argv) not in {2, 8} or (
-        len(sys.argv) == 8 and tuple(sys.argv[index] for index in (2, 4, 6)) != expected_flags
+    expected_flags = (
+        "--seal-output",
+        "--repo-root",
+        "--task-root",
+        "--expected-head",
+        "--expected-branch",
+    )
+    if len(sys.argv) not in {2, 12} or (
+        len(sys.argv) == 12
+        and tuple(sys.argv[index] for index in (2, 4, 6, 8, 10)) != expected_flags
     ):
         print(
             "usage: validate_task_packet.py <task.md> "
-            "[--seal-output <path> --repo-root <path> --task-root <path>]",
+            "[--seal-output <path> --repo-root <path> --task-root <path> "
+            "--expected-head <sha> --expected-branch <branch>]",
             file=sys.stderr,
         )
         return 2
     packet = Path(sys.argv[1])
-    if len(sys.argv) == 8:
+    if len(sys.argv) == 12:
         output = Path(sys.argv[3])
         repo_root = Path(sys.argv[5])
         task_root = Path(sys.argv[7])
-        findings = seal(packet, output, repo_root, task_root)
+        findings = seal(
+            packet,
+            output,
+            repo_root,
+            task_root,
+            expected_head=sys.argv[9],
+            expected_branch=sys.argv[11],
+        )
     else:
         findings = validate(packet)
     if findings:

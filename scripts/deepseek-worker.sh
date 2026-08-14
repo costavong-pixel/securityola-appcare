@@ -33,7 +33,12 @@ if ! git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   exit 4
 fi
 cd -- "$repo_root"
+coordinator_branch="$(git -C "$repo_root" branch --show-current)"
 coordinator_head="$(git -C "$repo_root" rev-parse HEAD)"
+if [[ -z "$coordinator_branch" ]]; then
+  echo "ERROR: worker launcher requires a real non-detached AppCare branch." >&2
+  exit 7
+fi
 
 repo_root_real="$(realpath -e -- "$repo_root" 2>/dev/null || true)"
 task_root="$repo_root/.codex/tasks"
@@ -130,7 +135,9 @@ sealed_task="$run_root/task.md"
 if ! "$python_cmd" scripts/validate_task_packet.py "$task_file" \
   --seal-output "$sealed_task" \
   --repo-root "$repo_root" \
-  --task-root "$task_root" >/dev/null; then
+  --task-root "$task_root" \
+  --expected-head "$coordinator_head" \
+  --expected-branch "$coordinator_branch" >/dev/null; then
   echo "ERROR: task packet failed the stable secret, scope, and private-data safety check." >&2
   exit 5
 fi
@@ -140,11 +147,26 @@ if [[ -z "${prompt//[[:space:]]/}" ]]; then
   exit 2
 fi
 
+current_branch="$(git -C "$repo_root" branch --show-current)"
+current_head="$(git -C "$repo_root" rev-parse HEAD)"
+if [[ "$current_branch" != "$coordinator_branch" || "$current_head" != "$coordinator_head" || -n "$(git -C "$repo_root" status --porcelain --untracked-files=all)" ]]; then
+  echo "ERROR: AppCare branch, HEAD, or clean state changed before worker execution." >&2
+  exit 7
+fi
+
 git -C "$repo_root" worktree add --detach "$worker_root" HEAD >/dev/null
 mkdir -p "$worker_root/.codex/tasks"
 worker_task="$worker_root/.codex/tasks/$(basename -- "$task_file")"
 cp -- "$sealed_task" "$worker_task"
 cp -- "$sealed_task" "$scope_dir/task-before.md"
+
+worker_policy="$worker_root/.opencode/agents/deepseek-worker-task.md"
+if ! "$python_cmd" -m scripts.generate_worker_policy \
+  --task "$worker_task" \
+  --output "$worker_policy" >/dev/null; then
+  echo "ERROR: task-scoped worker policy could not be generated." >&2
+  exit 5
+fi
 
 scope_snapshot="$scope_dir/before.json"
 "$python_cmd" "$repo_root/scripts/verify_task_scope.py" snapshot \
@@ -153,8 +175,14 @@ scope_snapshot="$scope_dir/before.json"
 
 worker_status=0
 cd -- "$worker_root"
-opencode run \
-  --agent "$AGENT" \
+worker_timeout="${APPCARE_WORKER_TIMEOUT_SECONDS:-900}"
+worker_state_dir="${APPCARE_OPENCODE_STATE_DIR:-}"
+"$repo_root/scripts/run_worker_sandbox.sh" \
+  "$worker_root" \
+  "$worker_state_dir" \
+  "$worker_timeout" \
+  opencode run \
+  --agent deepseek-worker-task \
   --model "$MODEL" \
   --format default \
   "$prompt" || worker_status=$?
@@ -174,10 +202,20 @@ if [[ "$worker_status" -ne 0 ]]; then
   exit "$worker_status"
 fi
 
+secret_status=0
+"$python_cmd" -m scripts.scan_worker_changes \
+  --root "$worker_root" \
+  --before "$scope_snapshot" || secret_status=$?
+if [[ "$secret_status" -ne 0 ]]; then
+  echo "ERROR: worker-produced changes failed the deterministic secret scan." >&2
+  exit 8
+fi
+
 "$python_cmd" "$repo_root/scripts/verify_task_scope.py" promote \
   --source-root "$worker_root" \
   --target-root "$repo_root" \
   --before "$scope_snapshot" \
   --task "$worker_task" \
   --baseline-task "$scope_dir/task-before.md" \
-  --expected-head "$coordinator_head"
+  --expected-head "$coordinator_head" \
+  --expected-branch "$coordinator_branch"

@@ -14,6 +14,14 @@ Every server operation in this audit used `TARGET=AppCare`. No WordPress-targete
 - A similarly named empty directory was not treated as an AppCare runtime; no ownership was inferred from its name.
 - No AppCare DNS, TLS, Nginx, systemd, Docker, database, service, or production resource was created or changed.
 
+## BETA-00 worker containment
+
+- The DeepSeek launcher now fails closed unless it starts from a real AppCare branch with the packet's exact HEAD and a clean checkout.
+- Before OpenCode starts, the sealed packet is checked for `TARGET=AppCare`, repository root `.`, allowed paths, WordPress exclusion, forbidden capabilities, branch, and HEAD. A task-specific deny-by-default OpenCode policy is generated from that sealed scope.
+- On Linux, the worker must run as a non-root user through bubblewrap with separate PID/UTS/IPC/user namespaces, dropped capabilities, a disposable AppCare worktree bind, hidden home/var/run trees, a minimal environment, and a bounded timeout. Only an operator-created OpenCode provider-state directory is mounted read-only.
+- Worker-produced files are scanned with the approved redacted Gitleaks scanner before transactional promotion. Post-run scope verification and expected branch/HEAD checks remain mandatory second defenses.
+- The Linux sandbox and provider-state directory are release prerequisites; unavailable bubblewrap, timeout, Gitleaks, or approved provider state must fail closed.
+
 ## Required BETA-01 gate
 
 Before control-plane implementation or any server deployment, Codex must establish separate AppCare development, staging, and production identities, paths, databases, secrets, queues, logs, backup namespaces, and deployment configuration. The design must prove non-reuse of every WordPress resource listed above.

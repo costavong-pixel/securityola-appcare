@@ -4,9 +4,19 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
 
 permissions:
+  actions: none
+  checks: none
   contents: read
+  deployments: none
+  id-token: none
+  issues: none
+  packages: none
+  pull-requests: read
+  statuses: none
 
 jobs:
   quality:
