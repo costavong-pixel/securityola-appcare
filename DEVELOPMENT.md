@@ -7,6 +7,23 @@
 - LangGraph — resumable long-running operational workflows
 - `/impeccable` — website/portal design QA after functionality works
 
+## BETA-01 isolated control plane
+
+The BETA-01 API is development/staging-only. Run it only with an AppCare-owned
+SQLite database or an explicitly isolated AppCare development PostgreSQL
+database:
+
+```powershell
+$env:APPCARE_ENVIRONMENT = "development"
+$env:APPCARE_DATABASE_URL = "sqlite+pysqlite:///./appcare-dev.db"
+python -m uvicorn appcare.api:app --host localhost --port 8000
+```
+
+Do not set the database URL to a production, WordPress Security, Barnd AI
+Shield, deployment, or shared-server database. BETA-01 has no provider-write
+or deployment execution route, and development jobs must not receive
+production credentials.
+
 ## Third-party skill policy
 
 Candidate skill sources may include official vendor repositories, GitHub skill collections, and discovery registries.

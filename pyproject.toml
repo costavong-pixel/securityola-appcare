@@ -7,7 +7,13 @@ name = "securityola-appcare"
 version = "0.0.0"
 description = "SecurityOla AppCare engineering foundation"
 requires-python = ">=3.12,<3.15"
-dependencies = []
+dependencies = [
+    "fastapi==0.141.1",
+    "pydantic==2.13.4",
+    "psycopg==3.3.4",
+    "sqlalchemy==2.0.52",
+    "uvicorn==0.52.3",
+]
 
 [tool.setuptools.packages.find]
 include = ["appcare*"]
@@ -24,7 +30,7 @@ exclude = [".agents", ".specify", "graphify-out"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "S", "UP"]
-ignore = ["S101"]
+ignore = ["B008", "S101"]
 
 [tool.mypy]
 python_version = "3.12"

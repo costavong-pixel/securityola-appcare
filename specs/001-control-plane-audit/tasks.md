@@ -12,10 +12,10 @@
 
 **Purpose**: Establish the repository-compatible service layout and locked runtime dependencies.
 
-- [ ] T001 Add the AppCare service dependency declarations and bounded development configuration in `pyproject.toml`, `requirements-dev.txt`, and `requirements-dev.lock`.
-- [ ] T002 [P] Create the service package layout in `appcare/api.py`, `appcare/config.py`, `appcare/db.py`, `appcare/auth/`, `appcare/models/`, `appcare/repositories/`, `appcare/services/`, and `appcare/routes/`.
-- [ ] T003 [P] Create the unit/integration/contract test layout in `tests/unit/`, `tests/integration/`, and `tests/contract/` with shared isolated database fixtures in `tests/conftest.py`.
-- [ ] T004 [P] Add the BETA-01 service run and environment-safety notes to `DEVELOPMENT.md` and `specs/001-control-plane-audit/quickstart.md` without adding credentials or production paths.
+- [x] T001 Add the AppCare service dependency declarations and bounded development configuration in `pyproject.toml`, `requirements-dev.txt`, and `requirements-dev.lock`.
+- [x] T002 [P] Create the service package layout in `appcare/api.py`, `appcare/config.py`, `appcare/db.py`, `appcare/auth/`, `appcare/models/`, `appcare/repositories/`, `appcare/services/`, and `appcare/routes/`.
+- [x] T003 [P] Create the unit/integration/contract test layout in `tests/unit/`, `tests/integration/`, and `tests/contract/` with shared isolated database fixtures in `tests/conftest.py`.
+- [x] T004 [P] Add the BETA-01 service run and environment-safety notes to `DEVELOPMENT.md` and `specs/001-control-plane-audit/quickstart.md` without adding credentials or production paths.
 
 ---
 
@@ -25,11 +25,11 @@
 
 **Checkpoint**: No user-story implementation starts until these checks pass.
 
-- [ ] T005 Implement validated development/staging settings, safe defaults, and secret-free error/log configuration in `appcare/config.py` and `tests/unit/test_config.py`.
-- [ ] T006 Implement SQLAlchemy engine/session creation, transaction scope, schema bootstrap, PostgreSQL URL handling, isolated SQLite fixture handling, and fail-closed audit-trigger setup in `appcare/db.py` and `tests/integration/test_database_boundary.py`.
-- [ ] T007 [P] Implement shared declarative model/base metadata and timestamp/opaque-ID conventions in `appcare/models/base.py` and `appcare/models/__init__.py`.
-- [ ] T008 [P] Implement the common API error response and safe validation boundary in `appcare/api.py`, `appcare/routes/__init__.py`, and `tests/unit/test_error_sanitization.py`.
-- [ ] T009 Implement the application factory and dependency-injected database/session lifecycle in `appcare/api.py` and `tests/contract/test_app_factory.py`.
+- [x] T005 Implement validated development/staging settings, safe defaults, and secret-free error/log configuration in `appcare/config.py` and `tests/unit/test_config.py`.
+- [x] T006 Implement SQLAlchemy engine/session creation, transaction scope, schema bootstrap, PostgreSQL URL handling, isolated SQLite fixture handling, and fail-closed audit-trigger setup in `appcare/db.py` and `tests/integration/test_database_boundary.py`.
+- [x] T007 [P] Implement shared declarative model/base metadata and timestamp/opaque-ID conventions in `appcare/models/base.py` and `appcare/models/__init__.py`.
+- [x] T008 [P] Implement the common API error response and safe validation boundary in `appcare/api.py`, `appcare/routes/__init__.py`, and `tests/unit/test_error_sanitization.py`.
+- [x] T009 Implement the application factory and dependency-injected database/session lifecycle in `appcare/api.py` and `tests/contract/test_app_factory.py`.
 
 ---
 

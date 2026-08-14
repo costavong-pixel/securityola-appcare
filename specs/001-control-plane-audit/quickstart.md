@@ -8,6 +8,22 @@ This guide is for the isolated AppCare development checkout only. It does not us
 - A temporary local SQLite database for tests, or an explicitly isolated PostgreSQL database owned by AppCare development.
 - No `.env` file or credential-bearing fixture committed to the repository.
 
+## Run the isolated API
+
+Use a local AppCare database only. The default application factory uses an
+in-memory SQLite database; a file-backed SQLite URL is useful when testing
+restart durability:
+
+```powershell
+$env:APPCARE_ENVIRONMENT = "development"
+$env:APPCARE_DATABASE_URL = "sqlite+pysqlite:///./appcare-dev.db"
+python -m uvicorn appcare.api:app --host localhost --port 8000
+```
+
+Never point this process at production, WordPress Security, Barnd AI Shield,
+shared-server, or deployment data. BETA-01 stores descriptive operation state
+only and has no external provider-write or deployment execution capability.
+
 ## Deterministic gates
 
 From the repository root:
