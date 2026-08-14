@@ -18,7 +18,7 @@ Every server operation in this audit used `TARGET=AppCare`. No WordPress-targete
 
 - The DeepSeek launcher now fails closed unless it starts from a real AppCare branch with the packet's exact HEAD and a clean checkout.
 - Before OpenCode starts, the sealed packet is checked for `TARGET=AppCare`, repository root `.`, allowed paths, WordPress exclusion, forbidden capabilities, branch, and HEAD. A task-specific deny-by-default OpenCode policy is generated from that sealed scope.
-- On Linux, the worker must run as a non-root user through bubblewrap with separate PID/UTS/IPC/user namespaces, dropped capabilities, a disposable AppCare worktree bind, hidden home/var/run trees, a minimal environment, and a bounded timeout. Only the operator-created OpenCode provider-state directory and the explicitly named AppCare tool root (when OpenCode is user-installed) are mounted read-only; arbitrary home paths are rejected.
+- On Linux, the worker must run as a non-root user through bubblewrap with separate PID/UTS/IPC/user namespaces, dropped capabilities, a disposable AppCare worktree bind, hidden home/var/run trees, a minimal environment, and a bounded timeout. Only the operator-created AppCare provider `auth.json` and the explicitly named AppCare tool root (when OpenCode is user-installed) are mounted read-only; OpenCode runtime data is disposable and arbitrary home paths are rejected.
 - Worker-produced files are scanned with the approved redacted Gitleaks scanner before transactional promotion. Post-run scope verification and expected branch/HEAD checks remain mandatory second defenses.
 - The Linux sandbox and provider-state directory are release prerequisites; unavailable bubblewrap, timeout, Gitleaks, or approved provider state must fail closed.
 

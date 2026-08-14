@@ -52,8 +52,9 @@ Security-sensitive changes also receive the applicable Codex Security scan/valid
    worktree after the run.
 6. Run `scripts/deepseek-worker.sh .codex/tasks/<task>.md`.
 7. On Linux, the worker runs non-root through the AppCare OS sandbox with
-   dropped capabilities, hidden home/runtime/deployment trees, provider state
-   mounted read-only, and a bounded timeout. A user-installed OpenCode binary
+   dropped capabilities, hidden home/runtime/deployment trees, the AppCare
+   provider `auth.json` mounted read-only, disposable OpenCode runtime data,
+   and a bounded timeout. A user-installed OpenCode binary
    may be mounted only from the explicitly named `/home/<user>/appcare-tools`
    root, read-only, at the sandbox's fixed tool path; arbitrary home paths are
    rejected. Worker-produced files must pass the approved redacted secret scan

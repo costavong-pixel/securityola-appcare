@@ -67,6 +67,18 @@ case "$state_root_real" in
     exit 4
     ;;
 esac
+auth_file="$state_root_real/data/opencode/auth.json"
+if [[ -e "$auth_file" || -L "$auth_file" ]]; then
+  if [[ ! -f "$auth_file" || -L "$auth_file" ]]; then
+    echo "ERROR: AppCare provider auth state must be a regular file." >&2
+    exit 4
+  fi
+  auth_mode="$(stat -c '%a' "$auth_file" 2>/dev/null || stat -f '%Lp' "$auth_file" 2>/dev/null || true)"
+  if [[ "$auth_mode" =~ ^[0-7]{3}$ && "${auth_mode:1:2}" != "00" ]]; then
+    echo "ERROR: AppCare provider auth state is too broadly accessible." >&2
+    exit 4
+  fi
+fi
 
 opencode_path="$(command -v opencode)"
 opencode_real="$(realpath -e -- "$opencode_path" 2>/dev/null || true)"
@@ -153,14 +165,17 @@ sandbox+=(
   --dir /run/appcare-opencode-tools
   "${opencode_tool_bind[@]}"
   --dir /home/appcare-worker
+  --dir /tmp/appcare-opencode-config
+  --dir /tmp/appcare-opencode-data
+  --dir /tmp/appcare-opencode-data/opencode
   --dir /tmp/appcare-opencode-cache
-  --ro-bind "$state_root_real" /run/appcare-opencode-state
+  --ro-bind-try "$auth_file" /tmp/appcare-opencode-data/opencode/auth.json
   --bind "$worker_root_real" /workspace
   --chdir /workspace
   --setenv HOME /home/appcare-worker
   --setenv PATH "$sandbox_path"
-  --setenv XDG_CONFIG_HOME /run/appcare-opencode-state/config
-  --setenv XDG_DATA_HOME /run/appcare-opencode-state/data
+  --setenv XDG_CONFIG_HOME /tmp/appcare-opencode-config
+  --setenv XDG_DATA_HOME /tmp/appcare-opencode-data
   --setenv XDG_CACHE_HOME /tmp/appcare-opencode-cache
   --setenv LANG C.UTF-8
   --setenv LC_ALL C.UTF-8
