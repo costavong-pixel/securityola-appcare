@@ -8,7 +8,10 @@ import json
 import os
 import shutil
 import stat
+import subprocess
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
 IGNORED_LOCAL_DIRS = {".git", ".token-saver", "graphify-out", "__pycache__"}
@@ -16,6 +19,7 @@ IGNORED_CODEX_DIRS = {"checkpoints", "worker-smoke"}
 IGNORED_TOOL_STATE_PATHS = {
     (".opencode", "package.json"),
     (".opencode", "package-lock.json"),
+    (".codex", "tasks", ".worker-promotion.lock"),
 }
 IGNORED_TOOL_STATE_PREFIXES = {(".opencode", "node_modules")}
 
@@ -214,6 +218,61 @@ def _remove_target(target: Path) -> None:
 
 def _path_exists(path: Path) -> bool:
     return path.exists() or path.is_symlink()
+
+
+@contextmanager
+def _coordinator_lock(target_root: Path) -> Iterator[None]:
+    """Serialize worker promotion for cooperating launchers on this host."""
+
+    lock_dir = target_root / ".codex" / "tasks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / ".worker-promotion.lock"
+    with lock_path.open("a+b") as handle:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"0")
+            handle.flush()
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)  # type: ignore[attr-defined]
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
+
+
+def _coordinator_state(target_root: Path) -> tuple[str, str]:
+    git_executable = shutil.which("git")
+    if git_executable is None:
+        raise ValueError("Git executable is unavailable")
+    head_result = subprocess.run(  # noqa: S603
+        [git_executable, "-C", str(target_root), "rev-parse", "HEAD"],  # noqa: S603
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if head_result.returncode != 0:
+        raise ValueError("coordinator checkout has no readable Git HEAD")
+    status_result = subprocess.run(  # noqa: S603
+        [git_executable, "-C", str(target_root), "status", "--porcelain", "--untracked-files=all"],  # noqa: S603
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if status_result.returncode != 0:
+        raise ValueError("coordinator checkout status could not be read")
+    return head_result.stdout.strip(), status_result.stdout
 
 
 def _validate_removal_targets(
@@ -421,15 +480,20 @@ def _apply_staged_changes(
         shutil.copymode(source, target)
 
 
-def promote(
+def _promote_unlocked(
     source_root: Path,
     target_root: Path,
     before_path: Path,
     task: Path,
     baseline_task: Path | None = None,
+    expected_head: str | None = None,
 ) -> list[str]:
     source_root = source_root.resolve()
     target_root = target_root.resolve()
+    if expected_head is not None:
+        actual_head, status = _coordinator_state(target_root)
+        if actual_head != expected_head or status:
+            raise ValueError("coordinator changed before worker promotion")
     before = json.loads(before_path.read_text(encoding="utf-8"))
     after = snapshot(source_root)
     patterns = _patterns_for_task(task, baseline_task)
@@ -444,6 +508,8 @@ def promote(
     changed = _changed_paths(before, after)
     _validate_source_entries(source_root, changed, after_files)
     _validate_removal_targets(target_root, changed, after_files)
+    if snapshot(target_root) != before:
+        raise ValueError("coordinator content changed before worker promotion")
 
     with tempfile.TemporaryDirectory(prefix="securityola-appcare-promote-") as temporary:
         temporary_root = Path(temporary)
@@ -451,6 +517,8 @@ def promote(
         states = _backup_target_state(target_root, changed, temporary_root / "backup")
         try:
             _apply_staged_changes(source_root, target_root, changed, after_files, staged)
+            if snapshot(target_root) != after:
+                raise RuntimeError("coordinator content did not match the worker result")
         except Exception:
             try:
                 _restore_target_state(target_root, states)
@@ -460,6 +528,25 @@ def promote(
                 ) from rollback_exc
             raise
     return []
+
+
+def promote(
+    source_root: Path,
+    target_root: Path,
+    before_path: Path,
+    task: Path,
+    baseline_task: Path | None = None,
+    expected_head: str | None = None,
+) -> list[str]:
+    with _coordinator_lock(target_root.resolve()):
+        return _promote_unlocked(
+            source_root,
+            target_root,
+            before_path,
+            task,
+            baseline_task,
+            expected_head,
+        )
 
 
 def main() -> int:
@@ -482,6 +569,7 @@ def main() -> int:
     promote_parser.add_argument("--before", type=Path, required=True)
     promote_parser.add_argument("--task", type=Path, required=True)
     promote_parser.add_argument("--baseline-task", type=Path)
+    promote_parser.add_argument("--expected-head")
 
     args = parser.parse_args()
     if args.command == "snapshot":
@@ -505,6 +593,7 @@ def main() -> int:
         args.before,
         args.task,
         args.baseline_task,
+        args.expected_head,
     )
     if violations:
         print("worker changed files outside the task scope:")

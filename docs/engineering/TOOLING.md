@@ -15,10 +15,14 @@ All versions below are the versions verified for this BETA-00 checkout. A newer 
 | mypy | `2.3.0` | User-local `uv` tool; pinned in `requirements-dev.txt` |
 | pytest | `9.1.1` | Existing verified Python tool; pinned in `requirements-dev.txt` |
 | pip-audit | `2.10.1` | User-local `uv` tool; pinned in `requirements-dev.txt` |
+| PEP 517 build backend | `setuptools 84.0.0`, `wheel 0.48.0` | Included in the hash-locked development set; CI disables build isolation only after installing this exact lock |
 
 The reproducible CI tool set is resolved into `requirements-dev.lock` with
 package hashes. CI installs and audits that lock with `--require-hashes`; the
 short requirements file remains the human-maintained input to the resolver.
+The PEP 517 build backend requirements are included in that lock, and the CI
+editable install uses `--no-build-isolation` so the build cannot resolve an
+unhashed backend outside the verified environment.
 
 ## CI action pins
 

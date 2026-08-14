@@ -6,7 +6,7 @@ import hashlib
 import sys
 from pathlib import Path
 
-EXPECTED_FRONTMATTER_SHA256 = "661a83e0a8f250cf870273dcf8d3d253159d36a6ff636de0c7ca139a562d5d27"
+EXPECTED_FRONTMATTER_SHA256 = "7a43b3a68e4ea20a41f70b4b545c89b5f0d5661fec5b340dbf3b2bed3968f710"
 REQUIRED_DENIALS = (
     "external_directory: deny",
     "webfetch: deny",
@@ -19,11 +19,14 @@ REQUIRED_DENIALS = (
     'bash:\n    "*": deny',
 )
 REQUIRED_READ_ONLY_ALLOWS = (
-    '"git status*": allow',
-    '"git diff --no-ext-diff*": allow',
-    '"git log --oneline*": allow',
-    '"git show --stat*": allow',
-    '"git branch --show-current*": allow',
+    '"git status --short --branch": allow',
+    '"git diff --no-ext-diff --check": allow',
+    '"git log --oneline -5": allow',
+    '"git show --stat --oneline HEAD": allow',
+    '"git branch --show-current": allow',
+    '"ruff check appcare scripts tests": allow',
+    '"ruff format --check appcare scripts tests": allow',
+    '"mypy appcare scripts tests": allow',
 )
 REQUIRED_PATH_BOUNDARIES = (
     'read:\n    "*": deny',
@@ -47,6 +50,17 @@ FORBIDDEN_POLICY_MARKERS = (
     '"uv run *": allow',
     '"pytest -q*": allow',
     '"python -m pytest -q*": allow',
+    '"git status*": allow',
+    '"git diff --no-ext-diff*": allow',
+    '"git log --oneline*": allow',
+    '"git show --stat*": allow',
+    '"git branch --show-current*": allow',
+    '"ruff check appcare*": allow',
+    '"ruff check tests*": allow',
+    '"ruff format --check appcare*": allow',
+    '"ruff format --check tests*": allow',
+    '"mypy appcare*": allow',
+    '"mypy tests*": allow',
 )
 FORBIDDEN_LAUNCHER_OPERATIONS = (
     "ssh ",
@@ -66,7 +80,7 @@ REQUIRED_LAUNCHER_GUARDS = (
     'cd -- "$repo_root"',
     'git -C "$repo_root" status --porcelain --untracked-files=all',
     'coordinator_head="$(git -C "$repo_root" rev-parse HEAD)"',
-    '"$(git -C "$repo_root" rev-parse HEAD)" != "$coordinator_head"',
+    '--expected-head "$coordinator_head"',
     'task_root="$repo_root/.codex/tasks"',
     'task_file="$(realpath -e -- "$1"',
     'case "$task_file" in',

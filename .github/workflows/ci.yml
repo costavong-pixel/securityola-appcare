@@ -33,7 +33,7 @@ jobs:
       - name: Install pinned development tools
         run: |
           python -m pip install --require-hashes --requirement requirements-dev.lock
-          python -m pip install --no-deps --editable .
+          python -m pip install --no-deps --no-build-isolation --editable .
 
       - name: Format check
         run: ruff format --check appcare scripts tests

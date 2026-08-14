@@ -13,7 +13,9 @@ function Find-SpecifyRoot {
     if (-not $current) { return $null }
 
     while ($true) {
-        if (Test-Path -LiteralPath (Join-Path $current ".specify") -PathType Container) {
+        $marker = Join-Path $current ".specify"
+        if (Test-Path -LiteralPath $marker -PathType Container) {
+            $null = Resolve-SafeRepositoryPath -RepoRoot $current -Candidate $marker
             return $current
         }
         $parent = Split-Path $current -Parent
@@ -22,6 +24,82 @@ function Find-SpecifyRoot {
         }
         $current = $parent
     }
+}
+
+# Resolve a repository-owned path without following a symlink/reparse point.
+# Missing leaf paths are allowed only when their nearest existing parent is
+# also a real, contained directory. Callers use this for both reads and writes.
+function Resolve-SafeRepositoryPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$Candidate,
+        [switch]$AllowMissing
+    )
+
+    $rootFull = [System.IO.Path]::GetFullPath($RepoRoot)
+    $rootItem = Get-Item -LiteralPath $rootFull -Force -ErrorAction Stop
+    if (($rootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "repository root must not be a symlink or reparse point: $RepoRoot"
+    }
+    $candidatePath = if ([System.IO.Path]::IsPathRooted($Candidate)) {
+        $Candidate
+    } else {
+        Join-Path $rootFull $Candidate
+    }
+    $candidateFull = [System.IO.Path]::GetFullPath($candidatePath)
+    $separator = [System.IO.Path]::DirectorySeparatorChar
+    $rootPrefix = $rootFull.TrimEnd($separator, [System.IO.Path]::AltDirectorySeparatorChar) + $separator
+    $comparison = if ($PSVersionTable.PSVersion.Major -lt 6 -or $separator -eq '\') {
+        [System.StringComparison]::OrdinalIgnoreCase
+    } else {
+        [System.StringComparison]::Ordinal
+    }
+    if ($candidateFull -ne $rootFull -and -not $candidateFull.StartsWith($rootPrefix, $comparison)) {
+        throw "repository path escapes the project root: $Candidate"
+    }
+
+    $candidateExists = Test-Path -LiteralPath $candidateFull
+    if ($candidateExists) {
+        $candidateItem = Get-Item -LiteralPath $candidateFull -Force
+        if (($candidateItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "repository path must not be a symlink or reparse point: $Candidate"
+        }
+    } elseif (-not $AllowMissing) {
+        throw "repository path does not exist: $Candidate"
+    }
+
+    $probe = if ($candidateExists) { $candidateFull } else { Split-Path $candidateFull -Parent }
+    while ($probe -and -not (Test-Path -LiteralPath $probe)) {
+        $parent = Split-Path $probe -Parent
+        if ([string]::IsNullOrEmpty($parent) -or $parent -eq $probe) { break }
+        $probe = $parent
+    }
+    if ($probe -and (Test-Path -LiteralPath $probe)) {
+        $probeItem = Get-Item -LiteralPath $probe -Force
+        if (($probeItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "repository path contains a symlinked or reparse-point parent: $Candidate"
+        }
+        $resolvedProbe = Resolve-Path -LiteralPath $probe -ErrorAction Stop
+        $resolvedFull = [System.IO.Path]::GetFullPath($resolvedProbe.Path)
+        if ($resolvedFull -ne $rootFull -and -not $resolvedFull.StartsWith($rootPrefix, $comparison)) {
+            throw "repository path resolves outside the project root: $Candidate"
+        }
+        if ($candidateExists) {
+            return $resolvedFull
+        }
+        return $candidateFull
+    }
+    if ($AllowMissing) { return $candidateFull }
+    throw "repository path could not be resolved safely: $Candidate"
+}
+
+function Get-SafeExistingRepositoryPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$Candidate
+    )
+    if (-not (Test-Path -LiteralPath $Candidate)) { return $null }
+    return (Resolve-SafeRepositoryPath -RepoRoot $RepoRoot -Candidate $Candidate)
 }
 
 # Resolve an explicit SPECIFY_INIT_DIR project override (the directory that
@@ -58,6 +136,7 @@ function Resolve-SpecifyInitDir {
         [Console]::Error.WriteLine("ERROR: SPECIFY_INIT_DIR is not a Spec Kit project (no .specify/ directory): $initRoot")
         exit 1
     }
+    $null = Resolve-SafeRepositoryPath -RepoRoot $initRoot -Candidate (Join-Path $initRoot '.specify')
     return $initRoot
 }
 
@@ -178,6 +257,7 @@ function Save-FeatureJson {
     $FeatureDirectory = $FeatureDirectory.Substring($repoRootFull.Length).TrimStart('\', '/')
 
     $fjPath = Join-Path (Join-Path $RepoRoot '.specify') 'feature.json'
+    $null = Resolve-SafeRepositoryPath -RepoRoot $repoRootFull -Candidate $fjPath -AllowMissing
 
     # Read current value and skip write when unchanged
     if (Test-Path -LiteralPath $fjPath -PathType Leaf) {
@@ -213,12 +293,13 @@ function Get-FeaturePathsEnv {
     #   2. .specify/feature.json "feature_directory" key (persisted by specify command)
     #   3. Error - no feature context available
     $featureJson = Join-Path $repoRoot '.specify/feature.json'
+    $safeFeatureJson = Get-SafeExistingRepositoryPath -RepoRoot $repoRoot -Candidate $featureJson
     if ($env:SPECIFY_FEATURE_DIRECTORY) {
         $featureDir = Resolve-FeatureDirectory -RepoRoot $repoRoot -Candidate $env:SPECIFY_FEATURE_DIRECTORY
         # Persist to feature.json so future sessions without the env var still work
         Save-FeatureJson -RepoRoot $repoRoot -FeatureDirectory $featureDir
-    } elseif (Test-Path $featureJson) {
-        $featureJsonRaw = Get-Content -LiteralPath $featureJson -Raw
+    } elseif ($safeFeatureJson) {
+        $featureJsonRaw = Get-Content -LiteralPath $safeFeatureJson -Raw
         try {
             $featureConfig = $featureJsonRaw | ConvertFrom-Json
         } catch {
@@ -351,19 +432,24 @@ function Resolve-Template {
     )
 
     $base = Join-Path $RepoRoot '.specify/templates'
+    $null = Resolve-SafeRepositoryPath -RepoRoot $RepoRoot -Candidate $base -AllowMissing
 
     # Priority 1: Project overrides
     $override = Join-Path $base "overrides/$TemplateName.md"
-    if (Test-Path $override) { return $override }
+    $safeOverride = Get-SafeExistingRepositoryPath -RepoRoot $RepoRoot -Candidate $override
+    if ($safeOverride) { return $safeOverride }
 
     # Priority 2: Installed presets (sorted by priority from .registry)
     $presetsDir = Join-Path $RepoRoot '.specify/presets'
-    if (Test-Path $presetsDir) {
+    $safePresetsDir = Get-SafeExistingRepositoryPath -RepoRoot $RepoRoot -Candidate $presetsDir
+    if ($safePresetsDir) {
+        $presetsDir = $safePresetsDir
         $registryFile = Join-Path $presetsDir '.registry'
+        $safeRegistryFile = Get-SafeExistingRepositoryPath -RepoRoot $RepoRoot -Candidate $registryFile
         $sortedPresets = @()
-        if (Test-Path $registryFile) {
+        if ($safeRegistryFile) {
             try {
-                $registryData = Get-Content $registryFile -Raw | ConvertFrom-Json
+                $registryData = Get-Content $safeRegistryFile -Raw | ConvertFrom-Json
                 $presets = $registryData.presets
                 if ($presets) {
                     $sortedPresets = $presets.PSObject.Properties |
@@ -380,29 +466,34 @@ function Resolve-Template {
         if ($sortedPresets.Count -gt 0) {
             foreach ($presetId in $sortedPresets) {
                 $candidate = Join-Path $presetsDir "$presetId/templates/$TemplateName.md"
-                if (Test-Path $candidate) { return $candidate }
+                $safeCandidate = Get-SafeExistingRepositoryPath -RepoRoot $RepoRoot -Candidate $candidate
+                if ($safeCandidate) { return $safeCandidate }
             }
         } else {
             # Fallback: alphabetical directory order
             foreach ($preset in Get-ChildItem -Path $presetsDir -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '.*' }) {
                 $candidate = Join-Path $preset.FullName "templates/$TemplateName.md"
-                if (Test-Path $candidate) { return $candidate }
+                $safeCandidate = Get-SafeExistingRepositoryPath -RepoRoot $RepoRoot -Candidate $candidate
+                if ($safeCandidate) { return $safeCandidate }
             }
         }
     }
 
     # Priority 3: Extension-provided templates
     $extDir = Join-Path $RepoRoot '.specify/extensions'
-    if (Test-Path $extDir) {
-        foreach ($ext in Get-ChildItem -Path $extDir -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '.*' } | Sort-Object Name) {
+    $safeExtDir = Get-SafeExistingRepositoryPath -RepoRoot $RepoRoot -Candidate $extDir
+    if ($safeExtDir) {
+        foreach ($ext in Get-ChildItem -LiteralPath $safeExtDir -Directory -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '.*' } | Sort-Object Name) {
             $candidate = Join-Path $ext.FullName "templates/$TemplateName.md"
-            if (Test-Path $candidate) { return $candidate }
+            $safeCandidate = Get-SafeExistingRepositoryPath -RepoRoot $RepoRoot -Candidate $candidate
+            if ($safeCandidate) { return $safeCandidate }
         }
     }
 
     # Priority 4: Core templates
     $core = Join-Path $base "$TemplateName.md"
-    if (Test-Path $core) { return $core }
+    $safeCore = Get-SafeExistingRepositoryPath -RepoRoot $RepoRoot -Candidate $core
+    if ($safeCore) { return $safeCore }
 
     return $null
 }
@@ -417,6 +508,7 @@ function Resolve-TemplateContent {
     )
 
     $base = Join-Path $RepoRoot '.specify/templates'
+    $null = Resolve-SafeRepositoryPath -RepoRoot $RepoRoot -Candidate $base -AllowMissing
 
     # Collect all layers (highest priority first)
     $layerPaths = @()
@@ -424,19 +516,23 @@ function Resolve-TemplateContent {
 
     # Priority 1: Project overrides (always "replace")
     $override = Join-Path $base "overrides/$TemplateName.md"
-    if (Test-Path $override) {
-        $layerPaths += $override
+    $safeOverride = Get-SafeExistingRepositoryPath -RepoRoot $RepoRoot -Candidate $override
+    if ($safeOverride) {
+        $layerPaths += $safeOverride
         $layerStrategies += 'replace'
     }
 
     # Priority 2: Installed presets (sorted by priority from .registry)
     $presetsDir = Join-Path $RepoRoot '.specify/presets'
-    if (Test-Path $presetsDir) {
+    $safePresetsDir = Get-SafeExistingRepositoryPath -RepoRoot $RepoRoot -Candidate $presetsDir
+    if ($safePresetsDir) {
+        $presetsDir = $safePresetsDir
         $registryFile = Join-Path $presetsDir '.registry'
+        $safeRegistryFile = Get-SafeExistingRepositoryPath -RepoRoot $RepoRoot -Candidate $registryFile
         $sortedPresets = @()
-        if (Test-Path $registryFile) {
+        if ($safeRegistryFile) {
             try {
-                $registryData = Get-Content $registryFile -Raw | ConvertFrom-Json
+                $registryData = Get-Content $safeRegistryFile -Raw | ConvertFrom-Json
                 $presets = $registryData.presets
                 if ($presets) {
                     $sortedPresets = $presets.PSObject.Properties |
@@ -455,7 +551,8 @@ function Resolve-TemplateContent {
                 # Check if any preset has strategy fields that would be ignored
                 foreach ($pid in $sortedPresets) {
                     $mf = Join-Path $presetsDir "$pid/preset.yml"
-                    if ((Test-Path $mf) -and (Select-String -Path $mf -Pattern 'strategy:' -Quiet -ErrorAction SilentlyContinue)) {
+                    $safeManifest = Get-SafeExistingRepositoryPath -RepoRoot $RepoRoot -Candidate $mf
+                    if ($safeManifest -and (Select-String -LiteralPath $safeManifest -Pattern 'strategy:' -Quiet -ErrorAction SilentlyContinue)) {
                         Write-Warning "No Python 3 found; preset composition strategies will be ignored"
                         break
                     }
@@ -467,7 +564,8 @@ function Resolve-TemplateContent {
                 $strategy = 'replace'
                 $manifestFilePath = ''
                 $manifest = Join-Path $presetsDir "$presetId/preset.yml"
-                if ((Test-Path $manifest) -and $pyCmd) {
+                $safeManifest = Get-SafeExistingRepositoryPath -RepoRoot $RepoRoot -Candidate $manifest
+                if ($safeManifest -and $pyCmd) {
                     try {
                         # Use Python to parse YAML manifest for strategy and file path
                         $pyArgs = if ($pyCmd.Count -gt 1) { $pyCmd[1..($pyCmd.Count-1)] } else { @() }
@@ -490,13 +588,13 @@ try:
     print('replace\t')
 except Exception:
     print('replace\t')
-"@ $manifest $TemplateName 2>$pyStderrFile
+"@ $safeManifest $TemplateName 2>$pyStderrFile
                         if ($stratResult) {
                             $parts = $stratResult.Trim() -split "`t", 2
                             $strategy = $parts[0].ToLowerInvariant()
                             if ($parts.Count -gt 1 -and $parts[1]) { $manifestFilePath = $parts[1] }
                         }
-                        if (-not $yamlWarned -and (Test-Path $pyStderrFile) -and (Get-Content $pyStderrFile -Raw -ErrorAction SilentlyContinue) -match 'yaml_missing') {
+                        if (-not $yamlWarned -and (Test-Path -LiteralPath $pyStderrFile) -and (Get-Content -LiteralPath $pyStderrFile -Raw -ErrorAction SilentlyContinue) -match 'yaml_missing') {
                             Write-Warning "PyYAML not available; composition strategies may be ignored"
                             $yamlWarned = $true
                         }
@@ -516,11 +614,13 @@ except Exception:
                 }
                 if ($manifestFilePath) {
                     $mf = Join-Path $presetsDir "$presetId/$manifestFilePath"
-                    if (Test-Path $mf) { $candidate = $mf }
+                    $safeCandidate = Get-SafeExistingRepositoryPath -RepoRoot $RepoRoot -Candidate $mf
+                    if ($safeCandidate) { $candidate = $safeCandidate }
                 }
                 if (-not $candidate) {
                     $cf = Join-Path $presetsDir "$presetId/templates/$TemplateName.md"
-                    if (Test-Path $cf) { $candidate = $cf }
+                    $safeCandidate = Get-SafeExistingRepositoryPath -RepoRoot $RepoRoot -Candidate $cf
+                    if ($safeCandidate) { $candidate = $safeCandidate }
                 }
                 if ($candidate) {
                     $layerPaths += $candidate
@@ -529,10 +629,11 @@ except Exception:
             }
         } else {
             # Fallback: alphabetical directory order (no registry or parse failure)
-            foreach ($preset in Get-ChildItem -Path $presetsDir -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '.*' }) {
+            foreach ($preset in Get-ChildItem -LiteralPath $presetsDir -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '.*' }) {
                 $candidate = Join-Path $preset.FullName "templates/$TemplateName.md"
-                if (Test-Path $candidate) {
-                    $layerPaths += $candidate
+                $safeCandidate = Get-SafeExistingRepositoryPath -RepoRoot $RepoRoot -Candidate $candidate
+                if ($safeCandidate) {
+                    $layerPaths += $safeCandidate
                     $layerStrategies += 'replace'
                 }
             }
@@ -541,11 +642,13 @@ except Exception:
 
     # Priority 3: Extension-provided templates (always "replace")
     $extDir = Join-Path $RepoRoot '.specify/extensions'
-    if (Test-Path $extDir) {
-        foreach ($ext in Get-ChildItem -Path $extDir -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '.*' } | Sort-Object Name) {
+    $safeExtDir = Get-SafeExistingRepositoryPath -RepoRoot $RepoRoot -Candidate $extDir
+    if ($safeExtDir) {
+        foreach ($ext in Get-ChildItem -LiteralPath $safeExtDir -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '.*' } | Sort-Object Name) {
             $candidate = Join-Path $ext.FullName "templates/$TemplateName.md"
-            if (Test-Path $candidate) {
-                $layerPaths += $candidate
+            $safeCandidate = Get-SafeExistingRepositoryPath -RepoRoot $RepoRoot -Candidate $candidate
+            if ($safeCandidate) {
+                $layerPaths += $safeCandidate
                 $layerStrategies += 'replace'
             }
         }
@@ -553,8 +656,9 @@ except Exception:
 
     # Priority 4: Core templates (always "replace")
     $core = Join-Path $base "$TemplateName.md"
-    if (Test-Path $core) {
-        $layerPaths += $core
+    $safeCore = Get-SafeExistingRepositoryPath -RepoRoot $RepoRoot -Candidate $core
+    if ($safeCore) {
+        $layerPaths += $safeCore
         $layerStrategies += 'replace'
     }
 

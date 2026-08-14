@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from scripts import check_public_safety, verify_task_scope
-from scripts.validate_task_packet import validate
+from scripts.validate_task_packet import seal, validate
 from scripts.verify_task_scope import promote, snapshot, verify
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -71,6 +71,39 @@ def test_task_packet_validator_allows_public_documentation_address(tmp_path: Pat
     packet = tmp_path / "task.md"
     packet.write_text("test endpoint 203.0.113.10", encoding="utf-8")
     assert validate(packet) == []
+
+
+def test_task_packet_validator_rejects_common_snake_case_secret_names(tmp_path: Path) -> None:
+    packet = tmp_path / "task.md"
+    packet.write_text(
+        "client_secret = 'not-a-real-secret-value'\\nsession_token: another-placeholder-value\\n",
+        encoding="utf-8",
+    )
+    assert validate(packet) == ["generic secret assignment"]
+
+
+def test_task_packet_seal_requires_scope_and_preserves_exact_bytes(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    task_root = repo / ".codex" / "tasks"
+    task_root.mkdir(parents=True)
+    packet = task_root / "task.md"
+    packet.write_bytes(b"Allowed files/paths:\n- appcare/*\n\nRead-only bounded review.\n")
+    sealed = tmp_path / "run" / "task.md"
+
+    assert seal(packet, sealed, repo, task_root) == []
+    assert sealed.read_bytes() == packet.read_bytes()
+
+
+def test_task_packet_seal_rejects_missing_scope(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    task_root = repo / ".codex" / "tasks"
+    task_root.mkdir(parents=True)
+    packet = task_root / "task.md"
+    packet.write_text("Read-only task without a scope.", encoding="utf-8")
+
+    assert seal(packet, tmp_path / "run" / "task.md", repo, task_root) == [
+        "task packet must contain an Allowed files section"
+    ]
 
 
 def test_public_safety_skips_binary_artifacts(tmp_path: Path, monkeypatch: Any) -> None:

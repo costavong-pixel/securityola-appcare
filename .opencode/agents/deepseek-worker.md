@@ -52,17 +52,14 @@ permission:
   doom_loop: deny
   bash:
     "*": deny
-    "git status*": allow
-    "git diff --no-ext-diff*": allow
-    "git log --oneline*": allow
-    "git show --stat*": allow
-    "git branch --show-current*": allow
-    "ruff check appcare*": allow
-    "ruff check tests*": allow
-    "ruff format --check appcare*": allow
-    "ruff format --check tests*": allow
-    "mypy appcare*": allow
-    "mypy tests*": allow
+    "git status --short --branch": allow
+    "git diff --no-ext-diff --check": allow
+    "git log --oneline -5": allow
+    "git show --stat --oneline HEAD": allow
+    "git branch --show-current": allow
+    "ruff check appcare scripts tests": allow
+    "ruff format --check appcare scripts tests": allow
+    "mypy appcare scripts tests": allow
 ---
 
 You are the low-cost implementation worker for SecurityOla AppCare.

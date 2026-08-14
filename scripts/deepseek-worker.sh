@@ -72,21 +72,11 @@ if [[ -z "$python_cmd" ]]; then
   echo "ERROR: Python is required to validate the task packet." >&2
   exit 127
 fi
-if ! "$python_cmd" scripts/validate_task_packet.py "$task_file" >/dev/null; then
-  echo "ERROR: task packet failed the secret and private-data safety check." >&2
-  exit 5
-fi
 
 if [[ -n "$(git -C "$repo_root" status --porcelain --untracked-files=all)" ]]; then
   echo "ERROR: worker launcher requires a clean AppCare checkout before isolation." >&2
   echo "Commit or otherwise checkpoint the reviewed coordinator changes first." >&2
   exit 7
-fi
-
-prompt="$(<"$task_file")"
-if [[ -z "${prompt//[[:space:]]/}" ]]; then
-  echo "ERROR: empty task." >&2
-  exit 2
 fi
 
 run_root="$(mktemp -d "${TMPDIR:-/tmp}/securityola-appcare-worker.XXXXXX")"
@@ -99,8 +89,11 @@ cleanup() {
   worktree_cleanup_status=0
   if [[ -n "${worker_root:-}" && -d "$worker_root" ]]; then
     git -C "$repo_root" worktree remove --force "$worker_root" >/dev/null 2>&1 || {
-      worktree_cleanup_status=1
-      echo "WARNING: isolated worker worktree cleanup did not complete." >&2
+      git -C "$repo_root" worktree remove --force "$worker_root" >/dev/null 2>&1 || true
+      if [[ -d "$worker_root" ]]; then
+        worktree_cleanup_status=1
+        echo "ERROR: isolated worker worktree cleanup did not complete." >&2
+      fi
     }
   fi
   if [[ "$worktree_cleanup_status" -eq 0 && -n "${run_root:-}" && -d "$run_root" ]]; then
@@ -109,24 +102,45 @@ cleanup() {
     case "$run_root_real" in
       "$run_parent"/securityola-appcare-worker.*)
         if [[ "$run_root_real" != "/" && "$run_root_real" != "$repo_root_real" ]]; then
-          rm -rf -- "$run_root_real"
+          if ! rm -rf -- "$run_root_real" || [[ -e "$run_root_real" ]]; then
+            worktree_cleanup_status=1
+            echo "ERROR: temporary worker data cleanup did not complete." >&2
+          fi
         fi
         ;;
       *)
-        echo "WARNING: refusing to remove an unverified temporary worker path." >&2
+        worktree_cleanup_status=1
+        echo "ERROR: refusing to remove an unverified temporary worker path." >&2
         ;;
     esac
+  fi
+  if [[ "$worktree_cleanup_status" -ne 0 && "$exit_code" -eq 0 ]]; then
+    exit_code=9
   fi
   trap - EXIT
   exit "$exit_code"
 }
 trap cleanup EXIT
 
+sealed_task="$run_root/task.md"
+if ! "$python_cmd" scripts/validate_task_packet.py "$task_file" \
+  --seal-output "$sealed_task" \
+  --repo-root "$repo_root" \
+  --task-root "$task_root" >/dev/null; then
+  echo "ERROR: task packet failed the stable secret, scope, and private-data safety check." >&2
+  exit 5
+fi
+prompt="$(<"$sealed_task")"
+if [[ -z "${prompt//[[:space:]]/}" ]]; then
+  echo "ERROR: empty task." >&2
+  exit 2
+fi
+
 git -C "$repo_root" worktree add --detach "$worker_root" HEAD >/dev/null
 mkdir -p "$worker_root/.codex/tasks"
 worker_task="$worker_root/.codex/tasks/$(basename -- "$task_file")"
-cp -- "$task_file" "$worker_task"
-cp -- "$task_file" "$scope_dir/task-before.md"
+cp -- "$sealed_task" "$worker_task"
+cp -- "$sealed_task" "$scope_dir/task-before.md"
 
 scope_snapshot="$scope_dir/before.json"
 "$python_cmd" "$repo_root/scripts/verify_task_scope.py" snapshot \
@@ -156,14 +170,10 @@ if [[ "$worker_status" -ne 0 ]]; then
   exit "$worker_status"
 fi
 
-if [[ "$(git -C "$repo_root" rev-parse HEAD)" != "$coordinator_head" || -n "$(git -C "$repo_root" status --porcelain --untracked-files=all)" ]]; then
-  echo "ERROR: coordinator checkout changed while worker was running; nothing was promoted." >&2
-  exit 8
-fi
-
 "$python_cmd" "$repo_root/scripts/verify_task_scope.py" promote \
   --source-root "$worker_root" \
   --target-root "$repo_root" \
   --before "$scope_snapshot" \
   --task "$worker_task" \
-  --baseline-task "$scope_dir/task-before.md"
+  --baseline-task "$scope_dir/task-before.md" \
+  --expected-head "$coordinator_head"
