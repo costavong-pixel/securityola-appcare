@@ -209,6 +209,33 @@ def test_task_scope_promotion_preserves_file_mode(tmp_path: Path) -> None:
     )
 
 
+def test_task_scope_promotion_ignores_other_coordinator_task_packets(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    worker_file = root / "worker.txt"
+    worker_file.write_text("before", encoding="utf-8")
+    task = root / ".codex" / "tasks" / "task.md"
+    task.parent.mkdir(parents=True)
+    task.write_text("Allowed files/paths:\n- worker.txt\n", encoding="utf-8")
+
+    target = tmp_path / "target"
+    shutil.copytree(root, target)
+    (target / ".codex" / "tasks" / "other-task.md").write_text(
+        "coordinator-local packet", encoding="utf-8"
+    )
+    before_path = tmp_path / "before.json"
+    baseline_task = tmp_path / "task-before.md"
+    before_path.write_text(json.dumps(snapshot(root)), encoding="utf-8")
+    baseline_task.write_text(task.read_text(encoding="utf-8"), encoding="utf-8")
+    worker_file.write_text("after", encoding="utf-8")
+
+    assert promote(root, target, before_path, task, baseline_task) == []
+    assert (target / "worker.txt").read_text(encoding="utf-8") == "after"
+    assert (target / ".codex" / "tasks" / "other-task.md").read_text(
+        encoding="utf-8"
+    ) == "coordinator-local packet"
+
+
 def test_task_scope_promotion_rolls_back_after_apply_failure(
     tmp_path: Path, monkeypatch: Any
 ) -> None:

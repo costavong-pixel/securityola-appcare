@@ -84,6 +84,21 @@ def snapshot(root: Path) -> dict[str, object]:
     return {"schema_version": "3", "files": _inventory(root)}
 
 
+def _without_coordinator_tasks(value: dict[str, object]) -> dict[str, object]:
+    """Remove coordinator-local task packets for target/source content compares."""
+
+    files = value.get("files")
+    if not isinstance(files, dict):
+        raise ValueError("invalid scope snapshot")
+    normalized = dict(value)
+    normalized["files"] = {
+        path: entry
+        for path, entry in files.items()
+        if path != ".codex/tasks" and not path.startswith(".codex/tasks/")
+    }
+    return normalized
+
+
 def relative_files(root: Path) -> list[tuple[str, Path]]:
     """Return regular non-symlink files for compatibility with earlier callers."""
 
@@ -516,7 +531,7 @@ def _promote_unlocked(
     changed = _changed_paths(before, after)
     _validate_source_entries(source_root, changed, after_files)
     _validate_removal_targets(target_root, changed, after_files)
-    if snapshot(target_root) != before:
+    if _without_coordinator_tasks(snapshot(target_root)) != _without_coordinator_tasks(before):
         raise ValueError("coordinator content changed before worker promotion")
 
     with tempfile.TemporaryDirectory(prefix="securityola-appcare-promote-") as temporary:
@@ -525,7 +540,9 @@ def _promote_unlocked(
         states = _backup_target_state(target_root, changed, temporary_root / "backup")
         try:
             _apply_staged_changes(source_root, target_root, changed, after_files, staged)
-            if snapshot(target_root) != after:
+            if _without_coordinator_tasks(snapshot(target_root)) != _without_coordinator_tasks(
+                after
+            ):
                 raise RuntimeError("coordinator content did not match the worker result")
         except Exception:
             try:
