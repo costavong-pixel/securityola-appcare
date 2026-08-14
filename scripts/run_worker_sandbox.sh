@@ -111,9 +111,9 @@ case "$opencode_real" in
         ;;
     esac
     opencode_relative="${opencode_real#"$opencode_tool_root_real"/}"
-    sandbox_opencode="/opt/appcare-opencode-tools/$opencode_relative"
-    sandbox_path="/opt/appcare-opencode-tools/bin:$sandbox_path"
-    opencode_tool_bind=(--ro-bind "$opencode_tool_root_real" /opt/appcare-opencode-tools)
+    sandbox_opencode="/run/appcare-opencode-tools/$opencode_relative"
+    sandbox_path="/run/appcare-opencode-tools/bin:$sandbox_path"
+    opencode_tool_bind=(--ro-bind "$opencode_tool_root_real" /run/appcare-opencode-tools)
     ;;
 esac
 
@@ -144,13 +144,14 @@ for system_path in /usr /bin /lib /lib64 /opt /etc; do
   fi
 done
 sandbox+=(
-  "${opencode_tool_bind[@]}"
   --proc /proc
   --dev /dev
   --tmpfs /tmp
   --tmpfs /home
   --tmpfs /var
   --tmpfs /run
+  --dir /run/appcare-opencode-tools
+  "${opencode_tool_bind[@]}"
   --dir /home/appcare-worker
   --dir /tmp/appcare-opencode-cache
   --ro-bind "$state_root_real" /run/appcare-opencode-state

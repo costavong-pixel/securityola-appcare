@@ -117,7 +117,7 @@ REQUIRED_SANDBOX_GUARDS = (
     "APPCARE_OPENCODE_TOOL_ROOT",
     "opencode_tool_root_real",
     "/home/*/appcare-tools",
-    '"$opencode_tool_root_real" /opt/appcare-opencode-tools',
+    '"$opencode_tool_root_real" /run/appcare-opencode-tools',
     'worker_command[0]="$sandbox_opencode"',
     "timeout --signal=TERM --kill-after=10s",
     "EUID:-$(id -u)",
