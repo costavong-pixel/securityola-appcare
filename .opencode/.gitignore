@@ -1,0 +1,4 @@
+# OpenCode-managed local state is ignored; the reviewed agent policy remains tracked.
+*
+!agents/
+!agents/**

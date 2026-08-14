@@ -4,7 +4,7 @@
 
 Prepare the complete SecurityOla AppCare development environment and repository so the BETA-00 → BETA-10 loop can run with minimal owner involvement.
 
-Codex is the coordinator. OpenCode + DeepSeek V4 Flash is the bounded low-cost worker. Codex CLI is the independent final gate.
+Codex is the coordinator. OpenCode + DeepSeek V4 Flash is the bounded low-cost worker. Independent Codex final review is the final gate, through the current Codex agent/app/cloud session or GitHub Codex review. Codex CLI is optional.
 
 ## Execute this assignment end-to-end
 
@@ -19,7 +19,7 @@ Codex is the coordinator. OpenCode + DeepSeek V4 Flash is the bounded low-cost w
 Discover the current official upstream/source for each tool before installation. Prefer official/vendor sources over registries and mirrors.
 
 Required:
-- Codex CLI
+- Independent Codex final review through the current agent/app/cloud session or GitHub Codex review
 - `/saveruflo`
 - Spec Kit (`/speckit` workflow)
 - Graphify for persistent code mapping/impact review
@@ -142,15 +142,21 @@ Create a green baseline with at least:
 
 Add stronger gates as the stack is implemented.
 
-### 9. Codex CLI final gate
+### 9. Independent Codex final review
 Before closing BETA-00:
 - inspect the complete diff directly
+- verify the issue acceptance criteria
 - run the deterministic test suite
+- inspect security implications and dependency changes
+- verify secret scanning and Graphify impact
 - verify the DeepSeek worker restrictions
 - verify no secret/server/customer data is committed
 - run applicable security review
 - verify all accepted third-party skills are pinned and documented
 - verify rejected skills are recorded with reason
+- verify exact-head GitHub CI
+
+This review may run through the current Codex agent/app/cloud session or GitHub Codex review. Codex CLI may also be used when available, but its absence or lack of authentication is not a blocker.
 
 Do not accept another agent's summary as proof.
 
@@ -172,7 +178,7 @@ Then close GitHub issue #1 only when every acceptance criterion passes and conti
 
 After BETA-00:
 
-`Saveruflo preflight → Graphify impact → Spec Kit scope → Codex task packet → DeepSeek bounded work where safe → Codex review/sensitive implementation → deterministic tests → pressure/security tests → Codex CLI final review → exact-head CI → Saveruflo checkpoint → Graphify update → close current issue → next BETA issue`
+`Saveruflo preflight → Graphify impact → Spec Kit scope → Codex task packet → DeepSeek bounded work where safe → Codex review/sensitive implementation → deterministic tests → pressure/security tests → independent Codex final review → exact-head CI → Saveruflo checkpoint → Graphify update → close current issue → next BETA issue`
 
 Do not stop for ordinary bugs, dependency issues, skill defects, test failures, or implementation choices. Fix/replace/retest and continue.
 

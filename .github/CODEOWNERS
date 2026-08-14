@@ -1,0 +1,14 @@
+# Security-sensitive repository controls require owner review.
+# GitHub must have "Require review from Code Owners" enabled on the protected
+# default branch before these rules become an enforced merge gate.
+/.github/CODEOWNERS @costavong-pixel
+/.github/workflows/ @costavong-pixel
+/scripts/check_public_safety.py @costavong-pixel
+/scripts/validate_task_packet.py @costavong-pixel
+/scripts/verify_task_scope.py @costavong-pixel
+/scripts/verify_worker_policy.py @costavong-pixel
+/scripts/deepseek-worker.sh @costavong-pixel
+/requirements-dev.txt @costavong-pixel
+/requirements-dev.lock @costavong-pixel
+/SECURITY.md @costavong-pixel
+/docs/security/ @costavong-pixel

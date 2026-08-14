@@ -34,7 +34,7 @@ For the current open beta issue:
 4. Codex implements the smallest safe task.
 5. Run deterministic unit/integration/static tests.
 6. Run security and failure/pressure tests appropriate to the change.
-7. Run independent review.
+7. Run independent Codex final review through the current agent/app/cloud session or GitHub Codex review; Codex CLI is optional.
 8. Fix failures and repeat steps 4–7 until green.
 9. Require exact-head CI.
 10. Save the Saveruflo checkpoint/evidence.

@@ -1,0 +1,192 @@
+"""Verify the bounded OpenCode worker policy and launcher contract."""
+
+from __future__ import annotations
+
+import hashlib
+import sys
+from pathlib import Path
+
+EXPECTED_FRONTMATTER_SHA256 = "34913603bf3a38d281c2bf27ebba8f734ac75dd1f70533a26efff70a19baee4a"
+REQUIRED_DENIALS = (
+    "external_directory: deny",
+    "webfetch: deny",
+    "websearch: deny",
+    "task: deny",
+    "skill: deny",
+    "glob: deny",
+    "grep: deny",
+    "lsp: deny",
+    'bash:\n    "*": deny',
+)
+REQUIRED_READ_ONLY_ALLOWS = (
+    '"git status --short --branch": allow',
+    '"git diff --no-ext-diff --check": allow',
+    '"git log --oneline -5": allow',
+    '"git show --stat --oneline HEAD": allow',
+    '"git branch --show-current": allow',
+    '"ruff check appcare scripts tests": allow',
+    '"ruff format --check appcare scripts tests": allow',
+    '"mypy appcare scripts tests": allow',
+)
+REQUIRED_PATH_BOUNDARIES = (
+    'read:\n    "*": deny',
+    'edit:\n    "*": deny',
+    '"appcare/*": allow',
+    '"tests/*": allow',
+    '"docs/security/*": deny',
+    '"scripts/check_build_lock.py": allow',
+)
+FORBIDDEN_POLICY_MARKERS = (
+    "read: allow",
+    "edit: allow",
+    "glob: allow",
+    "grep: allow",
+    "lsp: allow",
+    '"rg *": allow',
+    '"grep *": allow',
+    '"find *": allow',
+    '"npm run *": allow',
+    '"pnpm run *": allow',
+    '"bun run *": allow',
+    '"uv run *": allow',
+    '"pytest -q*": allow',
+    '"python -m pytest -q*": allow',
+    '"git status*": allow',
+    '"git diff --no-ext-diff*": allow',
+    '"git log --oneline*": allow',
+    '"git show --stat*": allow',
+    '"git branch --show-current*": allow',
+    '"ruff check appcare*": allow',
+    '"ruff check tests*": allow',
+    '"ruff format --check appcare*": allow',
+    '"ruff format --check tests*": allow',
+    '"mypy appcare*": allow',
+    '"mypy tests*": allow',
+)
+FORBIDDEN_LAUNCHER_OPERATIONS = (
+    "ssh ",
+    "scp ",
+    "rsync ",
+    "git commit",
+    "git push",
+    "git merge",
+    "docker ",
+    "kubectl ",
+    "OPENCODE_PIN",
+    "OPENCODE_WORKER_MODEL",
+)
+REQUIRED_LAUNCHER_GUARDS = (
+    'repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"',
+    'git -C "$repo_root" rev-parse --is-inside-work-tree',
+    'cd -- "$repo_root"',
+    'coordinator_branch="$(git -C "$repo_root" branch --show-current)"',
+    'git -C "$repo_root" status --porcelain --untracked-files=all',
+    'coordinator_head="$(git -C "$repo_root" rev-parse HEAD)"',
+    '--expected-branch "$coordinator_branch"',
+    '--expected-head "$coordinator_head"',
+    'task_root="$repo_root/.codex/tasks"',
+    'task_file="$(realpath -e -- "$1"',
+    'case "$task_file" in',
+    '"$task_root"/*)',
+    '"$python_cmd" scripts/verify_worker_policy.py',
+    "scripts.generate_worker_policy",
+    "scripts/run_worker_sandbox.sh",
+    "scripts.scan_worker_changes",
+    "--agent deepseek-worker-task",
+    "scripts/validate_task_packet.py",
+    "scripts/verify_task_scope.py",
+    "mktemp -d",
+    'git -C "$repo_root" worktree add --detach "$worker_root" HEAD',
+    "--baseline-task",
+    "promote",
+    "worktree remove --force",
+    'rm -rf -- "$run_root_real"',
+)
+REQUIRED_SANDBOX_GUARDS = (
+    "--unshare-user",
+    "--unshare-pid",
+    "--unshare-uts",
+    "--unshare-ipc",
+    "--cap-drop ALL",
+    "--clearenv",
+    "--tmpfs /home",
+    "--tmpfs /var",
+    "--tmpfs /run",
+    'auth_file="$state_root_real/data/opencode/auth.json"',
+    '"$auth_file" /tmp/appcare-opencode-data/opencode/auth.json',
+    '"$worker_root_real" /workspace',
+    "APPCARE_OPENCODE_TOOL_ROOT",
+    "opencode_tool_root_real",
+    "/home/*/appcare-tools",
+    '"$opencode_tool_root_real" /run/appcare-opencode-tools',
+    'worker_command[0]="$sandbox_opencode"',
+    "timeout --signal=TERM --kill-after=10s",
+    "EUID:-$(id -u)",
+    "worker root is not a launcher-created disposable AppCare worktree",
+)
+
+
+def frontmatter(text: str) -> str:
+    if not text.startswith("---\n"):
+        return ""
+    end = text.find("\n---", 3)
+    if end < 0:
+        return ""
+    return text[:end].strip() + "\n"
+
+
+def verify(root: Path) -> list[str]:
+    agent_path = root / ".opencode" / "agents" / "deepseek-worker.md"
+    launcher_path = root / "scripts" / "deepseek-worker.sh"
+    agent = agent_path.read_text(encoding="utf-8")
+    launcher = launcher_path.read_text(encoding="utf-8")
+    sandbox = (root / "scripts" / "run_worker_sandbox.sh").read_text(encoding="utf-8")
+    findings: list[str] = []
+    actual_hash = hashlib.sha256(frontmatter(agent).encode("utf-8")).hexdigest()
+    if actual_hash != EXPECTED_FRONTMATTER_SHA256:
+        findings.append("worker frontmatter does not match the reviewed immutable policy")
+    for marker in REQUIRED_DENIALS:
+        if marker not in agent:
+            findings.append(f"missing worker denial: {marker}")
+    for marker in REQUIRED_READ_ONLY_ALLOWS:
+        if marker not in agent:
+            findings.append(f"missing bounded read-only allowance: {marker}")
+    for marker in REQUIRED_PATH_BOUNDARIES:
+        if marker not in agent:
+            findings.append(f"missing worker path boundary: {marker}")
+    for marker in FORBIDDEN_POLICY_MARKERS:
+        if marker in agent:
+            findings.append(f"overbroad worker permission: {marker}")
+    for marker in FORBIDDEN_LAUNCHER_OPERATIONS:
+        if marker in launcher:
+            findings.append(f"forbidden launcher operation: {marker.strip()}")
+    for marker in REQUIRED_LAUNCHER_GUARDS:
+        if marker not in launcher:
+            findings.append(f"missing task-path guard: {marker}")
+    for marker in REQUIRED_SANDBOX_GUARDS:
+        if marker not in sandbox:
+            findings.append(f"missing OS sandbox guard: {marker}")
+    if 'PINNED_OPENCODE_VERSION="1.18.16"' not in launcher:
+        findings.append("launcher pin is not 1.18.16")
+    if 'MODEL="opencode/deepseek-v4-flash-free"' not in launcher:
+        findings.append(
+            "launcher model is not the reviewed OpenCode DeepSeek V4 Flash catalog entry"
+        )
+    if 'AGENT="deepseek-worker"' not in launcher:
+        findings.append("launcher does not select the bounded deepseek-worker agent")
+    return findings
+
+
+def main() -> int:
+    root = Path(__file__).resolve().parents[1]
+    findings = verify(root)
+    if findings:
+        print("Worker-policy verification failed:")
+        print("\n".join(findings))
+        return 1
+    print("Worker-policy verification passed: bounded deny-by-default contract is present")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

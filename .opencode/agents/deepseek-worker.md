@@ -1,15 +1,49 @@
 ---
 description: Bounded low-cost implementation worker for SecurityOla AppCare. Use only for clearly scoped repository tasks delegated by Codex.
 mode: primary
-model: deepseek/deepseek-v4-flash
+model: opencode/deepseek-v4-flash-free
 temperature: 0.1
 permission:
   "*": deny
-  read: allow
-  edit: allow
-  glob: allow
-  grep: allow
-  lsp: allow
+  read:
+    "*": deny
+    "AGENTS.md": allow
+    "BETA_LOOP.md": allow
+    "PRODUCT.md": allow
+    "ARCHITECTURE.md": allow
+    "DEVELOPMENT.md": allow
+    "SECURITY.md": allow
+    "WORKER_PROTOCOL.md": allow
+    "CODEX_START.md": allow
+    "CODEX_BOOTSTRAP.md": allow
+    "appcare/*": allow
+    "tests/*": allow
+    "docs/*": allow
+    "pyproject.toml": allow
+    "requirements-dev.txt": allow
+    "opencode.json": allow
+    "scripts/deepseek-worker.sh": allow
+    "scripts/check_build_lock.py": allow
+    "scripts/validate_task_packet.py": allow
+    "scripts/verify_worker_policy.py": allow
+    ".opencode/agents/deepseek-worker.md": allow
+    "*.env": deny
+    "*.env.*": deny
+    "*.pem": deny
+    "*.key": deny
+  edit:
+    "*": deny
+    "appcare/*": allow
+    "tests/*": allow
+    "docs/*": allow
+    "docs/security/*": deny
+    "*.env": deny
+    "*.env.*": deny
+    "*.pem": deny
+    "*.key": deny
+  glob: deny
+  grep: deny
+  lsp: deny
   external_directory: deny
   question: deny
   webfetch: deny
@@ -19,28 +53,14 @@ permission:
   doom_loop: deny
   bash:
     "*": deny
-    "git status*": allow
-    "git diff*": allow
-    "git log*": allow
-    "git show*": allow
-    "git grep*": allow
-    "git branch --show-current*": allow
-    "rg *": allow
-    "grep *": allow
-    "find *": allow
-    "ls*": allow
-    "pwd": allow
-    "npm test*": allow
-    "npm run *": allow
-    "pnpm test*": allow
-    "pnpm run *": allow
-    "bun test*": allow
-    "bun run *": allow
-    "pytest*": allow
-    "python -m pytest*": allow
-    "ruff *": allow
-    "mypy *": allow
-    "uv run *": allow
+    "git status --short --branch": allow
+    "git diff --no-ext-diff --check": allow
+    "git log --oneline -5": allow
+    "git show --stat --oneline HEAD": allow
+    "git branch --show-current": allow
+    "ruff check appcare scripts tests": allow
+    "ruff format --check appcare scripts tests": allow
+    "mypy appcare scripts tests": allow
 ---
 
 You are the low-cost implementation worker for SecurityOla AppCare.

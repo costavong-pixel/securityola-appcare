@@ -36,7 +36,7 @@ Development, staging, and production must also be isolated from each other. Deve
 
 ## Cost-aware worker bootstrap
 
-Codex is the coordinator. OpenCode + DeepSeek V4 Flash is the bounded low-cost implementation worker. Codex CLI is the final review gate.
+Codex is the coordinator. OpenCode + DeepSeek V4 Flash is the bounded low-cost implementation worker. Independent Codex final review is the final review gate; it may run through the current Codex agent/app/cloud session or GitHub Codex review. Codex CLI is optional.
 
 On the AppCare development environment:
 
@@ -44,7 +44,7 @@ On the AppCare development environment:
 2. The audited bootstrap pin is **OpenCode 1.18.16**. `scripts/deepseek-worker.sh` refuses a different version until Codex intentionally reviews and updates the pin.
 3. If OpenCode is missing, install the official `anomalyco/opencode` release matching the pin; verify the installed version before continuing.
 4. Configure the DeepSeek credential through OpenCode `/connect` on that machine. Credentials remain in OpenCode's user-local auth store and must never be committed.
-5. Worker model is **DeepSeek V4 Flash** (`deepseek-v4-flash`) through the project agent `.opencode/agents/deepseek-worker.md`.
+5. Worker model is **DeepSeek V4 Flash** (`opencode/deepseek-v4-flash-free`) through the project agent `.opencode/agents/deepseek-worker.md`; this exact provider/model ID must be rechecked against the installed catalog before use.
 6. Smoke-test the worker on a harmless read/edit/test task before delegating implementation.
 
 Delegated tasks use:
@@ -57,7 +57,7 @@ Do not use the DeepSeek worker for architecture, security-policy decisions, prod
 
 Maximum three DeepSeek repair passes on the same defect; then Codex takes over.
 
-Before an issue is closed or a change is merged/released, Codex CLI independently reviews the complete diff and deterministic test evidence. Security-sensitive work also runs the applicable Codex Security scan/validation flow.
+Before an issue is closed or a change is merged/released, Codex independently reviews the complete diff and deterministic test evidence through the current Codex agent/app/cloud session or GitHub Codex review. Codex CLI may be used if available, but its absence or lack of authentication is not a blocker. The review must cover issue acceptance criteria, tests, security implications, dependency changes, secret scanning, Graphify impact, and exact-head CI. Security-sensitive work also runs the applicable Codex Security scan/validation flow.
 
 ## Start task
 
@@ -65,7 +65,7 @@ Start with GitHub issue #1 `BETA-00`.
 
 For each beta issue, run:
 
-`/saveruflo preflight → /graphify . --update/query → /speckit task/spec as needed → Codex scopes → DeepSeek/OpenCode handles bounded cheap work → Codex reviews/handles sensitive work → deterministic tests → security/failure pressure tests → independent review → Codex CLI final gate → exact-head CI → Saveruflo checkpoint → Graphify update/impact review → close issue → next issue`
+`/saveruflo preflight → /graphify . --update/query → /speckit task/spec as needed → Codex scopes → DeepSeek/OpenCode handles bounded cheap work → Codex reviews/handles sensitive work → deterministic tests → security/failure pressure tests → independent Codex final review → exact-head CI → Saveruflo checkpoint → Graphify update/impact review → close issue → next issue`
 
 If anything fails, remain on that issue, diagnose, patch, retest, and continue. Do not skip ahead.
 

@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools==84.0.0", "wheel==0.48.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "securityola-appcare"
+version = "0.0.0"
+description = "SecurityOla AppCare engineering foundation"
+requires-python = ">=3.12,<3.15"
+dependencies = []
+
+[tool.setuptools.packages.find]
+include = ["appcare*"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+exclude = [".agents", ".specify", "graphify-out"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "S", "UP"]
+ignore = ["S101"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["appcare", "scripts", "tests"]
+exclude = "(^|/)(.agents|.specify|graphify-out)(/|$)"
