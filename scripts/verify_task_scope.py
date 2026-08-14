@@ -49,6 +49,15 @@ def _is_ignored(relative: Path) -> bool:
     return len(parts) > codex_index + 1 and parts[codex_index + 1] in IGNORED_CODEX_DIRS
 
 
+def _canonical_file_bytes(path: Path) -> bytes:
+    """Hash text independently of Git checkout line-ending representation."""
+
+    data = path.read_bytes()
+    if b"\x00" in data:
+        return data
+    return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
 def _inventory(root: Path) -> dict[str, dict[str, object]]:
     root = root.resolve()
     entries: dict[str, dict[str, object]] = {}
@@ -67,7 +76,7 @@ def _inventory(root: Path) -> dict[str, dict[str, object]]:
                 file_stat = path.stat()
                 entries[relative] = {
                     "kind": "file",
-                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    "sha256": hashlib.sha256(_canonical_file_bytes(path)).hexdigest(),
                     "mode": stat.S_IMODE(file_stat.st_mode),
                 }
             elif path.is_dir():
