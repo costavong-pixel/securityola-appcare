@@ -109,6 +109,22 @@ def _without_coordinator_tasks(value: dict[str, object]) -> dict[str, object]:
     return normalized
 
 
+def _content_without_coordinator_tasks(value: dict[str, object]) -> dict[str, object]:
+    """Compare coordinator content without treating local mode drift as content."""
+
+    normalized = _without_coordinator_tasks(value)
+    files = normalized["files"]
+    if not isinstance(files, dict):
+        raise ValueError("invalid scope snapshot")
+    normalized["files"] = {
+        path: {key: item for key, item in entry.items() if key != "mode"}
+        if isinstance(entry, dict)
+        else entry
+        for path, entry in files.items()
+    }
+    return normalized
+
+
 def relative_files(root: Path) -> list[tuple[str, Path]]:
     """Return regular non-symlink files for compatibility with earlier callers."""
 
@@ -556,7 +572,9 @@ def _promote_unlocked(
     changed = _changed_paths(before, after)
     _validate_source_entries(source_root, changed, after_files)
     _validate_removal_targets(target_root, changed, after_files)
-    if _without_coordinator_tasks(snapshot(target_root)) != _without_coordinator_tasks(before):
+    if _content_without_coordinator_tasks(
+        snapshot(target_root)
+    ) != _content_without_coordinator_tasks(before):
         raise ValueError("coordinator content changed before worker promotion")
 
     with tempfile.TemporaryDirectory(prefix="securityola-appcare-promote-") as temporary:
