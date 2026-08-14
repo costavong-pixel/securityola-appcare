@@ -159,6 +159,72 @@ def test_build_lock_rejects_stale_declared_build_requirements(tmp_path: Path) ->
     assert any("input digest is stale" in error for error in validate_build_lock(repo))
 
 
+def test_build_lock_rejects_fake_stale_input_metadata(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text(
+        '[build-system]\nrequires = ["setuptools==84.0.0"]\n', encoding="utf-8"
+    )
+    (repo / "requirements-dev.txt").write_text("setuptools==84.0.0\n", encoding="utf-8")
+    (repo / "requirements-dev.lock").write_text(
+        "# appcare-lock-input-sha256: "
+        + "0" * 64
+        + "\nsetuptools==84.0.0 \\\n    --hash=sha256:"
+        + "1" * 64
+        + "\n",
+        encoding="utf-8",
+    )
+    errors = validate_build_lock(repo)
+    assert any("input digest is stale" in error for error in errors)
+
+
+def test_build_lock_rejects_missing_locked_build_requirement(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text(
+        '[build-system]\nrequires = ["setuptools==84.0.0"]\n', encoding="utf-8"
+    )
+    (repo / "requirements-dev.txt").write_text(
+        "setuptools==84.0.0\nwheel==0.48.0\n", encoding="utf-8"
+    )
+    from scripts.check_build_lock import input_digest
+
+    (repo / "requirements-dev.lock").write_text(
+        "# appcare-lock-input-sha256: "
+        + input_digest(repo)
+        + "\nsetuptools==84.0.0 \\\n    --hash=sha256:"
+        + "1" * 64
+        + "\n",
+        encoding="utf-8",
+    )
+    errors = validate_build_lock(repo)
+    assert any("lock is missing wheel==0.48.0" in error for error in errors)
+
+
+def test_build_lock_rejects_mismatched_locked_build_requirement(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text(
+        '[build-system]\nrequires = ["setuptools==84.0.0"]\n', encoding="utf-8"
+    )
+    (repo / "requirements-dev.txt").write_text("setuptools==84.0.0\n", encoding="utf-8")
+    from scripts.check_build_lock import input_digest
+
+    (repo / "requirements-dev.lock").write_text(
+        "# appcare-lock-input-sha256: "
+        + input_digest(repo)
+        + "\nsetuptools==84.0.1 \\\n    --hash=sha256:"
+        + "1" * 64
+        + "\n",
+        encoding="utf-8",
+    )
+    errors = validate_build_lock(repo)
+    assert any(
+        "lock version drift for setuptools: expected 84.0.0, found 84.0.1" in error
+        for error in errors
+    )
+
+
 def test_public_safety_skips_binary_artifacts(tmp_path: Path, monkeypatch: Any) -> None:
     asset = tmp_path / ".codex" / "tasks" / "fixture.bin"
     asset.parent.mkdir(parents=True)
