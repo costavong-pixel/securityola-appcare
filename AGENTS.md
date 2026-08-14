@@ -67,8 +67,8 @@ For a delegated task, Codex creates a minimal packet under `.codex/tasks/` and r
 
 Maximum three DeepSeek repair passes for the same defect. After three failed passes, Codex takes over root-cause/fix work.
 
-### Codex CLI final gate
-Before closing a beta issue or merging/releasing its changes, use Codex CLI for an independent final review of the complete diff and deterministic test evidence. Security-sensitive changes also require the applicable Codex Security review/validation workflow.
+### Independent Codex final review
+Before closing a beta issue or merging/releasing its changes, Codex must independently review the complete diff and deterministic test evidence through the current Codex agent/app/cloud session or GitHub Codex review. Codex CLI may also be used when available, but its absence or lack of authentication is not a blocker. Security-sensitive changes also require the applicable Codex Security review/validation workflow.
 
 ## Closed-loop beta execution
 
@@ -76,7 +76,7 @@ Primary work queue: GitHub issue **#12 `[BETA-MASTER]`** and its ordered BETA-00
 
 For every issue, repeat this loop until its acceptance criteria pass:
 
-`/saveruflo preflight → /graphify . --update/query → /speckit task/spec as needed → Codex scopes work → OpenCode/DeepSeek executes bounded cheap tasks where safe → Codex implements sensitive/remaining work → deterministic tests → security/failure pressure tests → independent Codex review → Codex CLI final gate → exact-head CI → Saveruflo checkpoint → Graphify update/impact review → close issue → next open beta issue`
+`/saveruflo preflight → /graphify . --update/query → /speckit task/spec as needed → Codex scopes work → OpenCode/DeepSeek executes bounded cheap tasks where safe → Codex implements sensitive/remaining work → deterministic tests → security/failure pressure tests → independent Codex final review → exact-head CI → Saveruflo checkpoint → Graphify update/impact review → close issue → next open beta issue`
 
 If validation fails, remain on the same issue, diagnose, patch, and retest. Do not skip ahead.
 

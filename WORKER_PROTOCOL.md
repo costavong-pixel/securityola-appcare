@@ -26,13 +26,15 @@ Used for cheap, bounded work such as:
 
 DeepSeek does not make architecture, security, product, deployment, or release decisions.
 
-### Codex CLI final gate
-Before an issue is closed or a change is merged/released, Codex CLI independently reviews the complete diff and test evidence against:
+### Independent Codex final review
+Before an issue is closed or a change is merged/released, Codex independently reviews the complete diff and test evidence through the current Codex agent/app/cloud session or GitHub Codex review. Codex CLI may also be used when available, but its absence or lack of authentication is not a blocker. The review covers:
 - the GitHub issue acceptance criteria
 - `AGENTS.md`
 - `SECURITY.md`
 - `ARCHITECTURE.md`
 - `BETA_LOOP.md`
+- test evidence and exact-head CI
+- security implications, dependency changes, secret scanning, and Graphify impact
 
 Security-sensitive changes also receive the applicable Codex Security scan/validation workflow.
 
@@ -67,7 +69,7 @@ Security-sensitive changes also receive the applicable Codex Security scan/valid
 11. If wrong: Codex narrows/corrects the task and sends another bounded worker pass.
 12. Maximum three DeepSeek repair passes on the same defect. After that Codex takes over the fix/root-cause analysis.
 13. Codex runs the full deterministic gate and security/failure tests.
-14. Codex CLI performs the final independent review.
+14. Codex performs the independent final review through the current agent/app/cloud session or GitHub Codex review; CLI is optional.
 15. Only after all gates pass may Codex commit/push/close the issue according to the repository workflow.
 
 ## Worker task packet
