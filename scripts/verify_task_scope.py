@@ -13,6 +13,7 @@ import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
+from typing import Any, cast
 
 IGNORED_LOCAL_DIRS = {
     ".git",
@@ -268,20 +269,22 @@ def _coordinator_lock(target_root: Path) -> Iterator[None]:
         if os.name == "nt":
             import msvcrt
 
-            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            msvcrt_api = cast(Any, msvcrt)
+            msvcrt_api.locking(handle.fileno(), msvcrt_api.LK_LOCK, 1)
             try:
                 yield
             finally:
                 handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                msvcrt_api.locking(handle.fileno(), msvcrt_api.LK_UNLCK, 1)
         else:
             import fcntl
 
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)  # type: ignore[attr-defined]
+            fcntl_api = cast(Any, fcntl)
+            fcntl_api.flock(handle.fileno(), fcntl_api.LOCK_EX)
             try:
                 yield
             finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
+                fcntl_api.flock(handle.fileno(), fcntl_api.LOCK_UN)
 
 
 def _coordinator_state(target_root: Path) -> tuple[str, str, str]:
