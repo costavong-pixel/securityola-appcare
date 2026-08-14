@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from scripts import check_public_safety, verify_task_scope
+from scripts.check_build_lock import validate as validate_build_lock
 from scripts.validate_task_packet import seal, validate
 from scripts.verify_task_scope import promote, snapshot, verify
 
@@ -104,6 +105,58 @@ def test_task_packet_seal_rejects_missing_scope(tmp_path: Path) -> None:
     assert seal(packet, tmp_path / "run" / "task.md", repo, task_root) == [
         "task packet must contain an Allowed files section"
     ]
+
+
+def test_build_lock_accepts_fresh_hashed_inputs(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text(
+        '[build-system]\nrequires = ["setuptools==84.0.0", "wheel==0.48.0"]\n',
+        encoding="utf-8",
+    )
+    (repo / "requirements-dev.txt").write_text(
+        "setuptools==84.0.0\nwheel==0.48.0\n", encoding="utf-8"
+    )
+    (repo / "requirements-dev.lock").write_text(
+        "# appcare-lock-input-sha256: "
+        + "0" * 64
+        + "\nsetuptools==84.0.0 \\\n    --hash=sha256:"
+        + "1" * 64
+        + "\nwheel==0.48.0 \\\n    --hash=sha256:"
+        + "2" * 64
+        + "\n",
+        encoding="utf-8",
+    )
+    from scripts.check_build_lock import input_digest
+
+    lock = (repo / "requirements-dev.lock").read_text(encoding="utf-8")
+    (repo / "requirements-dev.lock").write_text(
+        lock.replace("0" * 64, input_digest(repo)), encoding="utf-8"
+    )
+    assert validate_build_lock(repo)[0].startswith("build lock is fresh:")
+
+
+def test_build_lock_rejects_stale_declared_build_requirements(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text(
+        '[build-system]\nrequires = ["setuptools==84.0.0"]\n', encoding="utf-8"
+    )
+    (repo / "requirements-dev.txt").write_text("setuptools==84.0.0\n", encoding="utf-8")
+    from scripts.check_build_lock import input_digest
+
+    (repo / "requirements-dev.lock").write_text(
+        "# appcare-lock-input-sha256: "
+        + input_digest(repo)
+        + "\nsetuptools==84.0.0 \\\n    --hash=sha256:"
+        + "1" * 64
+        + "\n",
+        encoding="utf-8",
+    )
+    (repo / "pyproject.toml").write_text(
+        '[build-system]\nrequires = ["setuptools==84.0.1"]\n', encoding="utf-8"
+    )
+    assert any("input digest is stale" in error for error in validate_build_lock(repo))
 
 
 def test_public_safety_skips_binary_artifacts(tmp_path: Path, monkeypatch: Any) -> None:
