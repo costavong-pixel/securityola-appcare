@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 
@@ -43,6 +44,18 @@ def create_app(
     @app.exception_handler(IntegrityError)
     async def persistence_constraint_error(_request: Request, _exc: IntegrityError) -> JSONResponse:
         return JSONResponse(status_code=409, content={"detail": "persistence constraint failed"})
+
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_error(
+        _request: Request, _exc: RequestValidationError
+    ) -> JSONResponse:
+        # FastAPI's default validation payload includes submitted ``input`` values.
+        # BETA-01 accepts bearer material only at the auth boundary, so never echo
+        # arbitrary request data back to a caller.
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={"detail": "invalid input"},
+        )
 
     return app
 

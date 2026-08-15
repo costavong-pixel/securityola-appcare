@@ -39,6 +39,12 @@ python scripts/check_build_lock.py
 pip-audit --strict --requirement requirements-dev.lock
 ```
 
+The focused BETA-01 acceptance suite can be rerun with:
+
+```powershell
+pytest -q tests/contract tests/integration tests/unit
+```
+
 ## Tenant-isolation scenario
 
 1. Create two fake local tenants and one fake user in each through the test fixture.

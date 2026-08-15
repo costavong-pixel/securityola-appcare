@@ -41,18 +41,18 @@
 
 ### Tests for User Story 1
 
-- [ ] T010 [P] [US1] Add authentication and bearer-token contract tests in `tests/contract/test_auth_api.py` covering valid, invalid, expired, and disabled-user cases without logging token values.
-- [ ] T011 [P] [US1] Add two-tenant cross-tenant negative tests in `tests/integration/test_tenant_isolation.py` for applications, assets, findings, and user-owned records.
-- [ ] T012 [P] [US1] Add input/error and secret-redaction tests in `tests/unit/test_tenant_validation.py` for foreign tenant IDs, malformed opaque IDs, disabled tenants, and secret-like metadata.
+- [x] T010 [P] [US1] Add authentication and bearer-token contract tests in `tests/contract/test_auth_api.py` covering valid, invalid, expired, and disabled-user cases without logging token values.
+- [x] T011 [P] [US1] Add two-tenant cross-tenant negative tests in `tests/integration/test_tenant_isolation.py` for applications, assets, findings, and user-owned records.
+- [x] T012 [P] [US1] Add input/error and secret-redaction tests in `tests/unit/test_tenant_validation.py` for foreign tenant IDs, malformed opaque IDs, disabled tenants, and secret-like metadata.
 
 ### Implementation for User Story 1
 
-- [ ] T013 [P] [US1] Implement Tenant and User models, membership/status constraints, and safe identity serialization in `appcare/models/identity.py`.
-- [ ] T014 [P] [US1] Implement Application, Asset, and Finding models with tenant-matching foreign keys and validation in `appcare/models/resources.py`.
-- [ ] T015 [US1] Implement password/token verification and authenticated tenant context in `appcare/auth/service.py` and `appcare/auth/dependencies.py`.
-- [ ] T016 [US1] Implement tenant-filtered repository helpers and ownership checks in `appcare/repositories/tenant_scope.py`.
-- [ ] T017 [US1] Implement authentication and tenant-owned resource routes in `appcare/routes/auth.py` and `appcare/routes/resources.py` using the authenticated tenant context, never a client-supplied tenant selector.
-- [ ] T018 [US1] Run the User Story 1 independent test suite and fix all cross-tenant leakage, existence-oracle, and secret-output failures before proceeding.
+- [x] T013 [P] [US1] Implement Tenant and User models, membership/status constraints, and safe identity serialization in `appcare/models/identity.py`.
+- [x] T014 [P] [US1] Implement Application, Asset, and Finding models with tenant-matching foreign keys and validation in `appcare/models/resources.py`.
+- [x] T015 [US1] Implement password/token verification and authenticated tenant context in `appcare/auth/service.py` and `appcare/auth/dependencies.py`.
+- [x] T016 [US1] Implement tenant-filtered repository helpers and ownership checks in `appcare/repositories/tenant_scope.py`.
+- [x] T017 [US1] Implement authentication and tenant-owned resource routes in `appcare/routes/auth.py` and `appcare/routes/resources.py` using the authenticated tenant context, never a client-supplied tenant selector.
+- [x] T018 [US1] Run the User Story 1 independent test suite and fix all cross-tenant leakage, existence-oracle, and secret-output failures before proceeding.
 
 **Checkpoint**: User Story 1 is independently usable and tenant isolation is proven by negative tests.
 
@@ -66,18 +66,18 @@
 
 ### Tests for User Story 2
 
-- [ ] T019 [P] [US2] Add job state, retry, cost, and invalid-transition tests in `tests/integration/test_jobs.py`.
-- [ ] T020 [P] [US2] Add append-only audit, hash-chain, sanitization, and direct mutation failure tests in `tests/integration/test_audit_immutability.py`.
-- [ ] T021 [P] [US2] Add stop/restart persistence tests in `tests/integration/test_restart_durability.py` using the same isolated database URL across application instances.
+- [x] T019 [P] [US2] Add job state, retry, cost, and invalid-transition tests in `tests/integration/test_jobs.py`.
+- [x] T020 [P] [US2] Add append-only audit, hash-chain, sanitization, and direct mutation failure tests in `tests/integration/test_audit_immutability.py`.
+- [x] T021 [P] [US2] Add stop/restart persistence tests in `tests/integration/test_restart_durability.py` using the same isolated database URL across application instances.
 
 ### Implementation for User Story 2
 
-- [ ] T022 [P] [US2] Implement Connector, Job, Backup, Approval, and Deployment models with validated statuses, cost/retry fields, tenant ownership, and no executable provider fields in `appcare/models/operations.py`.
-- [ ] T023 [P] [US2] Implement the append-only Audit Event model, metadata sanitizer, previous-event hash lookup, and event hash calculation in `appcare/models/audit.py` and `appcare/services/audit.py`.
-- [ ] T024 [US2] Implement database and ORM mutation guards for audit events in `appcare/db.py`, `appcare/models/audit.py`, and the isolated dialect tests in `tests/integration/test_audit_immutability.py`.
-- [ ] T025 [US2] Implement durable job creation/status service and tenant-scoped job routes in `appcare/services/control_plane.py` and `appcare/routes/jobs.py`.
-- [ ] T026 [US2] Implement bounded tenant-scoped audit listing and append operations with no audit update/delete route in `appcare/routes/audit.py`.
-- [ ] T027 [US2] Run the User Story 2 restart, state-transition, hash-chain, and mutation-failure tests and correct any durability or immutability regression.
+- [x] T022 [P] [US2] Implement Connector, Job, Backup, Approval, and Deployment models with validated statuses, cost/retry fields, tenant ownership, and no executable provider fields in `appcare/models/operations.py`.
+- [x] T023 [P] [US2] Implement the append-only Audit Event model, metadata sanitizer, previous-event hash lookup, and event hash calculation in `appcare/models/audit.py` and `appcare/services/audit.py`.
+- [x] T024 [US2] Implement database and ORM mutation guards for audit events in `appcare/db.py`, `appcare/models/audit.py`, and the isolated dialect tests in `tests/integration/test_audit_immutability.py`.
+- [x] T025 [US2] Implement durable job creation/status service and tenant-scoped job routes in `appcare/services/control_plane.py` and `appcare/routes/jobs.py`.
+- [x] T026 [US2] Implement bounded tenant-scoped audit listing and append operations with no audit update/delete route in `appcare/routes/audit.py`.
+- [x] T027 [US2] Run the User Story 2 restart, state-transition, hash-chain, and mutation-failure tests and correct any durability or immutability regression.
 
 **Checkpoint**: User Stories 1 and 2 are independently testable; committed state survives restart and audit history cannot be rewritten through supported or direct test paths.
 
@@ -91,16 +91,16 @@
 
 ### Tests for User Story 3
 
-- [ ] T028 [P] [US3] Add liveness/readiness healthy, unavailable-dependency, timeout, and secret-redaction tests in `tests/integration/test_health_readiness.py`.
-- [ ] T029 [P] [US3] Add no-production-write route/service and public-safety tests in `tests/integration/test_no_production_writes.py`.
-- [ ] T030 [P] [US3] Add descriptive connector/backup/approval/deployment contract tests in `tests/contract/test_operations_api.py`.
+- [x] T028 [P] [US3] Add liveness/readiness healthy, unavailable-dependency, timeout, and secret-redaction tests in `tests/integration/test_health_readiness.py`.
+- [x] T029 [P] [US3] Add no-production-write route/service and public-safety tests in `tests/integration/test_no_production_writes.py`.
+- [x] T030 [P] [US3] Add descriptive connector/backup/approval/deployment contract tests in `tests/contract/test_operations_api.py`.
 
 ### Implementation for User Story 3
 
-- [ ] T031 [US3] Implement unauthenticated liveness and isolated-dependency readiness checks in `appcare/routes/health.py`.
-- [ ] T032 [US3] Implement descriptive connector, backup, approval, and deployment routes with explicit rejection of execute/deploy/sync/provider-write operations in `appcare/routes/resources.py` and `appcare/services/control_plane.py`.
-- [ ] T033 [US3] Register all routes, response schemas, bounded pagination, and safe error handling in `appcare/api.py` and `appcare/routes/__init__.py`.
-- [ ] T034 [US3] Run the User Story 3 independent test suite and verify no production URL, credential, SDK, deployment socket, or write capability enters the BETA-01 tree.
+- [x] T031 [US3] Implement unauthenticated liveness and isolated-dependency readiness checks in `appcare/routes/health.py`.
+- [x] T032 [US3] Implement descriptive connector, backup, approval, and deployment routes with explicit rejection of execute/deploy/sync/provider-write operations in `appcare/routes/resources.py` and `appcare/services/control_plane.py`.
+- [x] T033 [US3] Register all routes, response schemas, bounded pagination, and safe error handling in `appcare/api.py` and `appcare/routes/__init__.py`.
+- [x] T034 [US3] Run the User Story 3 independent test suite and verify no production URL, credential, SDK, deployment socket, or write capability enters the BETA-01 tree.
 
 **Checkpoint**: All BETA-01 user stories are independently testable without production access.
 
@@ -110,8 +110,8 @@
 
 **Purpose**: Close the feature with deterministic evidence and the AppCare beta loop.
 
-- [ ] T035 [P] Update `README.md`, `DEVELOPMENT.md`, `SECURITY.md` references, and `specs/001-control-plane-audit/quickstart.md` with the final safe local setup and test commands.
-- [ ] T036 [P] Run `python scripts/check_public_safety.py`, `python scripts/scan_worker_changes.py` fixtures, and secret-pattern/failure tests without printing any secret values.
+- [x] T035 [P] Update `README.md`, `DEVELOPMENT.md`, `SECURITY.md` references, and `specs/001-control-plane-audit/quickstart.md` with the final safe local setup and test commands.
+- [x] T036 [P] Run `python scripts/check_public_safety.py`, `python scripts/scan_worker_changes.py` fixtures, and secret-pattern/failure tests without printing any secret values.
 - [ ] T037 Run full pytest, Ruff, mypy, build-lock, dependency, security/failure, and exact-head CI gates from the BETA-01 branch.
 - [ ] T038 Run fresh Codex Security validation and Graphify impact review against the exact BETA-01 diff.
 - [ ] T039 Run the independent Codex final review through the current Codex agent/app/cloud session or GitHub Codex review; Codex CLI is optional and not a blocker.

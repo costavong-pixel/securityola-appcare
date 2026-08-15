@@ -18,7 +18,7 @@ def not_found() -> HTTPException:
 
 
 def invalid_input() -> HTTPException:
-    return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid input")
+    return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="invalid input")
 
 
 def owned_application(session: Session, user: User, application_id: str) -> Application:
