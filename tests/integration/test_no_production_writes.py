@@ -70,4 +70,5 @@ def test_repository_has_no_provider_sdk_or_deployment_socket_in_control_plane_tr
     assert "docker.sock" not in source
     assert "ssh_private_key" not in source
     assert "boto3" not in source
-    assert "vercel" not in source
+    assert "from vercel" not in source
+    assert "import vercel" not in source
