@@ -27,7 +27,7 @@ A candidate skill is discoverable material until its upstream source, revision, 
 Codex owns architecture, threat-model scope, security policy, dependency and skill acceptance, deployment logic, merge/release decisions, and final verification. OpenCode/DeepSeek may perform only bounded, non-live implementation tasks and may not approve its own work.
 
 ### IX. Exact review and CI evidence is required
-Every beta issue closes only after the complete diff, dependency changes, Graphify impact, deterministic tests, security/failure tests, secret scan, independent Codex CLI review, exact-head GitHub Actions result, and sanitized Saveruflo checkpoint are recorded.
+Every beta issue closes only after the complete diff, dependency changes, Graphify impact, deterministic tests, security/failure tests, secret scan, independent Codex final review through the current Codex agent/app/cloud session or GitHub Codex review, exact-head GitHub Actions result, and sanitized Saveruflo checkpoint are recorded. Codex CLI is optional and its absence or lack of authentication is not a blocker.
 
 ## Scope and workflow
 
