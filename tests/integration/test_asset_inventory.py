@@ -14,13 +14,14 @@ from appcare.connectors import (
     build_fixture_connector,
 )
 from appcare.inventory import InventoryError, collect_inventory
+from appcare.inventory.service import normalize_records
 from appcare.models import Asset
 from tests.control_plane_helpers import create_application, issue_token, new_test_app, seed_user
 
 
 def _connector(records: tuple[RemoteRecord, ...], tenant_id: str) -> ReadOnlyConnector:
     credential = CredentialMetadata(
-        credential_id="github-inventory-ref",
+        credential_id="vault://fixture/appcare/github-inventory-ref",
         provider="github",
         tenant_id=tenant_id,
         scopes=(
@@ -189,3 +190,139 @@ def test_legacy_locator_is_upgraded_to_canonical_provider_identity() -> None:
     assert len(assets) == 1
     assert assets[0].provider == "github"
     assert assets[0].provider_reference == "repo-001"
+
+
+def test_asset_key_ignores_mutable_display_fields() -> None:
+    original = _records()[0]
+    changed = RemoteRecord(
+        kind=original.kind,
+        provider_id=original.provider_id,
+        name="Renamed repository",
+        locator=original.locator,
+        metadata={"default_branch": "develop"},
+    )
+    first = normalize_records("github", (original,))[0]
+    second = normalize_records("github", (changed,))[0]
+    assert first.asset_key == second.asset_key
+
+
+def test_conflicting_provider_identity_fails_before_persistence() -> None:
+    original = _records()[0]
+    changed = RemoteRecord(
+        kind=original.kind,
+        provider_id=original.provider_id,
+        name="Conflicting repository",
+        locator=original.locator,
+        metadata=original.metadata,
+    )
+    app = new_test_app()
+    user = seed_user(app, "Conflict")
+    with TestClient(app) as client:
+        token = issue_token(client, user.email)
+        application = create_application(client, token)
+    connector = _connector((original, changed, _records()[1]), user.tenant_id)
+
+    with app.state.database.session() as session:
+        try:
+            collect_inventory(
+                connector,
+                tenant_id=user.tenant_id,
+                application_id=str(application["id"]),
+                target=OwnershipTarget(expected_resource_id="repo-owner/app"),
+                session=session,
+            )
+        except InventoryError as exc:
+            assert str(exc) == "inventory_identity_conflict"
+        else:
+            raise AssertionError("conflicting provider identity must fail")
+        assert session.scalar(select(Asset.id).where(Asset.tenant_id == user.tenant_id)) is None
+
+
+def test_duplicate_legacy_identity_is_rejected_without_partial_assets() -> None:
+    app = new_test_app()
+    user = seed_user(app, "DuplicateLegacy")
+    with TestClient(app) as client:
+        token = issue_token(client, user.email)
+        application = create_application(client, token)
+    with app.state.database.session() as session:
+        for _ in range(2):
+            session.add(
+                Asset(
+                    tenant_id=user.tenant_id,
+                    application_id=str(application["id"]),
+                    kind="deployment",
+                    locator="https://preview.example.test/",
+                    status="active",
+                )
+            )
+        session.flush()
+
+    connector = _connector(_records(), user.tenant_id)
+    with app.state.database.session() as session:
+        try:
+            collect_inventory(
+                connector,
+                tenant_id=user.tenant_id,
+                application_id=str(application["id"]),
+                target=OwnershipTarget(expected_resource_id="repo-owner/app"),
+                session=session,
+            )
+        except InventoryError as exc:
+            assert str(exc) == "inventory_identity_conflict"
+        else:
+            raise AssertionError("duplicate legacy identity must fail")
+        assets = list(
+            session.scalars(
+                select(Asset).where(
+                    Asset.tenant_id == user.tenant_id,
+                    Asset.application_id == str(application["id"]),
+                )
+            )
+        )
+        assert len(assets) == 2
+        assert all(asset.provider is None for asset in assets)
+
+
+def test_canonical_and_legacy_identity_conflict_fails_closed() -> None:
+    app = new_test_app()
+    user = seed_user(app, "MixedIdentity")
+    with TestClient(app) as client:
+        token = issue_token(client, user.email)
+        application = create_application(client, token)
+    with app.state.database.session() as session:
+        session.add_all(
+            [
+                Asset(
+                    tenant_id=user.tenant_id,
+                    application_id=str(application["id"]),
+                    provider="github",
+                    provider_reference="repo-001",
+                    kind="repository",
+                    locator="https://github.com/example/app",
+                    status="active",
+                ),
+                Asset(
+                    tenant_id=user.tenant_id,
+                    application_id=str(application["id"]),
+                    kind="repository",
+                    locator="https://github.com/example/app",
+                    status="active",
+                ),
+            ]
+        )
+        session.flush()
+
+    with app.state.database.session() as session:
+        try:
+            collect_inventory(
+                _connector((_records()[0],), user.tenant_id),
+                tenant_id=user.tenant_id,
+                application_id=str(application["id"]),
+                target=OwnershipTarget(expected_resource_id="repo-owner/app"),
+                session=session,
+            )
+        except InventoryError as exc:
+            assert str(exc) == "inventory_identity_conflict"
+        else:
+            raise AssertionError("canonical and legacy identity conflict must fail")
+        assert session.scalar(select(Asset.id).where(Asset.provider.is_(None))) is not None

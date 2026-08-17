@@ -39,7 +39,7 @@ def _snapshot(provider: str) -> ProviderSnapshot:
 
 def _credential(provider: str, *, expires_at: datetime | None = None) -> CredentialMetadata:
     return CredentialMetadata(
-        credential_id=f"{provider}-integration-ref",
+        credential_id=f"vault://fixture/appcare/{provider}-integration-ref",
         provider=provider,  # type: ignore[arg-type]
         tenant_id=_TENANT_ID,
         scopes=PROVIDER_SPECS[provider].required_capabilities,  # type: ignore[index]
@@ -61,7 +61,7 @@ def test_missing_scope_fails_before_inventory() -> None:
     connector = build_fixture_connector(
         "vercel",
         CredentialMetadata(
-            credential_id="vercel-under-scoped-ref",
+            credential_id="vault://fixture/appcare/vercel-under-scoped-ref",
             provider="vercel",
             tenant_id=_TENANT_ID,
             scopes=required[:-1],

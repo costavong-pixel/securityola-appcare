@@ -114,6 +114,27 @@ def test_connector_check_and_inventory_are_safe_and_strict() -> None:
         assert token_reference.status_code == 422
         assert "gho_aaaaaaaa" not in token_reference.text
 
+        fingerprint_reference = client.post(
+            "/v1/connectors",
+            headers=headers,
+            json={
+                **_connector_payload(str(application["id"])),
+                "credential_fingerprint": "vault://eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature123",
+            },
+        )
+        assert fingerprint_reference.status_code == 422
+        assert "eyJhbGciOiJIUzI1NiJ9" not in fingerprint_reference.text
+
+        valid_fingerprint = client.post(
+            "/v1/connectors",
+            headers=headers,
+            json={
+                **_connector_payload(str(application["id"])),
+                "credential_fingerprint": "a" * 64,
+            },
+        )
+        assert valid_fingerprint.status_code == 201, valid_fingerprint.text
+
 
 def test_connector_without_live_transport_fails_closed() -> None:
     app = create_app(

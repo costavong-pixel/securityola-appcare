@@ -46,6 +46,13 @@ def test_request_rejects_non_get_and_unsafe_path() -> None:
         )
     with pytest.raises(ValueError):
         ReadOnlyRequest(provider="github", operation="health", path="/repos/a?token=x")
+    with pytest.raises(ValueError, match="credential reference is unsafe"):
+        CredentialContext(
+            "vault://eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature123",
+            ("metadata:read",),
+            tenant_id="a" * 32,
+            authority="appcare-secret-service",
+        )
 
 
 def test_registry_emits_only_fixed_get_requests() -> None:
@@ -54,7 +61,7 @@ def test_registry_emits_only_fixed_get_requests() -> None:
     payloads = registry.collect(
         "github",
         CredentialContext(
-            "fixture-reference",
+            "vault://fixture/appcare/transport-ref",
             ("metadata:read",),
             tenant_id="a" * 32,
             authority="appcare-secret-service",
@@ -75,7 +82,7 @@ def test_default_transport_fails_closed() -> None:
         transport.request(
             ReadOnlyRequest(provider="github", operation="health", path="/installation"),
             CredentialContext(
-                "fixture-reference",
+                "vault://fixture/appcare/transport-ref",
                 ("metadata:read",),
                 tenant_id="a" * 32,
                 authority="appcare-secret-service",

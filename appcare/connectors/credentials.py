@@ -2,18 +2,13 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import replace
 from datetime import UTC, datetime
 
 from ..repositories.tenant_scope import valid_public_id
 from .providers import ProviderConfigurationError, canonical_capabilities
+from .security import is_safe_credential_reference
 from .types import CredentialMetadata
-
-_REFERENCE = re.compile(
-    r"^(?:vault|secret|appcare-secret)://[a-z0-9][a-z0-9._/-]{2,240}$",
-    re.IGNORECASE,
-)
 
 
 class CredentialLifecycleError(ValueError):
@@ -23,7 +18,7 @@ class CredentialLifecycleError(ValueError):
 def _validate_metadata(metadata: CredentialMetadata) -> CredentialMetadata:
     if not valid_public_id(metadata.tenant_id):
         raise CredentialLifecycleError("credential tenant is invalid")
-    if not _REFERENCE.fullmatch(metadata.credential_id):
+    if not is_safe_credential_reference(metadata.credential_id):
         raise CredentialLifecycleError("credential reference is invalid")
     if metadata.version < 1:
         raise CredentialLifecycleError("credential version is invalid")

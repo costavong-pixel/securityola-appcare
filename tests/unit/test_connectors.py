@@ -105,6 +105,9 @@ def test_expired_and_revoked_credentials_fail_closed() -> None:
         "github-token-0001",
         "gho_1234567890abcdefghijklmnop",
         "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature123",
+        "vault://gho_1234567890abcdefghijklmnop",
+        "vault://eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature123",
+        "vault://fixture/appcare/token-0001",
     ),
 )
 def test_malformed_or_secret_shaped_reference_is_rejected(credential_id: str) -> None:
@@ -118,6 +121,19 @@ def test_malformed_or_secret_shaped_reference_is_rejected(credential_id: str) ->
                 scopes=PROVIDER_SPECS["github"].required_capabilities,
             )
         )
+
+
+def test_fixture_connector_rejects_wrapped_token_reference() -> None:
+    credential = CredentialMetadata(
+        credential_id="vault://gho_1234567890abcdefghijklmnop",
+        provider="github",
+        tenant_id=_TENANT_ID,
+        scopes=PROVIDER_SPECS["github"].required_capabilities,
+    )
+    connector = build_fixture_connector("github", credential, _snapshot("github"))
+    assert credential.status() == "invalid"
+    assert not connector.health().usable
+    assert connector.health().reason == "invalid_credential"
 
 
 def test_credential_registry_rotates_and_revokes_without_raw_secret_state() -> None:

@@ -18,6 +18,7 @@ from .contracts import (
     RequestOperation,
 )
 from .profiles import PROVIDER_PROFILES, ProviderProfile, validate_scopes
+from .security import is_safe_credential_reference
 from .transport import ProviderTransportError, UnavailableTransport
 
 
@@ -263,6 +264,8 @@ class ConnectorRegistry:
     ) -> Mapping[RequestOperation, Mapping[str, object]]:
         if credential.tenant_id != tenant_id:
             raise ProviderTransportError("credential_tenant_mismatch")
+        if not is_safe_credential_reference(credential.reference):
+            raise ProviderTransportError("credential_reference_invalid")
         adapter = self.adapter(provider)
         payloads: dict[RequestOperation, Mapping[str, object]] = {}
         for request in adapter.build_requests(resource_reference):
@@ -287,6 +290,8 @@ class FixtureTransport:
     def request(
         self, request: ReadOnlyRequest, _credential: CredentialContext
     ) -> Mapping[str, object]:
+        if not is_safe_credential_reference(_credential.reference):
+            raise ProviderTransportError("credential_reference_invalid")
         self.requests.append(request)
         try:
             return self.fixtures[(request.provider, request.operation)]

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
@@ -20,6 +19,10 @@ from ..connectors.base import ConnectorAccessError, RegistryReadOnlyConnector
 from ..connectors.contracts import CheckResult
 from ..connectors.credentials import CredentialLifecycleError, CredentialRegistry
 from ..connectors.providers import ProviderConfigurationError, canonical_capabilities
+from ..connectors.security import (
+    is_safe_credential_fingerprint,
+    is_safe_credential_reference,
+)
 from ..connectors.types import CredentialMetadata, OwnershipTarget
 from ..inventory import InventoryError, collect_inventory
 from ..models import (
@@ -41,10 +44,6 @@ _ALLOWED_CREDENTIAL_STATUSES = {
     "invalid",
     "insufficient_scope",
 }
-_CREDENTIAL_REFERENCE = re.compile(
-    r"^(?:vault|secret|appcare-secret)://[a-z0-9][a-z0-9._/-]{2,240}$",
-    re.IGNORECASE,
-)
 _CREDENTIAL_AUTHORITY = "appcare-secret-service"
 
 
@@ -116,9 +115,18 @@ def _safe_credential_reference(value: str | None, *, required: bool = False) -> 
             raise ValueError("credential reference is required")
         return None
     normalized = value.strip()
-    if not _CREDENTIAL_REFERENCE.fullmatch(normalized) or contains_credential_like(normalized):
+    if not is_safe_credential_reference(normalized):
         raise ValueError("credential reference is unsafe")
     return normalized
+
+
+def _safe_credential_fingerprint(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not is_safe_credential_fingerprint(normalized):
+        raise ValueError("credential fingerprint is unsafe")
+    return normalized.lower()
 
 
 def _safe_display_text(value: str, *, maximum: int) -> str:
@@ -199,7 +207,7 @@ def register_connector(
     owner_reference = _safe_metadata_reference(registration.owner_reference)
     credential_reference = _safe_credential_reference(registration.credential_reference)
     canonical_scopes = canonical_capabilities(registration.provider, scopes)
-    fingerprint = _safe_metadata_reference(registration.credential_fingerprint)
+    fingerprint = _safe_credential_fingerprint(registration.credential_fingerprint)
     if registration.credential_status != "active" and credential_reference is None:
         raise ValueError("credential status requires a reference")
     if credential_reference is None and (
@@ -467,6 +475,61 @@ def _snapshot_key(value: str) -> str:
     return normalized
 
 
+def _attach_inventory_assets(
+    session: Session,
+    *,
+    tenant_id: str,
+    connector: Connector,
+    observed_assets: tuple[object, ...],
+) -> list[Asset]:
+    existing_assets = list(
+        session.scalars(
+            select(Asset).where(
+                Asset.tenant_id == tenant_id,
+                Asset.application_id == connector.application_id,
+            )
+        )
+    )
+    plans: list[tuple[Asset, str]] = []
+    seen_references: set[str] = set()
+    for observed in observed_assets:
+        provider = getattr(observed, "provider", None)
+        provider_id = getattr(observed, "provider_id", None)
+        if not isinstance(provider, str) or not isinstance(provider_id, str):
+            raise InventoryError("inventory_identity_conflict")
+        reference = provider_id.casefold()
+        if reference in seen_references:
+            raise InventoryError("inventory_identity_conflict")
+        seen_references.add(reference)
+        matches = [
+            asset
+            for asset in existing_assets
+            if asset.provider is not None
+            and asset.provider_reference is not None
+            and asset.provider.casefold() == provider.casefold()
+            and asset.provider_reference.casefold() == reference
+        ]
+        if len(matches) != 1:
+            raise InventoryError("inventory_identity_conflict")
+        plans.append((matches[0], reference))
+
+    with session.begin_nested():
+        assets: list[Asset] = []
+        for asset, _reference in plans:
+            asset.connector_id = connector.id
+            asset.last_seen_at = utcnow()
+            asset.status = "active"
+            assets.append(asset)
+        for asset in existing_assets:
+            existing_reference = (
+                asset.provider_reference.casefold() if asset.provider_reference else None
+            )
+            if asset.connector_id == connector.id and existing_reference not in seen_references:
+                asset.status = "retired"
+        session.flush()
+        return assets
+
+
 def inventory_connector(
     session: Session,
     *,
@@ -503,28 +566,38 @@ def inventory_connector(
         run.failure_code = None
         run.started_at = started
     read_only: RegistryReadOnlyConnector | None = None
+    assets: list[Asset] = []
     try:
-        if connector.resource_reference is None or connector.owner_reference is None:
-            raise InventoryError("ownership_reference_missing")
-        read_only = _build_read_only_connector(
-            session,
-            tenant_id=tenant_id,
-            connector=connector,
-            registry=registry,
-            checked_at=started,
-        )
-        result = collect_inventory(
-            read_only,
-            tenant_id=tenant_id,
-            application_id=connector.application_id,
-            target=OwnershipTarget(expected_resource_id=connector.resource_reference),
-            session=session,
-        )
-        summary = _summary_from_read_only(
-            read_only,
-            resource_reference=connector.resource_reference,
-            checked_at=started,
-        )
+        with session.begin_nested():
+            if connector.resource_reference is None or connector.owner_reference is None:
+                raise InventoryError("ownership_reference_missing")
+            read_only = _build_read_only_connector(
+                session,
+                tenant_id=tenant_id,
+                connector=connector,
+                registry=registry,
+                checked_at=started,
+            )
+            result = collect_inventory(
+                read_only,
+                tenant_id=tenant_id,
+                application_id=connector.application_id,
+                target=OwnershipTarget(expected_resource_id=connector.resource_reference),
+                session=session,
+            )
+            summary = _summary_from_read_only(
+                read_only,
+                resource_reference=connector.resource_reference,
+                checked_at=started,
+            )
+            if summary.overall_status != "passed":
+                raise InventoryError("connector_inventory_failed")
+            assets = _attach_inventory_assets(
+                session,
+                tenant_id=tenant_id,
+                connector=connector,
+                observed_assets=result.assets,
+            )
     except (ConnectorAccessError, InventoryError, ValueError) as exc:
         summary = _failed_summary(str(exc), checked_at=started)
         result = None
@@ -559,62 +632,6 @@ def inventory_connector(
             )
         return InventorySummary(run, ())
 
-    existing = list(
-        session.scalars(
-            select(Asset).where(
-                Asset.tenant_id == tenant_id,
-                Asset.connector_id == connector.id,
-            )
-        )
-    )
-    seen_keys: set[str] = set()
-    assets: list[Asset] = []
-    for observed in result.assets:
-        reference = observed.provider_id.casefold()
-        matches = list(
-            session.scalars(
-                select(Asset).where(
-                    Asset.tenant_id == tenant_id,
-                    Asset.application_id == connector.application_id,
-                    Asset.provider == observed.provider,
-                    Asset.provider_reference == observed.provider_id,
-                )
-            )
-        )
-        if len(matches) != 1:
-            run.status = "failed"
-            run.failure_code = "inventory_identity_conflict"
-            run.finished_at = utcnow()
-            run.asset_count = 0
-            session.flush()
-            if actor_user_id is not None:
-                append_event(
-                    session,
-                    tenant_id=tenant_id,
-                    actor_user_id=actor_user_id,
-                    action="connector.inventory",
-                    subject_type="connector",
-                    subject_id=connector.id,
-                    outcome="failure",
-                    metadata={
-                        "snapshot_key": key,
-                        "status": "failed",
-                        "failure_code": run.failure_code,
-                    },
-                )
-            return InventorySummary(run, ())
-        asset = matches[0]
-        asset.connector_id = connector.id
-        asset.last_seen_at = utcnow()
-        seen_keys.add(reference)
-        assets.append(asset)
-    for asset in existing:
-        existing_reference = (
-            asset.provider_reference.casefold() if asset.provider_reference else None
-        )
-        if existing_reference is not None and existing_reference not in seen_keys:
-            asset.status = "retired"
-    session.flush()
     run.status = "succeeded"
     run.failure_code = None
     run.finished_at = utcnow()

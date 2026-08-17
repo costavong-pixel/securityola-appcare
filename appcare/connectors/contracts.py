@@ -6,6 +6,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
+from .security import is_safe_credential_reference
+
 ProviderName = Literal["github", "vercel", "supabase"]
 RequestOperation = Literal["health", "permissions", "ownership", "inventory"]
 CheckStatus = Literal["passed", "failed", "unknown"]
@@ -19,6 +21,10 @@ class CredentialContext:
     scopes: tuple[str, ...]
     tenant_id: str
     authority: str
+
+    def __post_init__(self) -> None:
+        if not is_safe_credential_reference(self.reference):
+            raise ValueError("credential reference is unsafe")
 
 
 @dataclass(frozen=True, slots=True)

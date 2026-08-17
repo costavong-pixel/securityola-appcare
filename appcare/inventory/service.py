@@ -62,6 +62,20 @@ def _canonical_locator(locator: str) -> str:
     return urlunsplit((parsed.scheme.casefold(), netloc, path, parsed.query, ""))
 
 
+def _asset_identity(provider: str, provider_id: str) -> tuple[str, str]:
+    return provider, provider_id.casefold()
+
+
+def _asset_key(provider: ProviderName, provider_id: str) -> str:
+    encoded = json.dumps(
+        {"provider": provider, "provider_id": provider_id.casefold()},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def _normalize_record(provider: ProviderName, record: RemoteRecord) -> InventoryAsset:
     try:
         kind = (sanitize_text(record.kind, max_length=100) or "").strip().casefold()
@@ -73,17 +87,8 @@ def _normalize_record(provider: ProviderName, record: RemoteRecord) -> Inventory
         raise InventoryError("unsafe_record") from exc
     if not _KIND.fullmatch(kind) or not provider_id or not name or not locator:
         raise InventoryError("unsafe_record")
-    canonical = {
-        "kind": kind,
-        "locator": locator,
-        "metadata": metadata,
-        "name": name,
-        "provider": provider,
-        "provider_id": provider_id,
-    }
-    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return InventoryAsset(
-        asset_key=hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+        asset_key=_asset_key(provider, provider_id),
         provider=provider,
         kind=kind,
         provider_id=provider_id,
@@ -97,15 +102,15 @@ def normalize_records(provider: str, records: Iterable[RemoteRecord]) -> tuple[I
     """Normalize, de-duplicate, and deterministically order remote records."""
 
     normalized_provider = get_provider_spec(provider).provider
-    normalized: dict[str, InventoryAsset] = {}
+    normalized: dict[tuple[str, str], InventoryAsset] = {}
     for record in records:
         asset = _normalize_record(normalized_provider, record)
-        current = normalized.get(asset.asset_key)
-        if current is None or json.dumps(asset, default=str, sort_keys=True) < json.dumps(
-            current, default=str, sort_keys=True
-        ):
-            normalized[asset.asset_key] = asset
-    return tuple(normalized[key] for key in sorted(normalized))
+        identity = _asset_identity(asset.provider, asset.provider_id)
+        current = normalized.get(identity)
+        if current is not None and current != asset:
+            raise InventoryError("inventory_identity_conflict")
+        normalized[identity] = asset
+    return tuple(sorted(normalized.values(), key=lambda asset: asset.asset_key))
 
 
 def inventory_digest(assets: Iterable[InventoryAsset]) -> str:
@@ -143,61 +148,84 @@ def reconcile_assets(
     )
     if application is None:
         raise InventoryError("application_not_owned")
-    persisted: list[Asset] = []
-    for observed in assets:
-        canonical_matches = list(
-            session.scalars(
-                select(Asset).where(
-                    Asset.tenant_id == tenant_id,
-                    Asset.application_id == application_id,
-                    Asset.provider == observed.provider,
-                    Asset.provider_reference == observed.provider_id,
-                )
+    observations = list(assets)
+    existing_assets = list(
+        session.scalars(
+            select(Asset).where(
+                Asset.tenant_id == tenant_id,
+                Asset.application_id == application_id,
             )
         )
-        if len(canonical_matches) > 1:
-            raise InventoryError("inventory_identity_conflict")
-        existing = canonical_matches[0] if canonical_matches else None
-        if existing is None:
-            legacy_matches = list(
-                session.scalars(
-                    select(Asset).where(
-                        Asset.tenant_id == tenant_id,
-                        Asset.application_id == application_id,
-                        Asset.provider.is_(None),
-                        Asset.provider_reference.is_(None),
-                        Asset.kind == observed.kind,
-                        Asset.locator == observed.locator,
-                    )
-                )
-            )
-            if len(legacy_matches) > 1:
+    )
+    planned: list[tuple[Asset | None, InventoryAsset]] = []
+    observed_by_identity: dict[tuple[str, str], InventoryAsset] = {}
+    for observed in observations:
+        identity = _asset_identity(observed.provider, observed.provider_id)
+        previous = observed_by_identity.get(identity)
+        if previous is not None:
+            if previous != observed:
                 raise InventoryError("inventory_identity_conflict")
-            existing = legacy_matches[0] if legacy_matches else None
-        if existing is None:
-            existing = Asset(
-                tenant_id=tenant_id,
-                application_id=application_id,
-                provider=observed.provider,
-                provider_reference=observed.provider_id,
-                kind=observed.kind,
-                locator=observed.locator,
-                display_name=observed.name,
-                display_metadata_json=dict(observed.metadata),
-                status="active",
+            continue
+        observed_by_identity[identity] = observed
+        canonical_matches = [
+            asset
+            for asset in existing_assets
+            if asset.provider is not None
+            and asset.provider_reference is not None
+            and _asset_identity(asset.provider, asset.provider_reference) == identity
+        ]
+        legacy_matches = [
+            asset
+            for asset in existing_assets
+            if asset.provider is None
+            and asset.provider_reference is None
+            and asset.kind == observed.kind
+            and asset.locator == observed.locator
+        ]
+        if (
+            len(canonical_matches) > 1
+            or len(legacy_matches) > 1
+            or (canonical_matches and legacy_matches)
+        ):
+            raise InventoryError("inventory_identity_conflict")
+        planned.append(
+            (
+                canonical_matches[0]
+                if canonical_matches
+                else legacy_matches[0]
+                if legacy_matches
+                else None,
+                observed,
             )
-            session.add(existing)
-            session.flush()
-        else:
-            existing.provider = observed.provider
-            existing.provider_reference = observed.provider_id
-            existing.kind = observed.kind
-            existing.locator = observed.locator
-            existing.display_name = observed.name
-            existing.display_metadata_json = dict(observed.metadata)
-            existing.status = "active"
-        persisted.append(existing)
-    return persisted
+        )
+
+    with session.begin_nested():
+        persisted: list[Asset] = []
+        for existing, observed in planned:
+            if existing is None:
+                existing = Asset(
+                    tenant_id=tenant_id,
+                    application_id=application_id,
+                    provider=observed.provider,
+                    provider_reference=observed.provider_id,
+                    kind=observed.kind,
+                    locator=observed.locator,
+                    display_name=observed.name,
+                    display_metadata_json=dict(observed.metadata),
+                    status="active",
+                )
+                session.add(existing)
+            else:
+                existing.provider = observed.provider
+                existing.provider_reference = observed.provider_id
+                existing.kind = observed.kind
+                existing.locator = observed.locator
+                existing.display_name = observed.name
+                existing.display_metadata_json = dict(observed.metadata)
+                existing.status = "active"
+            persisted.append(existing)
+        session.flush()
+        return persisted
 
 
 def collect_inventory(

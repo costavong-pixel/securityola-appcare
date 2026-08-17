@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
 
+from .security import is_safe_credential_reference
+
 ProviderName = Literal["github", "vercel", "supabase"]
 CredentialStatus = Literal["active", "expired", "revoked", "invalid"]
 
@@ -55,7 +57,7 @@ class CredentialMetadata:
             return "revoked"
         if self.expires_at is not None and self.expires_at <= current:
             return "expired"
-        if not self.credential_id or self.version < 1:
+        if not is_safe_credential_reference(self.credential_id) or self.version < 1:
             return "invalid"
         return "active"
 
