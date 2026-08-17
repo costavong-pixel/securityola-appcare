@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -12,18 +11,8 @@ from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from ..models import AuditEvent, User, new_id, utcnow
+from .security import contains_credential_like, is_secret_key
 
-_SECRET_KEY = re.compile(
-    r"(?:pass(?:word|phrase)?|secret|token|api[_-]?key|authorization|cookie|credential|"
-    r"private[_-]?key|access[_-]?token|refresh[_-]?token|session[_-]?token)",
-    re.IGNORECASE,
-)
-_CREDENTIAL_VALUE = re.compile(
-    r"(?:-----BEGIN [A-Z ]*PRIVATE KEY-----|https?://[^\s/:]+:[^\s@]+@|"
-    r"(?:ghp|github_pat)_[A-Za-z0-9_]{20,}|\bAKIA[0-9A-Z]{16}\b|"
-    r"\bBearer\s+[A-Za-z0-9._~-]{20,})",
-    re.IGNORECASE,
-)
 _REDACTED = "[REDACTED]"
 _MAX_DEPTH = 6
 _MAX_ITEMS = 50
@@ -32,12 +21,6 @@ _MAX_STRING = 500
 
 class MetadataError(ValueError):
     """Metadata cannot be safely written to an audit record."""
-
-
-def contains_credential_like(value: str) -> bool:
-    """Return whether text contains a recognized credential-shaped value."""
-
-    return _CREDENTIAL_VALUE.search(value) is not None
 
 
 def _sanitize(value: Any, *, depth: int, secret_key: bool = False) -> Any:
@@ -49,9 +32,7 @@ def _sanitize(value: Any, *, depth: int, secret_key: bool = False) -> Any:
         if len(value) > _MAX_ITEMS:
             raise MetadataError("metadata contains too many keys")
         return {
-            str(key)[:100]: _sanitize(
-                item, depth=depth + 1, secret_key=_SECRET_KEY.search(str(key)) is not None
-            )
+            str(key)[:100]: _sanitize(item, depth=depth + 1, secret_key=is_secret_key(str(key)))
             for key, item in value.items()
         }
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):

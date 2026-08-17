@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from ..routes.common import safe_reference
-from ..services.audit import contains_credential_like
+from ..services.security import contains_credential_like
 from .contracts import (
     CheckResult,
     CredentialContext,

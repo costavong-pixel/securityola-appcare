@@ -35,7 +35,8 @@ from ..models import (
     utcnow,
 )
 from ..routes.common import safe_reference
-from ..services.audit import MetadataError, append_event, contains_credential_like, sanitize_text
+from ..services.audit import MetadataError, append_event, sanitize_text
+from ..services.security import contains_credential_like
 
 _ALLOWED_CREDENTIAL_STATUSES = {
     "active",

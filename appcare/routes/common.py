@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from ..models import Application, User
 from ..repositories.tenant_scope import get_owned
-from ..services.audit import contains_credential_like
+from ..services.security import contains_credential_like
 
 
 def not_found() -> HTTPException:

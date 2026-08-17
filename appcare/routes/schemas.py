@@ -8,6 +8,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from ..services.security import contains_credential_like, contains_credential_like_data
+
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -82,6 +84,20 @@ class AssetResponse(StrictModel):
     last_seen_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+    @field_validator("locator", "provider_reference", "display_name")
+    @classmethod
+    def reject_credential_like_text(cls, value: str | None) -> str | None:
+        if value is not None and contains_credential_like(value):
+            raise ValueError("unsafe asset response")
+        return value
+
+    @field_validator("display_metadata_json")
+    @classmethod
+    def reject_credential_like_metadata(cls, value: dict[str, object]) -> dict[str, object]:
+        if contains_credential_like_data(value):
+            raise ValueError("unsafe asset response")
+        return value
 
 
 class FindingCreate(StrictModel):
