@@ -14,7 +14,7 @@ Inside AppCare keep `development → staging → production` isolated; developme
 
 - [ ] BETA-00 — bootstrap Codex, Saveruflo, Spec Kit, Graphify, audited skills, CI, and AppCare/WordPress runtime isolation
 - [x] BETA-01 — control plane, tenancy, audit trail
-- [ ] BETA-02 — read-only GitHub/Vercel/Supabase connectors (local implementation and gates pass; exact-head CI/protected owner merge pending)
+- [x] BETA-02 — read-only GitHub/Vercel/Supabase connectors (merged through protected main at `4eae0682f6e421b65f7ff75c521b331ccd164de1`)
 - [ ] BETA-03 — security scanning and normalized evidence-backed findings
 - [ ] BETA-04 — B2 immutable backup, Glacier archive, restore rehearsal
 - [ ] BETA-05 — LangGraph durable scan-to-recovery workflow
@@ -48,14 +48,15 @@ For the current open beta issue:
 
 If a skill cannot be made safe and maintainable, drop it and replace it.
 
-## Current BETA-02 state
+## Current BETA-03 state
 
-The isolated AppCare workspace has completed the BETA-02 implementation,
-deterministic tests, security scan, independent boundary review, Graphify
-refresh, and Saveruflo checkpoint. The GitHub `main` baseline remains
-protected at the verified head; no push, merge, issue close, deployment, live
-provider authorization, or production write is authorized. Exact-head CI for
-the uncommitted BETA-02 diff is the remaining owner-controlled gate.
+The isolated AppCare workspace has started BETA-03 from protected main at
+`4eae0682f6e421b65f7ff75c521b331ccd164de1`. The approved foundation scope is
+scanner contracts, deterministic evidence, source/secret/dependency adapter
+boundaries, normalized findings, deduplication, distinct scanner failures,
+tenant/target enforcement, and seeded vulnerability/false-positive fixtures.
+No remediation writes, live provider authorization, production access, or
+WordPress resource is in scope.
 
 ## Production rule
 

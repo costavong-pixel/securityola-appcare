@@ -1,0 +1,30 @@
+[
+  {
+    "adapter_kind": "dependency",
+    "rule_id": "dependency.outdated",
+    "title": "Outdated package detected",
+    "summary": "A package is below the approved version range.",
+    "location": "requirements.lock",
+    "asset_id": "package-record",
+    "severity": "medium",
+    "confidence": "confirmed",
+    "raw_evidence": {
+      "package": "safe-library",
+      "version": "1.2.0"
+    }
+  },
+  {
+    "adapter_kind": "dependency",
+    "rule_id": "dependency.outdated",
+    "title": "Outdated package detected",
+    "summary": "A package is below the approved version range.",
+    "location": "requirements.lock",
+    "asset_id": "package-record",
+    "severity": "medium",
+    "confidence": "confirmed",
+    "raw_evidence": {
+      "version": "1.2.0",
+      "package": "safe-library"
+    }
+  }
+]

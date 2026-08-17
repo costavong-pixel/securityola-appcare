@@ -1,0 +1,6 @@
+{
+  "adapter_kind": "secret",
+  "code": "timeout",
+  "message": "scanner timed out",
+  "retryable": true
+}

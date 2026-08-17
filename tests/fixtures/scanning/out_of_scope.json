@@ -1,0 +1,15 @@
+{
+  "adapter_kind": "secret",
+  "rule_id": "secret.scope",
+  "title": "Out of scope observation",
+  "summary": "This observation belongs to another target.",
+  "location": "other-target/config.py",
+  "asset_id": "other-asset",
+  "severity": "high",
+  "confidence": "high",
+  "tenant_id": "tenant-other",
+  "target_id": "target-other",
+  "raw_evidence": {
+    "marker": "scope-test"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "adapter_kind": "source",
+  "rule_id": "source.malformed",
+  "title": "Malformed observation",
+  "summary": "This fixture is intentionally incomplete.",
+  "location": "fixtures/sample.py",
+  "asset_id": "sample-asset",
+  "severity": "unknown",
+  "confidence": "low",
+  "raw_evidence": {
+    "marker": "invalid-severity"
+  }
+}
