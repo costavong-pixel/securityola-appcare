@@ -19,6 +19,12 @@ $env:APPCARE_DATABASE_URL = "sqlite+pysqlite:///./appcare-dev.db"
 python -m uvicorn appcare.api:app --host localhost --port 8000
 ```
 
+For PostgreSQL, set the non-secret `APPCARE_DATABASE_ALLOWED_HOSTS` variable
+to a comma-separated list of exact AppCare database hostnames. The database
+name must match the environment exactly: `appcare_development`,
+`appcare_staging`, or `appcare_test`. A missing or unmatched host/name is
+rejected before SQLAlchemy creates an engine or schema.
+
 Do not set the database URL to a production, WordPress Security, Barnd AI
 Shield, deployment, or shared-server database. BETA-01 has no provider-write
 or deployment execution route, and development jobs must not receive
@@ -64,3 +70,16 @@ If a skill cannot be fixed safely, drop it.
 - S3/B2/Glacier lifecycle
 - monitoring
 - failure-injection testing
+
+## BETA-02 connector and inventory checks
+
+Run the isolated synthetic provider tests before the full suite:
+
+```powershell
+pytest -q tests/unit/test_connectors.py tests/integration/test_read_only_connectors.py tests/integration/test_asset_inventory.py
+```
+
+The fixtures use opaque credential references only. They do not authorize or
+contact GitHub, Vercel, or Supabase. Inventory reconciliation writes only
+tenant-scoped AppCare `Asset` rows and is additive/idempotent; it never writes
+to a provider or accepts a customer secret.

@@ -13,8 +13,8 @@ Inside AppCare keep `development → staging → production` isolated; developme
 ## Ordered beta gates
 
 - [ ] BETA-00 — bootstrap Codex, Saveruflo, Spec Kit, Graphify, audited skills, CI, and AppCare/WordPress runtime isolation
-- [ ] BETA-01 — control plane, tenancy, audit trail
-- [ ] BETA-02 — read-only GitHub/Vercel/Supabase connectors
+- [x] BETA-01 — control plane, tenancy, audit trail
+- [ ] BETA-02 — read-only GitHub/Vercel/Supabase connectors (local implementation and gates pass; exact-head CI/protected owner merge pending)
 - [ ] BETA-03 — security scanning and normalized evidence-backed findings
 - [ ] BETA-04 — B2 immutable backup, Glacier archive, restore rehearsal
 - [ ] BETA-05 — LangGraph durable scan-to-recovery workflow
@@ -47,6 +47,15 @@ For the current open beta issue:
 `discover → inspect → sandbox → pressure-test → patch/debug → retest → pin → use`
 
 If a skill cannot be made safe and maintainable, drop it and replace it.
+
+## Current BETA-02 state
+
+The isolated AppCare workspace has completed the BETA-02 implementation,
+deterministic tests, security scan, independent boundary review, Graphify
+refresh, and Saveruflo checkpoint. The GitHub `main` baseline remains
+protected at the verified head; no push, merge, issue close, deployment, live
+provider authorization, or production write is authorized. Exact-head CI for
+the uncommitted BETA-02 diff is the remaining owner-controlled gate.
 
 ## Production rule
 

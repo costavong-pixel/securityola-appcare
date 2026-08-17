@@ -8,6 +8,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from ..services.security import contains_credential_like, contains_credential_like_data
+
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -74,8 +76,28 @@ class AssetResponse(StrictModel):
     kind: str
     locator: str
     status: str
+    connector_id: str | None = None
+    provider: str | None = None
+    provider_reference: str | None = None
+    display_name: str | None = None
+    display_metadata_json: dict[str, object] = Field(default_factory=dict)
+    last_seen_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+    @field_validator("locator", "provider_reference", "display_name")
+    @classmethod
+    def reject_credential_like_text(cls, value: str | None) -> str | None:
+        if value is not None and contains_credential_like(value):
+            raise ValueError("unsafe asset response")
+        return value
+
+    @field_validator("display_metadata_json")
+    @classmethod
+    def reject_credential_like_metadata(cls, value: dict[str, object]) -> dict[str, object]:
+        if contains_credential_like_data(value):
+            raise ValueError("unsafe asset response")
+        return value
 
 
 class FindingCreate(StrictModel):
@@ -113,6 +135,18 @@ class ConnectorCreate(StrictModel):
     provider: str = Field(min_length=1, max_length=100)
     kind: str = Field(min_length=1, max_length=100)
     display_name: str = Field(min_length=1, max_length=200)
+    resource_reference: str | None = Field(default=None, min_length=1, max_length=500)
+    owner_reference: str | None = Field(default=None, min_length=1, max_length=500)
+    scopes: list[str] = Field(default_factory=list, max_length=10)
+    credential_reference: str | None = Field(default=None, min_length=1, max_length=500)
+    credential_authority: str = Field(
+        default="appcare-secret-service", min_length=1, max_length=100
+    )
+    credential_expires_at: datetime | None = None
+    credential_status: Literal["active", "expired", "revoked", "invalid", "insufficient_scope"] = (
+        "active"
+    )
+    credential_fingerprint: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class ConnectorResponse(StrictModel):
@@ -124,9 +158,44 @@ class ConnectorResponse(StrictModel):
     kind: str
     status: str
     display_name: str
+    resource_reference: str | None
+    owner_reference: str | None
+    scopes: list[str]
+    credential_reference: str | None
+    credential_authority: str | None
+    credential_status: str | None
+    credential_expires_at: datetime | None
+    health_status: str
+    permission_status: str
+    ownership_status: str
     last_checked_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class ConnectorCheckResponse(StrictModel):
+    connector_id: str
+    overall_status: Literal["passed", "failed", "unknown"]
+    health_status: Literal["passed", "failed", "unknown"]
+    permission_status: Literal["passed", "failed", "unknown"]
+    ownership_status: Literal["passed", "failed", "unknown"]
+    reason_codes: list[str]
+    checked_at: datetime
+
+
+class InventoryRequest(StrictModel):
+    snapshot_key: str = Field(default="current", min_length=1, max_length=128)
+
+
+class InventoryResponse(StrictModel):
+    connector_id: str
+    snapshot_key: str
+    status: Literal["running", "succeeded", "failed"]
+    asset_count: int
+    failure_code: str | None
+    started_at: datetime
+    finished_at: datetime | None
+    assets: list[AssetResponse]
 
 
 class JobCreate(StrictModel):

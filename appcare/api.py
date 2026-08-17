@@ -8,8 +8,9 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 
 from .config import Settings
+from .connectors import ConnectorRegistry
 from .db import Database
-from .routes import audit, auth, health, jobs, operations, resources
+from .routes import audit, auth, connectors, health, jobs, operations, resources
 
 
 def create_app(
@@ -17,6 +18,7 @@ def create_app(
     *,
     database: Database | None = None,
     database_url: str | None = None,
+    connector_registry: ConnectorRegistry | None = None,
 ) -> FastAPI:
     resolved_settings = settings or Settings.from_env()
     if database_url is not None:
@@ -26,6 +28,7 @@ def create_app(
             token_ttl_seconds=resolved_settings.token_ttl_seconds,
             max_page_size=resolved_settings.max_page_size,
             audit_metadata_max_bytes=resolved_settings.audit_metadata_max_bytes,
+            allowed_hosts=resolved_settings.allowed_hosts,
         )
     resolved_settings.validate()
     resolved_database = database or Database(resolved_settings.database_url)
@@ -34,10 +37,12 @@ def create_app(
     app = FastAPI(title="SecurityOla AppCare Control Plane", version="0.0.0")
     app.state.settings = resolved_settings
     app.state.database = resolved_database
+    app.state.connector_registry = connector_registry or ConnectorRegistry()
     app.include_router(auth.router)
     app.include_router(health.router)
     app.include_router(resources.router)
     app.include_router(operations.router)
+    app.include_router(connectors.router)
     app.include_router(jobs.router)
     app.include_router(audit.router)
 

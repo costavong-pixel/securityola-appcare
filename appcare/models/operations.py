@@ -5,7 +5,16 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Numeric, String, Text
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, IdentityMixin, TimestampMixin
@@ -29,7 +38,93 @@ class Connector(IdentityMixin, TimestampMixin, Base):
     kind: Mapped[str] = mapped_column(String(100), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="configured")
     display_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    resource_reference: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    owner_reference: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    scope_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    health_status: Mapped[str] = mapped_column(String(20), nullable=False, default="unknown")
+    permission_status: Mapped[str] = mapped_column(String(20), nullable=False, default="unknown")
+    ownership_status: Mapped[str] = mapped_column(String(20), nullable=False, default="unknown")
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ConnectorCredential(IdentityMixin, TimestampMixin, Base):
+    """Non-secret credential metadata; the provider credential is never stored here."""
+
+    __tablename__ = "connector_credentials"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active', 'expired', 'revoked', 'invalid', 'insufficient_scope')",
+            name="ck_connector_credential_status",
+        ),
+        UniqueConstraint("connector_id", name="uq_connector_credential_connector"),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    connector_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("connectors.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    reference: Mapped[str] = mapped_column(String(500), nullable=False)
+    authority: Mapped[str] = mapped_column(String(100), nullable=False)
+    scopes_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="active")
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    fingerprint: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+
+class ConnectorCheck(IdentityMixin, Base):
+    """Sanitized health, permission, and ownership evidence."""
+
+    __tablename__ = "connector_checks"
+    __table_args__ = (
+        CheckConstraint(
+            "check_kind IN ('health', 'permissions', 'ownership')",
+            name="ck_connector_check_kind",
+        ),
+        CheckConstraint(
+            "status IN ('passed', 'failed', 'unknown')", name="ck_connector_check_status"
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    connector_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("connectors.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    check_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    reason_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    evidence_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class InventoryRun(IdentityMixin, TimestampMixin, Base):
+    """A local, idempotent connector inventory reconciliation."""
+
+    __tablename__ = "inventory_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('running', 'succeeded', 'failed')", name="ck_inventory_run_status"
+        ),
+        UniqueConstraint(
+            "tenant_id", "connector_id", "snapshot_key", name="uq_inventory_run_snapshot"
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    connector_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("connectors.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    snapshot_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="running")
+    asset_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    failure_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Job(IdentityMixin, TimestampMixin, Base):

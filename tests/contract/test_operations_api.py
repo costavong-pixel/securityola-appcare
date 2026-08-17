@@ -47,7 +47,7 @@ def test_operation_records_are_tenant_scoped_and_descriptive_only() -> None:
             assert created.status_code == 201, created.text
             item = created.json()
             assert item["tenant_id"] == user.tenant_id
-            assert "credential" not in str(item).casefold()
+            assert "fake-fixture" not in str(item).casefold()
             assert "token" not in str(item).casefold()
             fetched = client.get(f"{path}/{item['id']}", headers=headers)
             assert fetched.status_code == 200

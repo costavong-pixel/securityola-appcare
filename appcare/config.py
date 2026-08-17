@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 _ALLOWED_ENVIRONMENTS = {"development", "staging", "test"}
 _FORBIDDEN_PATH_MARKERS = ("wordpress", "barnd", "shield", "production", "deploy")
 _APPCARE_DATABASE_MARKER = "appcare"
+_ENVIRONMENT_DATABASE_NAMES = {
+    "development": "appcare_development",
+    "staging": "appcare_staging",
+    "test": "appcare_test",
+}
 
 
 def _integer_env(name: str, default: int, *, minimum: int, maximum: int) -> int:
@@ -33,6 +38,17 @@ class Settings:
     token_ttl_seconds: int = 900
     max_page_size: int = 100
     audit_metadata_max_bytes: int = 16_384
+    allowed_hosts: tuple[str, ...] | None = None
+
+    def _allowed_postgres_hosts(self) -> frozenset[str]:
+        if self.allowed_hosts is None:
+            configured = tuple(os.getenv("APPCARE_DATABASE_ALLOWED_HOSTS", "").split(","))
+        else:
+            configured = self.allowed_hosts
+        hosts = frozenset(host.strip().casefold() for host in configured if host.strip())
+        if not hosts:
+            raise ValueError("APPCARE_DATABASE_ALLOWED_HOSTS must explicitly list PostgreSQL hosts")
+        return hosts
 
     def validate(self) -> Settings:
         environment = self.environment.casefold()
@@ -41,23 +57,29 @@ class Settings:
 
         parsed = urlsplit(self.database_url)
         if parsed.scheme.startswith("sqlite"):
-            database_path = (parsed.path or "").casefold()
+            database_path = unquote(parsed.path or "").casefold()
             if any(marker in database_path for marker in _FORBIDDEN_PATH_MARKERS):
                 raise ValueError("database path is outside the AppCare boundary")
-            if environment != "test" and database_path not in {"", "/:memory:"}:
-                if _APPCARE_DATABASE_MARKER not in database_path:
-                    raise ValueError("database path is not AppCare-owned")
+            if (
+                database_path not in {"", "/:memory:"}
+                and _APPCARE_DATABASE_MARKER not in database_path
+            ):
+                raise ValueError("database path is not AppCare-owned")
         elif parsed.scheme in {"postgresql", "postgres"} or parsed.scheme.startswith("postgresql+"):
-            host = (parsed.hostname or "").casefold()
-            username = (parsed.username or "").casefold()
-            database_name = (parsed.path.rsplit("/", 1)[-1] or "").casefold()
+            host = unquote(parsed.hostname or "").casefold()
+            username = unquote(parsed.username or "").casefold()
+            database_name = unquote(parsed.path.rsplit("/", 1)[-1] or "").casefold()
             if (
                 not host
                 or any(marker in host for marker in _FORBIDDEN_PATH_MARKERS)
                 or any(marker in username for marker in _FORBIDDEN_PATH_MARKERS)
-                or (environment != "test" and _APPCARE_DATABASE_MARKER not in database_name)
             ):
                 raise ValueError("database host is outside the AppCare boundary")
+            expected_database_name = _ENVIRONMENT_DATABASE_NAMES[environment]
+            if database_name != expected_database_name:
+                raise ValueError("database name is not the AppCare environment target")
+            if host not in self._allowed_postgres_hosts():
+                raise ValueError("database host is not in the allowed AppCare host list")
         else:
             raise ValueError("database URL must use an isolated SQLite or PostgreSQL scheme")
         return self

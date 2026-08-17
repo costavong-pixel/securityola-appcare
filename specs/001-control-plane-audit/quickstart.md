@@ -6,6 +6,7 @@ This guide is for the isolated AppCare development checkout only. It does not us
 
 - Python 3.12+ and the repository development lock installed.
 - A temporary local SQLite database for tests, or an explicitly isolated PostgreSQL database owned by AppCare development.
+- For PostgreSQL, an explicit non-secret `APPCARE_DATABASE_ALLOWED_HOSTS` list containing only the intended AppCare database hostnames.
 - No `.env` file or credential-bearing fixture committed to the repository.
 
 ## Run the isolated API
@@ -23,6 +24,9 @@ python -m uvicorn appcare.api:app --host localhost --port 8000
 Never point this process at production, WordPress Security, Barnd AI Shield,
 shared-server, or deployment data. BETA-01 stores descriptive operation state
 only and has no external provider-write or deployment execution capability.
+PostgreSQL targets must use the exact environment database name
+(`appcare_development`, `appcare_staging`, or `appcare_test`); missing or
+unapproved host/name configuration is rejected before engine/schema setup.
 
 ## Deterministic gates
 
