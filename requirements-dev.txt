@@ -4,6 +4,7 @@ ruff==0.16.2
 mypy==2.3.0
 pip-audit==2.10.1
 fastapi==0.141.1
+cryptography==50.0.0
 pydantic==2.13.4
 psycopg==3.3.4
 sqlalchemy==2.0.52

@@ -38,6 +38,8 @@ graph.json
 
 # Local operational data
 backups/
+!appcare/backups/
+!appcare/backups/*.py
 artifacts/
 logs/
 tmp/

@@ -123,5 +123,5 @@ Drop any skill that cannot be made safe, maintainable, and testable.
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan
-[BETA-03 scanning foundation plan](specs/003-scanning/plan.md).
+[BETA-04 backup and restore plan](specs/004-backup-restore/plan.md).
 <!-- SPECKIT END -->
