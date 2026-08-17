@@ -1,0 +1,15 @@
+{
+  "adapter_kind": "source",
+  "rule_id": "source.debug",
+  "title": "Debug setting enabled",
+  "summary": "A release configuration enables debug behavior.",
+  "location": "config/settings.py",
+  "asset_id": "config-file",
+  "severity": "high",
+  "confidence": "high",
+  "raw_evidence": {
+    "actual": "enabled",
+    "expected": "disabled",
+    "setting": "debug"
+  }
+}

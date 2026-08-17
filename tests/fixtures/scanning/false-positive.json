@@ -1,0 +1,14 @@
+{
+  "adapter_kind": "source",
+  "rule_id": "source.example",
+  "title": "Example endpoint present",
+  "summary": "A sample endpoint is present in a test-only asset.",
+  "location": "tests/example.py",
+  "asset_id": "test-asset",
+  "severity": "low",
+  "confidence": "low",
+  "raw_evidence": {
+    "environment": "test",
+    "marker": "sample"
+  }
+}
