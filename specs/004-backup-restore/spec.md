@@ -23,6 +23,7 @@ In scope:
 - manifest and artifact SHA-256 checksums with read-back verification;
 - immutable-retention semantics and append-only job evidence;
 - isolated restore staging with atomic promotion and no production writes;
+- canonical, symlink-free restore/vault roots and safe backup path segments;
 - explicit failed/unhealthy states for upload, integrity, credential, duplicate,
   partial-restore, and retention failures;
 - RPO/RTO evidence for controlled rehearsals;
@@ -45,6 +46,8 @@ Out of scope:
 2. The restored component set and each component digest match the source
    manifest; a partial or corrupt restore fails closed and does not promote a
    partial result.
+   Persisted test-vault artifacts remain readable and verifiable after a vault
+   object is reopened.
 3. A failed upload, checksum mismatch, unavailable/revoked credential, or
    duplicate idempotency key produces an unhealthy backup/job result, never a
    healthy backup.

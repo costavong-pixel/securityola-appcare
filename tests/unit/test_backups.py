@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -11,11 +13,13 @@ from appcare.backups import (
     AesGcmEnvelopeEncryptor,
     BackupComponent,
     BackupDestination,
+    BackupRequest,
     BackupTarget,
     EnvelopeEncryptionError,
     RestoreTarget,
 )
 from appcare.backups.contracts import BackupBoundaryError
+from appcare.backups.pipeline import ArtifactIntegrityError, _deserialize_components
 
 NOW = datetime(2026, 8, 17, 10, 0, tzinfo=UTC)
 
@@ -100,8 +104,54 @@ def test_restore_root_must_be_isolated(tmp_path: Path) -> None:
         )
 
 
+def test_restore_root_rejects_symlink_boundary(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = tmp_path / "restore-link"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation is unavailable in this environment")
+
+    with pytest.raises(BackupBoundaryError):
+        RestoreTarget(
+            _target().tenant_id,
+            _target().application_id,
+            "test",
+            link,
+            "rehearsal-link",
+        )
+
+
 def test_key_reference_is_metadata_only() -> None:
     encryptor = AesGcmEnvelopeEncryptor(b"b" * 32, key_reference="vault://appcare-test-key")
 
     assert encryptor.key_reference == "vault://appcare-test-key"
     assert "aaaaaaaa" not in encryptor.key_reference
+
+
+@pytest.mark.parametrize(
+    "backup_id", ["../outside", "/absolute", r"backup\\..\\outside", "backup:id"]
+)
+def test_backup_id_is_one_safe_path_segment(backup_id: str) -> None:
+    with pytest.raises(BackupBoundaryError):
+        BackupRequest(
+            _target(),
+            _destination(),
+            backup_id,
+            "job-beta04-path-boundary",
+            NOW,
+        )
+
+
+def test_deserializer_rejects_duplicate_component_names() -> None:
+    record = {
+        "name": "database",
+        "kind": "database",
+        "source_reference": "synthetic://appcare/database",
+        "payload": base64.b64encode(b"fixture").decode("ascii"),
+    }
+    payload = json.dumps([record, record], separators=(",", ":")).encode("utf-8")
+
+    with pytest.raises(ArtifactIntegrityError, match="duplicate names"):
+        _deserialize_components(payload)

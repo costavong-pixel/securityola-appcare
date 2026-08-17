@@ -17,3 +17,9 @@ Restore uses staging plus atomic promotion. Interrupted uploads, checksum
 mismatches, unavailable/revoked credentials, duplicate jobs, partial restores,
 and retention-locked deletion are explicit unhealthy outcomes. Their evidence
 is job/recovery evidence, not a vulnerability finding.
+
+Restore and isolated test-vault roots are canonicalized before use; symlink
+crossings, unsafe backup path segments, and pre-existing staging directories
+fail closed. The filesystem test vault reconstructs persisted manifests and
+encrypted envelopes after reopen so read-back evidence is not limited to one
+process's memory.

@@ -22,6 +22,7 @@ from .models import (
 )
 from .pipeline import BackupCoordinator, BackupError
 from .stores import (
+    FilesystemImmutableVault,
     InMemoryImmutableVault,
     RetentionLockedError,
     UnavailableCloudVault,
@@ -46,6 +47,7 @@ __all__ = [
     "EnvelopeEncryptor",
     "EnvelopeEncryptionError",
     "InMemoryImmutableVault",
+    "FilesystemImmutableVault",
     "RestoreEvidence",
     "RestoreTarget",
     "RetentionLockedError",

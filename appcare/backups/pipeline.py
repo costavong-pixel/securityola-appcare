@@ -10,12 +10,16 @@ from datetime import datetime
 from pathlib import Path
 
 from .contracts import (
+    BackupBoundaryError,
     BackupSource,
     BackupTarget,
     BackupVault,
     EnvelopeEncryptor,
     RestoreTarget,
     utc,
+    validate_backup_id,
+    validate_isolated_child,
+    validate_isolated_root,
 )
 from .models import (
     BackupArtifact,
@@ -46,6 +50,8 @@ class ArtifactIntegrityError(BackupError):
 
 
 def _failure_code(error: BaseException) -> str:
+    if isinstance(error, BackupBoundaryError):
+        return "boundary_error"
     if isinstance(error, VaultUnavailableError):
         return str(error) or "provider_unavailable"
     if isinstance(error, DuplicateArtifactError):
@@ -100,6 +106,9 @@ def _deserialize_components(payload: bytes) -> tuple[BackupComponent, ...]:
         except (KeyError, TypeError, ValueError) as exc:
             raise ArtifactIntegrityError("component record is malformed") from exc
         components.append(component)
+    names = [component.name for component in components]
+    if len(names) != len(set(names)):
+        raise ArtifactIntegrityError("component payload contains duplicate names")
     return tuple(sorted(components, key=lambda item: item.name))
 
 
@@ -227,6 +236,8 @@ class BackupCoordinator:
             artifact = BackupArtifact.build(manifest, envelope)
             receipt = vault.put(artifact, idempotency_key=request.idempotency_key)
             stored = vault.get(request.backup_id)
+            if stored.manifest.backup_id != request.backup_id:
+                raise ArtifactIntegrityError("stored artifact ID does not match request")
             if stored.manifest.destination != vault.destination:
                 raise ArtifactIntegrityError("stored artifact destination does not match vault")
             verified_components = self._verify_artifact(stored, encryptor=encryptor)
@@ -304,7 +315,10 @@ class BackupCoordinator:
         started = time.monotonic()
         staging: Path | None = None
         try:
+            backup_id = validate_backup_id(backup_id)
             artifact = vault.get(backup_id)
+            if artifact.manifest.backup_id != backup_id:
+                raise BackupError("restore artifact ID does not match request")
             if artifact.manifest.destination != vault.destination:
                 raise BackupError("restore vault destination mismatch")
             if artifact.manifest.target.tenant_id != target.tenant_id:
@@ -312,16 +326,28 @@ class BackupCoordinator:
             if artifact.manifest.target.application_id != target.application_id:
                 raise BackupError("restore application mismatch")
             components = self._verify_artifact(artifact, encryptor=encryptor)
-            final = target.root / "restored" / backup_id
+            restored_root = validate_isolated_child(
+                target.root, "restored", field="restore destination"
+            )
+            staging_root = validate_isolated_child(
+                target.root, ".restore-staging", field="restore staging"
+            )
+            final = validate_isolated_child(
+                restored_root, backup_id, field="restore destination artifact"
+            )
             if final.exists():
                 raise BackupError("restore destination already exists")
-            staging = target.root / ".restore-staging" / backup_id
-            staging.mkdir(parents=True, exist_ok=False)
+            staging_candidate = validate_isolated_child(
+                staging_root, backup_id, field="restore staging artifact"
+            )
+            staging_candidate.mkdir(parents=True, exist_ok=False)
+            staging = staging_candidate
             component_dir = staging / "components"
             component_dir.mkdir()
             for component in components:
                 (component_dir / f"{component.name}.bin").write_bytes(component.payload)
-            final.parent.mkdir(parents=True, exist_ok=True)
+            restored_root.mkdir(parents=True, exist_ok=True)
+            validate_isolated_root(restored_root, field="restore destination")
             staging.replace(final)
             rto = max(0, int(time.monotonic() - started))
             rpo = max(

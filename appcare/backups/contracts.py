@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ _FORBIDDEN_MARKERS = (
     "production-server",
 )
 _COMPONENT_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+_BACKUP_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 class BackupBoundaryError(ValueError):
@@ -59,6 +61,58 @@ def _safe_identifier(value: str, *, field: str) -> str:
     if any(marker in lowered for marker in _FORBIDDEN_MARKERS):
         raise BackupBoundaryError(f"{field} is outside the AppCare boundary")
     return normalized
+
+
+def validate_backup_id(value: str) -> str:
+    """Validate the single path segment used by vault and restore stores."""
+
+    normalized = value.strip()
+    if _BACKUP_ID.fullmatch(normalized) is None or ".." in normalized:
+        raise BackupBoundaryError("backup_id is unsafe")
+    return normalized
+
+
+def validate_isolated_root(root: Path, *, field: str) -> Path:
+    """Return a canonical, non-symlinked root for isolated test data."""
+
+    if not root.is_absolute():
+        raise BackupBoundaryError(f"{field} must be absolute")
+    try:
+        absolute = Path(os.path.abspath(root))
+        resolved = root.resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        raise BackupBoundaryError(f"{field} cannot be resolved") from exc
+    if os.path.normcase(os.fspath(absolute)) != os.path.normcase(os.fspath(resolved)):
+        raise BackupBoundaryError(f"{field} cannot cross a symlink")
+    normalized = str(resolved).casefold().replace("\\", "/")
+    if any(marker in normalized for marker in _FORBIDDEN_MARKERS):
+        raise BackupBoundaryError(f"{field} is outside the AppCare isolation boundary")
+    if resolved == Path(resolved.anchor) or any(
+        part.casefold() == "production" for part in resolved.parts
+    ):
+        raise BackupBoundaryError(f"{field} is too broad")
+    return resolved
+
+
+def validate_isolated_child(root: Path, name: str, *, field: str) -> Path:
+    """Validate an internal restore/vault directory without following links."""
+
+    if not name or Path(name).name != name or name in {".", ".."}:
+        raise BackupBoundaryError(f"{field} is unsafe")
+    canonical_root = validate_isolated_root(root, field=f"{field} root")
+    child = canonical_root / name
+    if child.is_symlink():
+        raise BackupBoundaryError(f"{field} cannot cross a symlink")
+    try:
+        absolute = Path(os.path.abspath(child))
+        resolved = child.resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        raise BackupBoundaryError(f"{field} cannot be resolved") from exc
+    if os.path.normcase(os.fspath(absolute)) != os.path.normcase(os.fspath(resolved)):
+        raise BackupBoundaryError(f"{field} cannot cross a symlink")
+    if os.path.normcase(os.fspath(resolved.parent)) != os.path.normcase(os.fspath(canonical_root)):
+        raise BackupBoundaryError(f"{field} crossed the isolation boundary")
+    return resolved
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,13 +183,11 @@ class RestoreTarget:
         _safe_identifier(self.application_id, field="restore application_id")
         if self.environment not in {"development", "staging", "test"}:
             raise BackupBoundaryError("restore target cannot be production")
-        if not self.root.is_absolute():
-            raise BackupBoundaryError("restore root must be absolute")
-        normalized = str(self.root).casefold().replace("\\", "/")
-        if any(marker in normalized for marker in _FORBIDDEN_MARKERS):
-            raise BackupBoundaryError("restore root is outside the AppCare isolation boundary")
-        if str(self.root) == self.root.anchor or "production" in normalized.split("/"):
-            raise BackupBoundaryError("restore root is too broad")
+        object.__setattr__(
+            self,
+            "root",
+            validate_isolated_root(self.root, field="restore root"),
+        )
         _safe_identifier(self.isolation_id, field="isolation_id")
 
 

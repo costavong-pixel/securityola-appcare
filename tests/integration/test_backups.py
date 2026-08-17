@@ -14,6 +14,7 @@ from appcare.backups import (
     BackupDestination,
     BackupRequest,
     BackupTarget,
+    FilesystemImmutableVault,
     InMemoryImmutableVault,
     RestoreTarget,
     UnavailableCloudVault,
@@ -255,3 +256,77 @@ def test_restore_integrity_failure_never_promotes_partial_content(tmp_path: Path
     assert evidence.status == "restore_failed"
     assert evidence.failure_code == "checksum_mismatch"
     assert not (tmp_path / "isolated" / "restored" / "backup-beta04-1").exists()
+
+
+def test_restore_rejects_path_traversal_before_vault_access(tmp_path: Path) -> None:
+    destination = _destination()
+    vault = InMemoryImmutableVault(destination)
+    evidence = BackupCoordinator().restore_backup(
+        backup_id="../outside",
+        vault=vault,
+        encryptor=_encryptor(),
+        target=RestoreTarget(
+            "tenant-appcare-1",
+            "appcare-test-app",
+            "test",
+            tmp_path / "isolated",
+            "rehearsal-path",
+        ),
+        now=NOW,
+    )
+
+    assert evidence.status == "restore_failed"
+    assert evidence.failure_code == "boundary_error"
+    assert not (tmp_path / "outside").exists()
+
+
+def test_filesystem_vault_reads_persisted_artifact_after_reopen(tmp_path: Path) -> None:
+    destination = _destination()
+    root = tmp_path / "vault"
+    first_vault = FilesystemImmutableVault(root, destination)
+    outcome = BackupCoordinator().create_backup(
+        _request(destination=destination),
+        source=SyntheticAppSource(),
+        vault=first_vault,
+        encryptor=_encryptor(),
+        now=NOW,
+    )
+    assert outcome.healthy is True
+    assert outcome.evidence is not None
+
+    reopened_vault = FilesystemImmutableVault(root, destination)
+    restored = reopened_vault.get("backup-beta04-1")
+    assert restored.artifact_digest == outcome.evidence.artifact_digest
+    assert restored.manifest_bytes == restored.manifest.canonical_bytes()
+
+
+def test_restore_does_not_delete_preexisting_staging_on_mkdir_failure(tmp_path: Path) -> None:
+    destination = _destination()
+    vault = InMemoryImmutableVault(destination)
+    coordinator = BackupCoordinator()
+    outcome = coordinator.create_backup(
+        _request(destination=destination),
+        source=SyntheticAppSource(),
+        vault=vault,
+        encryptor=_encryptor(),
+        now=NOW,
+    )
+    assert outcome.healthy is True
+    restore_root = tmp_path / "isolated"
+    staging = restore_root / ".restore-staging" / "backup-beta04-1"
+    staging.mkdir(parents=True)
+    marker = staging / "must-survive.txt"
+    marker.write_text("pre-existing", encoding="utf-8")
+
+    evidence = coordinator.restore_backup(
+        backup_id="backup-beta04-1",
+        vault=vault,
+        encryptor=_encryptor(),
+        target=RestoreTarget(
+            "tenant-appcare-1", "appcare-test-app", "test", restore_root, "rehearsal-existing"
+        ),
+        now=NOW,
+    )
+
+    assert evidence.status == "restore_failed"
+    assert marker.read_text(encoding="utf-8") == "pre-existing"

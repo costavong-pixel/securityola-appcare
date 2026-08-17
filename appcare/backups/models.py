@@ -9,12 +9,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
+from ..services.security import is_safe_credential_reference
 from .contracts import (
     BackupDestination,
     BackupTarget,
     RestoreTarget,
     _safe_reference,
     utc,
+    validate_backup_id,
     validate_component_name,
     validate_metadata,
 )
@@ -54,6 +56,18 @@ class ComponentDigest:
     size_bytes: int
     sha256: str
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", validate_component_name(self.name))
+        if not self.kind or len(self.kind) > 100 or not self.kind.replace("-", "").isalnum():
+            raise ValueError("component digest kind is invalid")
+        _safe_reference(self.source_reference, field="component digest source reference")
+        if (
+            self.size_bytes < 0
+            or len(self.sha256) != 64
+            or any(character not in "0123456789abcdef" for character in self.sha256.casefold())
+        ):
+            raise ValueError("component digest is invalid")
+
 
 @dataclass(frozen=True, slots=True)
 class BackupManifest:
@@ -71,14 +85,13 @@ class BackupManifest:
     rto_target_seconds: int
 
     def __post_init__(self) -> None:
-        if not self.backup_id or len(self.backup_id) > 128:
-            raise ValueError("backup ID is invalid")
+        object.__setattr__(self, "backup_id", validate_backup_id(self.backup_id))
         if not self.components:
             raise ValueError("backup must contain at least one component")
         names = [component.name for component in self.components]
         if names != sorted(names) or len(names) != len(set(names)):
             raise ValueError("backup components must be sorted and unique")
-        if not self.key_reference.startswith("vault://"):
+        if not is_safe_credential_reference(self.key_reference):
             raise ValueError("backup key reference must be an opaque vault reference")
         if self.encryption_algorithm != "AES-256-GCM":
             raise ValueError("unsupported backup encryption algorithm")
@@ -142,7 +155,7 @@ class EncryptedEnvelope:
     def __post_init__(self) -> None:
         if self.algorithm != "AES-256-GCM":
             raise ValueError("unsupported envelope algorithm")
-        if not self.key_reference.startswith("vault://"):
+        if not is_safe_credential_reference(self.key_reference):
             raise ValueError("envelope key reference is unsafe")
         if len(self.nonce) != 12 or not self.ciphertext:
             raise ValueError("encrypted envelope is malformed")
@@ -190,8 +203,7 @@ class BackupRequest:
     rto_target_seconds: int = 3_600
 
     def __post_init__(self) -> None:
-        if not self.backup_id or len(self.backup_id) > 128:
-            raise ValueError("backup ID is invalid")
+        object.__setattr__(self, "backup_id", validate_backup_id(self.backup_id))
         if not self.idempotency_key or len(self.idempotency_key) > 200:
             raise ValueError("idempotency key is invalid")
         if self.rpo_target_seconds < 0 or self.rto_target_seconds < 0:
