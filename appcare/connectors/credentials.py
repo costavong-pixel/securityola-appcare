@@ -11,12 +11,7 @@ from .providers import ProviderConfigurationError, canonical_capabilities
 from .types import CredentialMetadata
 
 _REFERENCE = re.compile(
-    r"^(?:vault|secret|appcare-secret)://[a-z0-9][a-z0-9._/-]{2,240}$|"
-    r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$",
-    re.IGNORECASE,
-)
-_SECRET_SHAPED_REFERENCE = re.compile(
-    r"(?:bearer|password|private[_-]?key|api[_-]?key|secret|token|ghp_|github_pat_)",
+    r"^(?:vault|secret|appcare-secret)://[a-z0-9][a-z0-9._/-]{2,240}$",
     re.IGNORECASE,
 )
 
@@ -28,10 +23,7 @@ class CredentialLifecycleError(ValueError):
 def _validate_metadata(metadata: CredentialMetadata) -> CredentialMetadata:
     if not valid_public_id(metadata.tenant_id):
         raise CredentialLifecycleError("credential tenant is invalid")
-    if not _REFERENCE.fullmatch(metadata.credential_id) or (
-        "://" not in metadata.credential_id
-        and _SECRET_SHAPED_REFERENCE.search(metadata.credential_id)
-    ):
+    if not _REFERENCE.fullmatch(metadata.credential_id):
         raise CredentialLifecycleError("credential reference is invalid")
     if metadata.version < 1:
         raise CredentialLifecycleError("credential version is invalid")

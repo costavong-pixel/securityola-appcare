@@ -24,7 +24,7 @@ _TENANT_ID = "a" * 32
 def _credential(provider: str, *, scopes: tuple[str, ...] | None = None) -> CredentialMetadata:
     spec = PROVIDER_SPECS[provider]  # type: ignore[index]
     return CredentialMetadata(
-        credential_id=f"{provider}-ref-0001",
+        credential_id=f"vault://fixture/appcare/{provider}-ref-0001",
         provider=provider,  # type: ignore[arg-type]
         tenant_id=_TENANT_ID,
         scopes=scopes or spec.required_capabilities,
@@ -76,14 +76,14 @@ def test_complete_fixture_connector_reports_healthy(provider: str) -> None:
 
 def test_expired_and_revoked_credentials_fail_closed() -> None:
     expired = CredentialMetadata(
-        credential_id="github-ref-expired",
+        credential_id="vault://fixture/appcare/github-ref-expired",
         provider="github",
         tenant_id=_TENANT_ID,
         scopes=PROVIDER_SPECS["github"].required_capabilities,
         expires_at=datetime.now(UTC) - timedelta(minutes=1),
     )
     revoked = CredentialMetadata(
-        credential_id="github-ref-revoked",
+        credential_id="vault://fixture/appcare/github-ref-revoked",
         provider="github",
         tenant_id=_TENANT_ID,
         scopes=PROVIDER_SPECS["github"].required_capabilities,
@@ -99,12 +99,20 @@ def test_expired_and_revoked_credentials_fail_closed() -> None:
             connector.inventory()
 
 
-def test_malformed_or_secret_shaped_reference_is_rejected() -> None:
+@pytest.mark.parametrize(
+    "credential_id",
+    (
+        "github-token-0001",
+        "gho_1234567890abcdefghijklmnop",
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature123",
+    ),
+)
+def test_malformed_or_secret_shaped_reference_is_rejected(credential_id: str) -> None:
     registry = CredentialRegistry()
     with pytest.raises(CredentialLifecycleError):
         registry.register(
             CredentialMetadata(
-                credential_id="github-token-0001",
+                credential_id=credential_id,
                 provider="github",
                 tenant_id=_TENANT_ID,
                 scopes=PROVIDER_SPECS["github"].required_capabilities,
@@ -117,7 +125,7 @@ def test_credential_registry_rotates_and_revokes_without_raw_secret_state() -> N
     original = _credential("github")
     registry.register(original)
     replacement = CredentialMetadata(
-        credential_id="github-ref-0002",
+        credential_id="vault://fixture/appcare/github-ref-0002",
         provider="github",
         tenant_id=_TENANT_ID,
         scopes=original.scopes,
@@ -155,7 +163,7 @@ def test_credential_registry_is_tenant_scoped() -> None:
     registry.register(_credential("github"))
     other_tenant = "b" * 32
     other = CredentialMetadata(
-        credential_id="github-ref-0001",
+        credential_id="vault://fixture/appcare/github-ref-0001",
         provider="github",
         tenant_id=other_tenant,
         scopes=PROVIDER_SPECS["github"].required_capabilities,
@@ -163,7 +171,9 @@ def test_credential_registry_is_tenant_scoped() -> None:
     registry.register(other)
     assert registry.get(tenant_id=other_tenant, credential_id=other.credential_id) == other
     with pytest.raises(CredentialLifecycleError):
-        registry.get(tenant_id=other_tenant, credential_id="github-ref-missing")
+        registry.get(
+            tenant_id=other_tenant, credential_id="vault://fixture/appcare/github-ref-missing"
+        )
 
 
 def test_inventory_redacts_secret_named_metadata_without_returning_raw_value() -> None:

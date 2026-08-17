@@ -146,3 +146,46 @@ def test_foreign_tenant_cannot_reconcile_an_application() -> None:
         else:
             raise AssertionError("foreign tenant reconciliation must fail")
         assert session.scalar(select(Asset.id).where(Asset.tenant_id == foreign.tenant_id)) is None
+
+
+def test_legacy_locator_is_upgraded_to_canonical_provider_identity() -> None:
+    app = new_test_app()
+    user = seed_user(app, "LegacyAsset")
+    with TestClient(app) as client:
+        token = issue_token(client, user.email)
+        application = create_application(client, token)
+
+    with app.state.database.session() as session:
+        session.add(
+            Asset(
+                tenant_id=user.tenant_id,
+                application_id=str(application["id"]),
+                kind="repository",
+                locator="https://github.com/example/app",
+                status="active",
+            )
+        )
+        session.flush()
+
+    connector = _connector((_records()[0],), user.tenant_id)
+    with app.state.database.session() as session:
+        result = collect_inventory(
+            connector,
+            tenant_id=user.tenant_id,
+            application_id=str(application["id"]),
+            target=OwnershipTarget(expected_resource_id="repo-owner/app"),
+            session=session,
+        )
+        assets = list(
+            session.scalars(
+                select(Asset).where(
+                    Asset.tenant_id == user.tenant_id,
+                    Asset.application_id == str(application["id"]),
+                )
+            )
+        )
+
+    assert len(result.assets) == 1
+    assert len(assets) == 1
+    assert assets[0].provider == "github"
+    assert assets[0].provider_reference == "repo-001"

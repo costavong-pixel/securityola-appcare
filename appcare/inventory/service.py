@@ -145,14 +145,35 @@ def reconcile_assets(
         raise InventoryError("application_not_owned")
     persisted: list[Asset] = []
     for observed in assets:
-        existing = session.scalar(
-            select(Asset).where(
-                Asset.tenant_id == tenant_id,
-                Asset.application_id == application_id,
-                Asset.provider == observed.provider,
-                Asset.provider_reference == observed.provider_id,
+        canonical_matches = list(
+            session.scalars(
+                select(Asset).where(
+                    Asset.tenant_id == tenant_id,
+                    Asset.application_id == application_id,
+                    Asset.provider == observed.provider,
+                    Asset.provider_reference == observed.provider_id,
+                )
             )
         )
+        if len(canonical_matches) > 1:
+            raise InventoryError("inventory_identity_conflict")
+        existing = canonical_matches[0] if canonical_matches else None
+        if existing is None:
+            legacy_matches = list(
+                session.scalars(
+                    select(Asset).where(
+                        Asset.tenant_id == tenant_id,
+                        Asset.application_id == application_id,
+                        Asset.provider.is_(None),
+                        Asset.provider_reference.is_(None),
+                        Asset.kind == observed.kind,
+                        Asset.locator == observed.locator,
+                    )
+                )
+            )
+            if len(legacy_matches) > 1:
+                raise InventoryError("inventory_identity_conflict")
+            existing = legacy_matches[0] if legacy_matches else None
         if existing is None:
             existing = Asset(
                 tenant_id=tenant_id,

@@ -103,6 +103,17 @@ def test_connector_check_and_inventory_are_safe_and_strict() -> None:
         assert invalid.status_code == 422
         assert "fake-live-token" not in invalid.text
 
+        token_reference = client.post(
+            "/v1/connectors",
+            headers=headers,
+            json={
+                **_connector_payload(str(application["id"])),
+                "credential_reference": "gho_aaaaaaaa",
+            },
+        )
+        assert token_reference.status_code == 422
+        assert "gho_aaaaaaaa" not in token_reference.text
+
 
 def test_connector_without_live_transport_fails_closed() -> None:
     app = create_app(
