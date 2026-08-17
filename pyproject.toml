@@ -9,6 +9,7 @@ description = "SecurityOla AppCare engineering foundation"
 requires-python = ">=3.12,<3.15"
 dependencies = [
     "fastapi==0.141.1",
+    "cryptography==50.0.0",
     "pydantic==2.13.4",
     "psycopg==3.3.4",
     "sqlalchemy==2.0.52",

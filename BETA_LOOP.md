@@ -15,7 +15,7 @@ Inside AppCare keep `development → staging → production` isolated; developme
 - [ ] BETA-00 — bootstrap Codex, Saveruflo, Spec Kit, Graphify, audited skills, CI, and AppCare/WordPress runtime isolation
 - [x] BETA-01 — control plane, tenancy, audit trail
 - [x] BETA-02 — read-only GitHub/Vercel/Supabase connectors (merged through protected main at `4eae0682f6e421b65f7ff75c521b331ccd164de1`)
-- [ ] BETA-03 — security scanning and normalized evidence-backed findings
+- [x] BETA-03 — security scanning and normalized evidence-backed findings (merged through protected main at `22196c9bface2cfeff1b049bb9e9890520ce38c6`)
 - [ ] BETA-04 — B2 immutable backup, Glacier archive, restore rehearsal
 - [ ] BETA-05 — LangGraph durable scan-to-recovery workflow
 - [ ] BETA-06 — isolated remediation, tests, PR, preview deployment
@@ -48,15 +48,16 @@ For the current open beta issue:
 
 If a skill cannot be made safe and maintainable, drop it and replace it.
 
-## Current BETA-03 state
+## Current BETA-04 state
 
-The isolated AppCare workspace has started BETA-03 from protected main at
-`4eae0682f6e421b65f7ff75c521b331ccd164de1`. The approved foundation scope is
-scanner contracts, deterministic evidence, source/secret/dependency adapter
-boundaries, normalized findings, deduplication, distinct scanner failures,
-tenant/target enforcement, and seeded vulnerability/false-positive fixtures.
-No remediation writes, live provider authorization, production access, or
-WordPress resource is in scope.
+The isolated AppCare workspace has started BETA-04 from protected main at
+`22196c9bface2cfeff1b049bb9e9890520ce38c6`. The first implementation slice is
+provider-neutral backup and restore contracts, encrypted artifact envelopes,
+checksum verification, immutable-retention job evidence, and a controlled
+test-app restore into an isolated destination. B2 and Glacier destinations are
+descriptors until owner-controlled provider credentials and account policy are
+available. No live cloud upload, production access, remediation, deployment,
+or WordPress resource is in scope.
 
 ## Production rule
 
