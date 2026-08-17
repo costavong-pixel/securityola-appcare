@@ -10,7 +10,7 @@ _REFERENCE = re.compile(
 )
 _JWT = re.compile(r"^[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}$")
 _TOKEN_PREFIX = re.compile(
-    r"(?:^|[/_.:-])(?:gh[oprus]_\w+|github_pat_\w+|xox[baprs]-\w+|sk-[A-Za-z0-9_-]{12,})$",
+    r"(?:^|[/_.:-])(?:gh[oprus]_|github_pat_|xox[baprs]-|sk-)[A-Za-z0-9_-]{8,}",
     re.IGNORECASE,
 )
 _SECRET_SEGMENT = re.compile(
