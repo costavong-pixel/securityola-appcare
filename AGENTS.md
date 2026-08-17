@@ -123,5 +123,5 @@ Drop any skill that cannot be made safe, maintainable, and testable.
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan
-[BETA-02 read-only connector plan](specs/002-read-only-connectors/plan.md).
+[BETA-03 scanning foundation plan](specs/003-scanning/plan.md).
 <!-- SPECKIT END -->
