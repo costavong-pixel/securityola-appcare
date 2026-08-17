@@ -25,7 +25,7 @@ from .models import (
     ScannerFailure,
     ScannerObservation,
 )
-from .scope import ScopeError, validate_scope
+from .scope import ScopeError, validate_scope, validate_target_input
 
 
 def _failure(
@@ -173,6 +173,7 @@ class ScanPipeline:
         target: SanitizedTargetInput | None = None,
     ) -> PipelineResult:
         target_input = target or SanitizedTargetInput(context.target_id)
+        validate_target_input(context, target_input)
         findings: list[Finding] = []
         evidence: list[EvidenceRecord] = []
         failures: list[ScannerFailure] = []

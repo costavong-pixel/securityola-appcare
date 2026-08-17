@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from appcare.scanning import (
     DependencyScannerAdapter,
@@ -15,6 +15,7 @@ from appcare.scanning import (
     SecretScannerAdapter,
     SourceScannerAdapter,
     run_scan,
+    suppress_finding,
 )
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "scanning"
@@ -81,7 +82,7 @@ def test_pipeline_normalizes_deduplicates_and_records_failures_separately() -> N
 
 
 def test_out_of_scope_observation_becomes_failure_not_finding() -> None:
-    observation = _observation(_fixture("out-of-scope.json"))
+    observation = _observation(_fixture("out_of_scope.json"))
 
     result = run_scan(
         _context(),
@@ -95,9 +96,10 @@ def test_out_of_scope_observation_becomes_failure_not_finding() -> None:
 
 
 def test_malformed_adapter_output_is_not_promoted_to_a_finding() -> None:
+    malformed = _fixture("malformed.json")
     result = run_scan(
         _context(),
-        [FunctionalScannerAdapter("source", lambda _context, _target: [object()])],
+        [FunctionalScannerAdapter("source", lambda _context, _target: [malformed])],
     )
 
     assert result.findings == ()
@@ -106,8 +108,51 @@ def test_malformed_adapter_output_is_not_promoted_to_a_finding() -> None:
 
 
 def test_false_positive_can_be_suppressed_after_deterministic_finding() -> None:
-    observation = _observation(_fixture("false-positive.json"))
+    observation = _observation(_fixture("false_positive.json"))
     result = run_scan(_context(), [SourceScannerAdapter(lambda _context, _target: [observation])])
 
     assert len(result.findings) == 1
     assert result.findings[0].status == "active"
+    suppressed, decision = suppress_finding(
+        _context(), result.findings[0], reason="accepted test fixture", actor="reviewer"
+    )
+    assert suppressed.status == "suppressed"
+    assert suppressed.evidence_ids == result.findings[0].evidence_ids
+    assert decision.fingerprint == result.findings[0].fingerprint
+
+
+def test_scanner_failure_fixture_is_not_a_finding() -> None:
+    failure_fixture = _fixture("scanner_failure.json")
+
+    def failing_scan(_context: ScanContext, _target: Any) -> list[ScannerObservation]:
+        raise TimeoutError(failure_fixture["message"])
+
+    result = run_scan(_context(), [SecretScannerAdapter(failing_scan)])
+
+    assert result.findings == ()
+    assert result.failures[0].code == failure_fixture["code"]
+    assert result.failures[0].retryable is True
+
+
+def test_pipeline_rejects_target_before_custom_adapter_execution() -> None:
+    called = False
+
+    class RecordingAdapter:
+        adapter_kind: Literal["source"] = "source"
+
+        def scan(self, context: ScanContext, target: Any) -> Any:
+            nonlocal called
+            called = True
+            return FunctionalScannerAdapter("source", lambda _context, _target: []).scan(
+                context, target
+            )
+
+    from appcare.scanning import SanitizedTargetInput, ScopeError
+
+    try:
+        run_scan(_context(), [RecordingAdapter()], SanitizedTargetInput("target-other"))
+    except ScopeError:
+        pass
+    else:
+        raise AssertionError("out-of-scope target was accepted")
+    assert called is False
