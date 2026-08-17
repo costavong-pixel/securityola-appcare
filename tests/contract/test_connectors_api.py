@@ -78,7 +78,7 @@ def test_connector_check_and_inventory_are_safe_and_strict() -> None:
         )
         assert created.status_code == 201, created.text
         connector = created.json()
-        assert connector["credential_reference"] == "vault://fixture/appcare/github-read"
+        assert connector["credential_reference"] == "[CONFIGURED]"
         assert "token" not in created.text.casefold()
 
         checked = client.post(f"/v1/connectors/{connector['id']}/check", headers=headers)

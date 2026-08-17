@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
@@ -11,13 +12,16 @@ from sqlalchemy.orm import Session
 
 from ..connectors import (
     ConnectorRegistry,
-    CredentialContext,
     NormalizedConnectorResult,
-    ProviderAssetObservation,
-    ProviderTransportError,
     provider_profile,
     validate_scopes,
 )
+from ..connectors.base import ConnectorAccessError, RegistryReadOnlyConnector
+from ..connectors.contracts import CheckResult
+from ..connectors.credentials import CredentialLifecycleError, CredentialRegistry
+from ..connectors.providers import ProviderConfigurationError, canonical_capabilities
+from ..connectors.types import CredentialMetadata, OwnershipTarget
+from ..inventory import InventoryError, collect_inventory
 from ..models import (
     Application,
     Asset,
@@ -37,6 +41,11 @@ _ALLOWED_CREDENTIAL_STATUSES = {
     "invalid",
     "insufficient_scope",
 }
+_CREDENTIAL_REFERENCE = re.compile(
+    r"^(?:vault|secret|appcare-secret)://[a-z0-9][a-z0-9._/-]{2,240}$",
+    re.IGNORECASE,
+)
+_CREDENTIAL_AUTHORITY = "appcare-secret-service"
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +110,17 @@ def _safe_metadata_reference(value: str | None, *, required: bool = False) -> st
     return normalized
 
 
+def _safe_credential_reference(value: str | None, *, required: bool = False) -> str | None:
+    if value is None:
+        if required:
+            raise ValueError("credential reference is required")
+        return None
+    normalized = value.strip()
+    if not _CREDENTIAL_REFERENCE.fullmatch(normalized) or contains_credential_like(normalized):
+        raise ValueError("credential reference is unsafe")
+    return normalized
+
+
 def _safe_display_text(value: str, *, maximum: int) -> str:
     normalized = value.strip()
     if not normalized or len(normalized) > maximum:
@@ -145,11 +165,12 @@ def _credential_failure(
         if expires_at <= now:
             return "credential_expired"
     try:
-        _safe_metadata_reference(credential.reference, required=True)
-        available_scopes = validate_scopes(provider, credential.scopes_json)
-    except ValueError:
+        _safe_credential_reference(credential.reference, required=True)
+        available_scopes = canonical_capabilities(provider, credential.scopes_json)
+        configured_capabilities = canonical_capabilities(provider, configured_scopes)
+    except (ProviderConfigurationError, ValueError):
         return "credential_metadata_invalid"
-    if not set(configured_scopes).issubset(set(available_scopes)):
+    if not set(configured_capabilities).issubset(set(available_scopes)):
         return "credential_insufficient_scope"
     return None
 
@@ -169,12 +190,15 @@ def register_connector(
     kind = _safe_display_text(registration.kind, maximum=100)
     display_name = _safe_display_text(registration.display_name, maximum=200)
     authority = _safe_metadata_reference(registration.credential_authority, required=True)
+    if authority != _CREDENTIAL_AUTHORITY:
+        raise ValueError("credential authority is unsupported")
     profile = provider_profile(registration.provider)
     if profile is None or kind.casefold() not in profile.inventory_kinds:
         raise ValueError("connector kind is not supported for the provider")
     resource_reference = _safe_metadata_reference(registration.resource_reference)
     owner_reference = _safe_metadata_reference(registration.owner_reference)
-    credential_reference = _safe_metadata_reference(registration.credential_reference)
+    credential_reference = _safe_credential_reference(registration.credential_reference)
+    canonical_scopes = canonical_capabilities(registration.provider, scopes)
     fingerprint = _safe_metadata_reference(registration.credential_fingerprint)
     if registration.credential_status != "active" and credential_reference is None:
         raise ValueError("credential status requires a reference")
@@ -208,7 +232,7 @@ def register_connector(
                 connector_id=connector.id,
                 reference=credential_reference,
                 authority=authority or "appcare-secret-service",
-                scopes_json=list(scopes),
+                scopes_json=list(canonical_scopes),
                 status=registration.credential_status,
                 expires_at=registration.credential_expires_at,
                 fingerprint=fingerprint,
@@ -280,6 +304,105 @@ def _failed_summary(reason_code: str, *, checked_at: datetime) -> ConnectorCheck
     )
 
 
+def _build_read_only_connector(
+    session: Session,
+    *,
+    tenant_id: str,
+    connector: Connector,
+    registry: ConnectorRegistry,
+    checked_at: datetime,
+) -> RegistryReadOnlyConnector:
+    credential = _credential_for(session, tenant_id=tenant_id, connector_id=connector.id)
+    configured_scopes = tuple(scope for scope in connector.scope_json if isinstance(scope, str))
+    failure = _credential_failure(
+        credential,
+        provider=connector.provider,
+        configured_scopes=configured_scopes,
+        now=checked_at,
+    )
+    if failure is not None or credential is None:
+        raise ConnectorAccessError(failure or "credential_reference_missing")
+    try:
+        canonical_scopes = canonical_capabilities(connector.provider, credential.scopes_json)
+    except (ProviderConfigurationError, ValueError) as exc:
+        raise ConnectorAccessError("credential_metadata_invalid") from exc
+    metadata = CredentialMetadata(
+        credential_id=credential.reference,
+        provider=connector.provider,  # type: ignore[arg-type]
+        tenant_id=credential.tenant_id,
+        scopes=canonical_scopes,
+        expires_at=credential.expires_at,
+        revoked_at=utcnow() if credential.status == "revoked" else None,
+    )
+    lifecycle = CredentialRegistry()
+    try:
+        metadata = lifecycle.register(metadata)
+        metadata = lifecycle.get(
+            tenant_id=tenant_id,
+            credential_id=metadata.credential_id,
+        )
+    except CredentialLifecycleError as exc:
+        raise ConnectorAccessError("credential_metadata_invalid") from exc
+    return RegistryReadOnlyConnector(
+        provider=connector.provider,  # type: ignore[arg-type]
+        credential=metadata,
+        legacy_scopes=configured_scopes,
+        authority=credential.authority,
+        resource_reference=connector.resource_reference or "",
+        owner_reference=connector.owner_reference or "",
+        registry=registry,
+    )
+
+
+def _summary_from_read_only(
+    read_only: RegistryReadOnlyConnector,
+    *,
+    resource_reference: str,
+    checked_at: datetime,
+) -> ConnectorCheckSummary:
+    health = read_only.health()
+    if not health.usable:
+        return _failed_summary(health.reason, checked_at=checked_at)
+    ownership = read_only.verify_ownership(OwnershipTarget(expected_resource_id=resource_reference))
+    if not ownership.verified:
+        normalized = NormalizedConnectorResult(
+            CheckResult("passed", None, {"ok": True}),
+            CheckResult("passed", None, {"allowed": True}),
+            CheckResult("failed", ownership.reason, {"matched": False}),
+            (),
+        )
+    else:
+        try:
+            read_only.inventory()
+        except ConnectorAccessError as exc:
+            return _failed_summary(str(exc), checked_at=checked_at)
+        normalized = NormalizedConnectorResult(
+            CheckResult("passed", None, {"ok": True}),
+            CheckResult("passed", None, {"allowed": True}),
+            CheckResult("passed", None, {"matched": True}),
+            (),
+        )
+    reasons = tuple(
+        reason
+        for reason in (
+            normalized.health.reason_code,
+            normalized.permissions.reason_code,
+            normalized.ownership.reason_code,
+        )
+        if reason is not None
+    )
+    statuses = (normalized.health, normalized.permissions, normalized.ownership)
+    return ConnectorCheckSummary(
+        health_status=normalized.health.status,
+        permission_status=normalized.permissions.status,
+        ownership_status=normalized.ownership.status,
+        overall_status="passed" if all(item.status == "passed" for item in statuses) else "failed",
+        reason_codes=tuple(_safe_reason(reason) or "connector_check_failed" for reason in reasons),
+        checked_at=checked_at,
+        normalized=normalized,
+    )
+
+
 def _collect_and_normalize(
     session: Session,
     *,
@@ -297,70 +420,21 @@ def _collect_and_normalize(
         connector.last_checked_at = checked_at
         session.flush()
         return summary
-    credential = _credential_for(session, tenant_id=tenant_id, connector_id=connector.id)
-    configured_scopes = tuple(scope for scope in connector.scope_json if isinstance(scope, str))
-    failure = _credential_failure(
-        credential,
-        provider=connector.provider,
-        configured_scopes=configured_scopes,
-        now=checked_at,
-    )
-    if failure is not None or credential is None:
-        summary = _failed_summary(failure or "credential_reference_missing", checked_at=checked_at)
-        _record_checks(session, tenant_id=tenant_id, connector=connector, summary=summary)
-        connector.health_status = summary.health_status
-        connector.permission_status = summary.permission_status
-        connector.ownership_status = summary.ownership_status
-        connector.last_checked_at = checked_at
-        session.flush()
-        return summary
     try:
-        adapter = registry.adapter(connector.provider)
-        validate_scopes(connector.provider, configured_scopes)
-        payloads = registry.collect(
-            connector.provider,
-            CredentialContext(credential.reference, tuple(credential.scopes_json)),
-            connector.resource_reference,
-        )
-        normalized = adapter.normalize(
-            payloads,
-            resource_reference=connector.resource_reference,
-            owner_reference=connector.owner_reference,
-            configured_scopes=configured_scopes,
-        )
-        reasons = tuple(
-            reason
-            for reason in (
-                normalized.health.reason_code,
-                normalized.permissions.reason_code,
-                normalized.ownership.reason_code,
-            )
-            if reason is not None
-        )
-        summary = ConnectorCheckSummary(
-            health_status=normalized.health.status,
-            permission_status=normalized.permissions.status,
-            ownership_status=normalized.ownership.status,
-            overall_status=(
-                "passed"
-                if all(
-                    item.status == "passed"
-                    for item in (
-                        normalized.health,
-                        normalized.permissions,
-                        normalized.ownership,
-                    )
-                )
-                else "failed"
-            ),
-            reason_codes=tuple(
-                _safe_reason(reason) or "connector_check_failed" for reason in reasons
-            ),
+        read_only = _build_read_only_connector(
+            session,
+            tenant_id=tenant_id,
+            connector=connector,
+            registry=registry,
             checked_at=checked_at,
-            normalized=normalized,
         )
-    except ProviderTransportError as exc:
-        summary = _failed_summary(exc.reason_code, checked_at=checked_at)
+        summary = _summary_from_read_only(
+            read_only,
+            resource_reference=connector.resource_reference,
+            checked_at=checked_at,
+        )
+    except ConnectorAccessError as exc:
+        summary = _failed_summary(str(exc), checked_at=checked_at)
     except (ValueError, KeyError):
         summary = _failed_summary("connector_check_invalid", checked_at=checked_at)
     connector.health_status = summary.health_status
@@ -391,21 +465,6 @@ def _snapshot_key(value: str) -> str:
     if not normalized or len(normalized) > 128 or not safe_reference(normalized):
         raise ValueError("snapshot key is unsafe")
     return normalized
-
-
-def _safe_asset_observations(
-    normalized: NormalizedConnectorResult,
-) -> tuple[tuple[str, ProviderAssetObservation], ...]:
-    seen: set[str] = set()
-    for observation in normalized.assets:
-        key = observation.provider_reference.casefold()
-        if key in seen:
-            raise ValueError("duplicate provider asset reference")
-        seen.add(key)
-    return tuple(
-        (observation.provider_reference.casefold(), observation)
-        for observation in normalized.assets
-    )
 
 
 def inventory_connector(
@@ -443,22 +502,43 @@ def inventory_connector(
         run.status = "running"
         run.failure_code = None
         run.started_at = started
-    summary = _collect_and_normalize(
-        session, tenant_id=tenant_id, connector=connector, registry=registry
-    )
-    if (
-        summary.overall_status != "passed"
-        or summary.normalized is None
-        or not summary.normalized.inventory_valid
-    ):
-        run.status = "failed"
-        run.failure_code = (
-            summary.normalized.inventory_reason
-            if summary.normalized is not None and not summary.normalized.inventory_valid
-            else summary.reason_codes[0]
-            if summary.reason_codes
-            else "connector_check_failed"
+    read_only: RegistryReadOnlyConnector | None = None
+    try:
+        if connector.resource_reference is None or connector.owner_reference is None:
+            raise InventoryError("ownership_reference_missing")
+        read_only = _build_read_only_connector(
+            session,
+            tenant_id=tenant_id,
+            connector=connector,
+            registry=registry,
+            checked_at=started,
         )
+        result = collect_inventory(
+            read_only,
+            tenant_id=tenant_id,
+            application_id=connector.application_id,
+            target=OwnershipTarget(expected_resource_id=connector.resource_reference),
+            session=session,
+        )
+        summary = _summary_from_read_only(
+            read_only,
+            resource_reference=connector.resource_reference,
+            checked_at=started,
+        )
+    except (ConnectorAccessError, InventoryError, ValueError) as exc:
+        summary = _failed_summary(str(exc), checked_at=started)
+        result = None
+
+    connector.health_status = summary.health_status
+    connector.permission_status = summary.permission_status
+    connector.ownership_status = summary.ownership_status
+    connector.last_checked_at = summary.checked_at
+    _record_checks(session, tenant_id=tenant_id, connector=connector, summary=summary)
+
+    if result is None or summary.overall_status != "passed":
+        run.status = "failed"
+        run.failure_code = _safe_reason(summary.reason_codes[0] if summary.reason_codes else None)
+        run.failure_code = run.failure_code or "connector_inventory_failed"
         run.finished_at = utcnow()
         run.asset_count = 0
         session.flush()
@@ -479,16 +559,6 @@ def inventory_connector(
             )
         return InventorySummary(run, ())
 
-    try:
-        observations = _safe_asset_observations(summary.normalized)
-    except ValueError:
-        run.status = "failed"
-        run.failure_code = "inventory_invalid"
-        run.finished_at = utcnow()
-        run.asset_count = 0
-        session.flush()
-        return InventorySummary(run, ())
-
     existing = list(
         session.scalars(
             select(Asset).where(
@@ -497,40 +567,46 @@ def inventory_connector(
             )
         )
     )
-    by_reference = {
-        asset.provider_reference.casefold(): asset
-        for asset in existing
-        if asset.provider_reference is not None
-    }
     seen_keys: set[str] = set()
     assets: list[Asset] = []
-    for reference, observation in observations:
-        seen_keys.add(reference)
-        asset = by_reference.get(reference)
-        if asset is None:
-            asset = Asset(
-                tenant_id=tenant_id,
-                application_id=connector.application_id,
-                connector_id=connector.id,
-                provider=connector.provider,
-                provider_reference=observation.provider_reference,
-                kind=observation.kind,
-                locator=observation.locator,
-                display_name=observation.display_name,
-                display_metadata_json=dict(observation.metadata),
-                status="active",
-                last_seen_at=utcnow(),
+    for observed in result.assets:
+        reference = observed.provider_id.casefold()
+        matches = list(
+            session.scalars(
+                select(Asset).where(
+                    Asset.tenant_id == tenant_id,
+                    Asset.application_id == connector.application_id,
+                    Asset.provider == observed.provider,
+                    Asset.provider_reference == observed.provider_id,
+                )
             )
-            session.add(asset)
-        else:
-            asset.application_id = connector.application_id
-            asset.provider = connector.provider
-            asset.kind = observation.kind
-            asset.locator = observation.locator
-            asset.display_name = observation.display_name
-            asset.display_metadata_json = dict(observation.metadata)
-            asset.status = "active"
-            asset.last_seen_at = utcnow()
+        )
+        if len(matches) != 1:
+            run.status = "failed"
+            run.failure_code = "inventory_identity_conflict"
+            run.finished_at = utcnow()
+            run.asset_count = 0
+            session.flush()
+            if actor_user_id is not None:
+                append_event(
+                    session,
+                    tenant_id=tenant_id,
+                    actor_user_id=actor_user_id,
+                    action="connector.inventory",
+                    subject_type="connector",
+                    subject_id=connector.id,
+                    outcome="failure",
+                    metadata={
+                        "snapshot_key": key,
+                        "status": "failed",
+                        "failure_code": run.failure_code,
+                    },
+                )
+            return InventorySummary(run, ())
+        asset = matches[0]
+        asset.connector_id = connector.id
+        asset.last_seen_at = utcnow()
+        seen_keys.add(reference)
         assets.append(asset)
     for asset in existing:
         existing_reference = (

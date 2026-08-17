@@ -17,6 +17,8 @@ class CredentialContext:
 
     reference: str
     scopes: tuple[str, ...]
+    tenant_id: str
+    authority: str
 
 
 @dataclass(frozen=True, slots=True)

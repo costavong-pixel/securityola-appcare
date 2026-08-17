@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 from urllib.parse import urlsplit
 
 from ..routes.common import safe_reference
 from ..services.audit import MetadataError, sanitize_metadata, sanitize_text
+from .contracts import CredentialContext, NormalizedConnectorResult
 from .providers import ProviderConfigurationError, get_provider_spec, validate_capabilities
 from .types import (
     ConnectorHealth,
@@ -17,6 +18,9 @@ from .types import (
     ProviderSnapshot,
     RemoteRecord,
 )
+
+if TYPE_CHECKING:
+    from .adapters import ConnectorRegistry
 
 
 class ConnectorAccessError(ValueError):
@@ -32,6 +36,150 @@ class ReadOnlyConnector(Protocol):
     def inventory(self) -> ProviderSnapshot: ...
 
     def verify_ownership(self, target: OwnershipTarget) -> OwnershipResult: ...
+
+
+class RegistryReadOnlyConnector:
+    """Adapt the injected fixed-request registry to the canonical read-only API."""
+
+    def __init__(
+        self,
+        *,
+        provider: ProviderName,
+        credential: CredentialMetadata,
+        legacy_scopes: tuple[str, ...],
+        authority: str,
+        resource_reference: str,
+        owner_reference: str,
+        registry: ConnectorRegistry,
+    ) -> None:
+        self.provider = provider
+        self.tenant_id = credential.tenant_id
+        self._credential = credential
+        self._legacy_scopes = legacy_scopes
+        self._authority = authority
+        self._resource_reference = resource_reference
+        self._owner_reference = owner_reference
+        self._registry = registry
+        self._normalized: NormalizedConnectorResult | None = None
+
+    def _collect(self) -> NormalizedConnectorResult:
+        if self._normalized is not None:
+            return self._normalized
+        try:
+            adapter = self._registry.adapter(self.provider)
+            payloads = self._registry.collect(
+                self.provider,
+                CredentialContext(
+                    reference=self._credential.credential_id,
+                    scopes=self._legacy_scopes,
+                    tenant_id=self._credential.tenant_id,
+                    authority=self._authority,
+                ),
+                self._resource_reference,
+                tenant_id=self._credential.tenant_id,
+            )
+            self._normalized = adapter.normalize(
+                payloads,
+                resource_reference=self._resource_reference,
+                owner_reference=self._owner_reference,
+                configured_scopes=self._legacy_scopes,
+            )
+            return self._normalized
+        except Exception as exc:
+            from .transport import ProviderTransportError
+
+            if isinstance(exc, ProviderTransportError):
+                raise ConnectorAccessError(exc.reason_code) from exc
+            if isinstance(exc, (KeyError, ValueError)):
+                raise ConnectorAccessError("connector_evidence_invalid") from exc
+            raise ConnectorAccessError("provider_transport_failed") from exc
+
+    def health(self) -> ConnectorHealth:
+        status = self._credential.status()
+        if self._credential.provider != self.provider:
+            return ConnectorHealth(self.provider, False, "invalid", reason="provider_mismatch")
+        try:
+            permission = validate_capabilities(self.provider, self._credential.scopes)
+        except ProviderConfigurationError:
+            return ConnectorHealth(self.provider, False, "invalid", reason="invalid_capability")
+        if status != "active":
+            return ConnectorHealth(self.provider, False, status, reason=f"{status}_credential")
+        if not permission.allowed:
+            return ConnectorHealth(
+                self.provider,
+                False,
+                status,
+                missing_capabilities=permission.missing_capabilities,
+                forbidden_capabilities=permission.forbidden_capabilities,
+                unrecognized_capabilities=(
+                    permission.forbidden_capabilities
+                    if permission.reason == "unrecognized_capability"
+                    else ()
+                ),
+                reason=permission.reason,
+            )
+        try:
+            normalized = self._collect()
+        except ConnectorAccessError as exc:
+            return ConnectorHealth(self.provider, False, status, reason=str(exc))
+        if normalized.health.status != "passed":
+            return ConnectorHealth(
+                self.provider,
+                False,
+                status,
+                reason=normalized.health.reason_code or "provider_health_failed",
+            )
+        if normalized.permissions.status != "passed":
+            return ConnectorHealth(
+                self.provider,
+                False,
+                status,
+                reason=normalized.permissions.reason_code or "insufficient_scope",
+            )
+        return ConnectorHealth(self.provider, True, status)
+
+    def inventory(self) -> ProviderSnapshot:
+        health = self.health()
+        if not health.usable:
+            raise ConnectorAccessError(health.reason)
+        normalized = self._collect()
+        if not normalized.inventory_valid:
+            raise ConnectorAccessError(normalized.inventory_reason or "unsafe_record")
+        snapshot = ProviderSnapshot(
+            provider=self.provider,
+            resource_id=self._resource_reference,
+            domains=(),
+            records=tuple(
+                RemoteRecord(
+                    kind=observation.kind,
+                    provider_id=observation.provider_reference,
+                    name=observation.display_name,
+                    locator=observation.locator,
+                    metadata=observation.metadata,
+                )
+                for observation in normalized.assets
+            ),
+        )
+        return _safe_snapshot(snapshot, self.provider)
+
+    def verify_ownership(self, target: OwnershipTarget) -> OwnershipResult:
+        health = self.health()
+        if not health.usable:
+            return OwnershipResult(False, health.reason)
+        if target.expected_domain is not None:
+            return OwnershipResult(False, "invalid_target")
+        matched_resource = (
+            target.expected_resource_id is None
+            or target.expected_resource_id == self._resource_reference
+        )
+        if not matched_resource:
+            return OwnershipResult(False, "resource_mismatch", False, False)
+        ownership = self._collect().ownership
+        if ownership.status != "passed":
+            return OwnershipResult(
+                False, ownership.reason_code or "ownership_mismatch", True, False
+            )
+        return OwnershipResult(True, "matched", True, True)
 
 
 def normalize_domain(value: str) -> str | None:

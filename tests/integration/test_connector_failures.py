@@ -71,7 +71,7 @@ def test_revoked_credential_fails_without_echoing_metadata() -> None:
         payload = {
             **_connector_payload(str(application["id"])),
             "credential_status": "revoked",
-            "credential_reference": "fixture-revoked-reference",
+            "credential_reference": "vault://fixture/appcare/revoked",
         }
         created = client.post("/v1/connectors", headers=headers, json=payload)
         checked = client.post(f"/v1/connectors/{created.json()['id']}/check", headers=headers)

@@ -53,8 +53,14 @@ def test_registry_emits_only_fixed_get_requests() -> None:
     registry = ConnectorRegistry(transport=transport)
     payloads = registry.collect(
         "github",
-        CredentialContext("fixture-reference", ("metadata:read",)),
+        CredentialContext(
+            "fixture-reference",
+            ("metadata:read",),
+            tenant_id="a" * 32,
+            authority="appcare-secret-service",
+        ),
         "example/appcare",
+        tenant_id="a" * 32,
     )
     assert set(payloads) == {"health", "permissions", "ownership", "inventory"}
     assert transport.requests
@@ -68,6 +74,11 @@ def test_default_transport_fails_closed() -> None:
     with pytest.raises(ProviderTransportError) as raised:
         transport.request(
             ReadOnlyRequest(provider="github", operation="health", path="/installation"),
-            CredentialContext("fixture-reference", ("metadata:read",)),
+            CredentialContext(
+                "fixture-reference",
+                ("metadata:read",),
+                tenant_id="a" * 32,
+                authority="appcare-secret-service",
+            ),
         )
     assert raised.value.reason_code == "provider_transport_unavailable"

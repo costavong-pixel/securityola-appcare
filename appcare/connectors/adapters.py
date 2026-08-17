@@ -254,8 +254,15 @@ class ConnectorRegistry:
         return self.adapters[provider]
 
     def collect(
-        self, provider: str, credential: CredentialContext, resource_reference: str
+        self,
+        provider: str,
+        credential: CredentialContext,
+        resource_reference: str,
+        *,
+        tenant_id: str,
     ) -> Mapping[RequestOperation, Mapping[str, object]]:
+        if credential.tenant_id != tenant_id:
+            raise ProviderTransportError("credential_tenant_mismatch")
         adapter = self.adapter(provider)
         payloads: dict[RequestOperation, Mapping[str, object]] = {}
         for request in adapter.build_requests(resource_reference):

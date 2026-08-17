@@ -61,6 +61,31 @@ PROVIDER_SPECS: Final[dict[ProviderName, ProviderSpec]] = {
     ),
 }
 
+_LEGACY_CAPABILITY_ALIASES: Final[dict[ProviderName, dict[str, str]]] = {
+    "github": {
+        "metadata:read": "repository.metadata.read",
+        "contents:read": "repository.contents.read",
+    },
+    "vercel": {
+        "project:read": "project.read",
+        "deployment:read": "deployment.read",
+        "domain:read": "domain.read",
+        "team:read": "team.read",
+    },
+    "supabase": {
+        "projects:read": "project.read",
+        "auth:read": "auth.metadata.read",
+        "database:read": "database.metadata.read",
+        "storage:read": "storage.metadata.read",
+        "organizations:read": "project.read",
+    },
+}
+_LEGACY_READ_ONLY_BUNDLES: Final[dict[ProviderName, dict[str, tuple[str, ...]]]] = {
+    "github": {"metadata:read": PROVIDER_SPECS["github"].required_capabilities},
+    "vercel": {"project:read": PROVIDER_SPECS["vercel"].required_capabilities},
+    "supabase": {"projects:read": PROVIDER_SPECS["supabase"].required_capabilities},
+}
+
 
 class ProviderConfigurationError(ValueError):
     """The provider or its declared capability set is not safe."""
@@ -111,3 +136,25 @@ def validate_capabilities(provider: str, capabilities: Iterable[str]) -> Permiss
             reason="missing_capability",
         )
     return PermissionResult(allowed=True)
+
+
+def canonical_capabilities(provider: str, capabilities: Iterable[str]) -> tuple[str, ...]:
+    """Normalize legacy API scope names into the canonical capability set."""
+
+    normalized_provider = get_provider_spec(provider).provider
+    aliases = _LEGACY_CAPABILITY_ALIASES[normalized_provider]
+    bundles = _LEGACY_READ_ONLY_BUNDLES[normalized_provider]
+    normalized_values: set[str] = set()
+    for capability in capabilities:
+        if not isinstance(capability, str) or not capability.strip():
+            continue
+        raw = capability.strip().casefold()
+        if raw in bundles:
+            normalized_values.update(bundles[raw])
+        else:
+            normalized_values.add(aliases.get(raw, raw))
+    normalized = tuple(sorted(normalized_values))
+    result = validate_capabilities(normalized_provider, normalized)
+    if not result.allowed:
+        raise ProviderConfigurationError(result.reason)
+    return normalized

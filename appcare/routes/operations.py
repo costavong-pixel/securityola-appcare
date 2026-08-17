@@ -45,7 +45,7 @@ def _connector_response(session: Session, connector: Connector) -> ConnectorResp
         resource_reference=connector.resource_reference,
         owner_reference=connector.owner_reference,
         scopes=list(connector.scope_json),
-        credential_reference=credential.reference if credential else None,
+        credential_reference="[CONFIGURED]" if credential else None,
         credential_authority=credential.authority if credential else None,
         credential_status=credential.status if credential else None,
         credential_expires_at=credential.expires_at if credential else None,

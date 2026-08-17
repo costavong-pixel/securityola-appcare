@@ -32,6 +32,11 @@ class InventoryError(ValueError):
     """Inventory cannot be safely collected or reconciled."""
 
 
+def _connector_failure_reason(error: ConnectorAccessError) -> str:
+    reason = str(error)
+    return reason if re.fullmatch(r"[a-z0-9_]{1,100}", reason) else "unsafe_record"
+
+
 def _canonical_locator(locator: str) -> str:
     candidate = locator.strip()
     if not safe_reference(candidate):
@@ -116,6 +121,7 @@ def inventory_digest(assets: Iterable[InventoryAsset]) -> str:
         }
         for asset in assets
     ]
+    payload.sort(key=lambda item: str(item["asset_key"]))
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
@@ -139,25 +145,36 @@ def reconcile_assets(
         raise InventoryError("application_not_owned")
     persisted: list[Asset] = []
     for observed in assets:
-        local_kind = f"{observed.provider}:{observed.kind}:{observed.asset_key[:16]}"
         existing = session.scalar(
             select(Asset).where(
                 Asset.tenant_id == tenant_id,
                 Asset.application_id == application_id,
-                Asset.kind == local_kind,
-                Asset.locator == observed.locator,
+                Asset.provider == observed.provider,
+                Asset.provider_reference == observed.provider_id,
             )
         )
         if existing is None:
             existing = Asset(
                 tenant_id=tenant_id,
                 application_id=application_id,
-                kind=local_kind,
+                provider=observed.provider,
+                provider_reference=observed.provider_id,
+                kind=observed.kind,
                 locator=observed.locator,
+                display_name=observed.name,
+                display_metadata_json=dict(observed.metadata),
                 status="active",
             )
             session.add(existing)
             session.flush()
+        else:
+            existing.provider = observed.provider
+            existing.provider_reference = observed.provider_id
+            existing.kind = observed.kind
+            existing.locator = observed.locator
+            existing.display_name = observed.name
+            existing.display_metadata_json = dict(observed.metadata)
+            existing.status = "active"
         persisted.append(existing)
     return persisted
 
@@ -182,14 +199,14 @@ def collect_inventory(
     try:
         ownership = connector.verify_ownership(target)
     except ConnectorAccessError as exc:
-        raise InventoryError("unsafe_record") from exc
+        raise InventoryError(_connector_failure_reason(exc)) from exc
     if not ownership.verified:
         raise InventoryError(ownership.reason)
     try:
         snapshot = connector.inventory()
         assets = normalize_records(snapshot.provider, snapshot.records)
     except ConnectorAccessError as exc:
-        raise InventoryError("unsafe_record") from exc
+        raise InventoryError(_connector_failure_reason(exc)) from exc
     result = InventoryResult(
         digest=inventory_digest(assets),
         assets=assets,
