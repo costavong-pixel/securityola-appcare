@@ -27,8 +27,13 @@ pytest -q
 ```
 
 Use only an AppCare-owned development SQLite database or an explicitly isolated
-AppCare development PostgreSQL database. Never point the local API at shared,
-production, WordPress Security, or deployment resources.
+AppCare development PostgreSQL database. For PostgreSQL, configure the
+non-secret `APPCARE_DATABASE_ALLOWED_HOSTS` variable with exact allowed host
+names and use the environment-specific database name (`appcare_development`,
+`appcare_staging`, or `appcare_test`). The application rejects missing or
+unmatched host/name targets before engine/schema initialization. Never point
+the local API at shared, production, WordPress Security, or deployment
+resources.
 
 ## Commercial offer
 
@@ -55,3 +60,16 @@ Third-party skills are never trusted by default.
 **Inspect → sandbox → pressure-test → patch/debug → retest → pin → use**
 
 If a skill cannot be made safe and maintainable, drop it.
+
+## BETA-02 read-only connectors
+
+BETA-02 adds provider-neutral, fixture-backed read-only connector contracts for
+GitHub, Vercel, and Supabase. The boundary checks explicit read capabilities,
+credential expiry/revocation metadata, application/domain ownership, and
+deterministic inventory. It may reconcile observed records into tenant-owned
+AppCare assets, but it has no provider deployment, mutation, deletion, SQL
+execution, OAuth, or live customer transport path.
+
+The provider mappings are documented in
+`specs/002-read-only-connectors/contracts/api.md`. Live provider authorization,
+transport, and secret-vault custody remain later owner-controlled gates.

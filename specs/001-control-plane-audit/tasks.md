@@ -112,10 +112,10 @@
 
 - [x] T035 [P] Update `README.md`, `DEVELOPMENT.md`, `SECURITY.md` references, and `specs/001-control-plane-audit/quickstart.md` with the final safe local setup and test commands.
 - [x] T036 [P] Run `python scripts/check_public_safety.py`, `python scripts/scan_worker_changes.py` fixtures, and secret-pattern/failure tests without printing any secret values.
-- [ ] T037 Run full pytest, Ruff, mypy, build-lock, dependency, security/failure, and exact-head CI gates from the BETA-01 branch.
-- [ ] T038 Run fresh Codex Security validation and Graphify impact review against the exact BETA-01 diff.
-- [ ] T039 Run the independent Codex final review through the current Codex agent/app/cloud session or GitHub Codex review; Codex CLI is optional and not a blocker.
-- [ ] T040 Save the Saveruflo checkpoint with exact branch/head, issue acceptance evidence, findings, tests, CI, and WordPress untouched status.
+- [x] T037 Run full pytest, Ruff, mypy, build-lock, dependency, security/failure, and exact-head CI gates from the BETA-01 branch.
+- [x] T038 Run fresh Codex Security validation and Graphify impact review against the exact BETA-01 diff.
+- [x] T039 Run the independent Codex final review through the current Codex agent/app/cloud session or GitHub Codex review; Codex CLI is optional and not a blocker.
+- [x] T040 Save the Saveruflo checkpoint with exact branch/head, issue acceptance evidence, findings, tests, CI, and WordPress untouched status.
 
 ---
 

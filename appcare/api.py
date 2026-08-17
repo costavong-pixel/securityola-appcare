@@ -28,6 +28,7 @@ def create_app(
             token_ttl_seconds=resolved_settings.token_ttl_seconds,
             max_page_size=resolved_settings.max_page_size,
             audit_metadata_max_bytes=resolved_settings.audit_metadata_max_bytes,
+            allowed_hosts=resolved_settings.allowed_hosts,
         )
     resolved_settings.validate()
     resolved_database = database or Database(resolved_settings.database_url)

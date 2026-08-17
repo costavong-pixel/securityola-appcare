@@ -1,135 +1,99 @@
-# Implementation Plan: Read-Only Connectors and Asset Inventory
+# Implementation Plan: Read-Only Supported-Stack Connectors and Asset Inventory
 
-**Branch**: `codex/beta-02-connectors` | **Date**: 2026-08-15 | **Spec**: [spec.md](spec.md)
+**Branch**: `codex/beta-02-connectors` | **Date**: 2026-08-17 | **Spec**: [spec.md](spec.md)
 
 ## Summary
 
-BETA-02 adds a tenant-scoped, read-only connector boundary for GitHub, Vercel, and
-Supabase. A connector records only provider, resource identity, approved capability
-metadata, and a non-secret credential reference. Provider adapters emit fixed `GET`
-request descriptors through an injected deny-by-default transport, normalize safe
-health/permission/ownership evidence, and reconcile provider assets idempotently.
-The default application has no live provider transport; tests use deterministic fake
-responses. No provider credential value, arbitrary URL, mutation, deletion, deploy,
-database write, or secret response is accepted or persisted.
+Add a small provider-neutral connector boundary that can prove read-only permissions and ownership against injected provider snapshots, without requiring live customer credentials. The boundary will model credential metadata and rotation state, normalize GitHub/Vercel/Supabase inventory into deterministic assets, and optionally reconcile those assets into the existing tenant-scoped `Asset` table without deleting anything externally.
 
 ## Technical Context
 
-**Language/Version**: Python 3.12+ (`>=3.12,<3.15`)
+**Language/Version**: Python 3.12+
 
-**Primary Dependencies**: FastAPI 0.141.1, Pydantic 2.13.4, SQLAlchemy 2.0.52,
-psycopg 3.3.4, uvicorn 0.52.3. No provider SDK or new runtime dependency is added
-for this bounded slice.
+**Primary Dependencies**: Existing Python standard library, SQLAlchemy 2.x models, and existing AppCare sanitization helpers. No new runtime dependency or provider SDK is required.
 
-**Storage**: Existing SQLAlchemy metadata on SQLite for tests and PostgreSQL for
-deployment. New connector credential metadata, check results, inventory runs, and
-asset linkage use the existing database bootstrap path; no live migration or
-provider database is touched in BETA-02.
+**Storage**: Existing isolated AppCare database for local asset reconciliation. Raw provider credentials are not stored; only an in-memory/provider-vault-neutral metadata contract is introduced.
 
-**Testing**: pytest, Ruff, mypy strict mode, deterministic failure/secret tests,
-public-safety checks, worker-policy checks, build-lock/hash checks, pip-audit, and
-exact-head GitHub Actions.
+**Testing**: pytest, deterministic synthetic provider snapshots, public-surface inspection, tenant-isolation persistence tests, Ruff, mypy, public-safety checks, pip-audit, and exact-head GitHub CI.
 
-**Target Platform**: Isolated AppCare web service on the shared server; local
-Windows development and Linux CI. WordPress Security paths and services are not
-part of the target.
+**Target Platform**: AppCare development/staging only. No live provider call is made by tests or setup.
 
-**Project Type**: FastAPI web service with tenant-scoped SQLAlchemy persistence.
+**Constraints**: Read-only provider capability; no deploy, mutation, deletion, SQL execution, OAuth, secret printing, customer production access, WordPress access, or production API changes. Existing BETA-01 tests and boundaries must remain green.
 
-**Performance Goals**: Bounded request processing and local inventory reconciliation;
-no unbounded provider retries or background network execution. A single inventory
-request is capped by the existing API page limits and persists only normalized safe
-metadata.
-
-**Constraints**: Provider operations are `GET` only and selected by server-owned
-profiles. User input cannot choose an HTTP method, arbitrary provider URL, command,
-credential value, or destructive capability. Cross-tenant access returns the same
-not-found boundary as other AppCare resources. Tests do not access live providers.
-
-**Scale/Scope**: Three providers, one connector resource per AppCare application,
-repeatable inventory snapshots, and the initial GitHub repository, Vercel project /
-deployment, and Supabase project / Auth / Storage / database metadata asset classes.
+**Scale/Scope**: Three provider specifications, one common connector contract, one synthetic snapshot adapter, deterministic normalization/reconciliation, and focused tests for the issue acceptance criteria.
 
 ## Constitution Check
 
-*GATE: Must pass before implementation and be re-checked after design.*
+- **I. Security before speed**: PASS. The public connector contract is read-only and credential metadata excludes raw secrets.
+- **II. Deterministic evidence before AI claims**: PASS. Provider behavior is exercised through synthetic snapshots, negative states, stable digests, and source inspection.
+- **III. Least privilege and tenant isolation**: PASS. Provider capabilities are allowlisted per provider and local reconciliation requires tenant/application ownership.
+- **IV. No secrets in artifacts**: PASS. Fixtures use opaque fake references only; sanitization and public-safety tests reject secret-shaped values.
+- **V. Staging, backup, and reversibility before production**: PASS. No live provider or deployment operation is introduced.
+- **VI. AppCare and WordPress remain separate**: PASS. Only the isolated AppCare checkout and local test database are in scope.
+- **VII. Third-party skills are untrusted**: PASS. No new skill or runtime SDK is installed.
+- **VIII. Codex owns final decisions**: PASS. Codex owns capability definitions, threat boundaries, tests, and final review; DeepSeek is bounded to implementation.
+- **IX. Exact review and CI evidence is required**: PASS. Full gates, security scan, Graphify, checkpoint, and exact-head CI remain required.
 
-- **Security before speed**: PASS — fixed read-only contracts and fail-closed checks
-  are preferred over live provider convenience.
-- **Deterministic evidence**: PASS — fake transports, explicit check records, and
-  exact tests provide evidence without relying on worker summaries.
-- **Least privilege and tenant isolation**: PASS — provider profiles, application
-  ownership checks, and cross-tenant negative tests are required.
-- **No secrets in artifacts**: PASS — only credential references, scope metadata,
-  expiry, and fingerprints are stored; raw values are rejected and redacted.
-- **Staging/reversibility**: PASS — local inventory reconciliation only retires
-  missing assets and cannot mutate provider state.
-- **AppCare / WordPress separation**: PASS — all changes are in the AppCare
-  checkout; no WordPress resource is read or modified.
-- **Third-party skills**: PASS — no provider SDK or unreviewed worker capability is
-  introduced; DeepSeek remains optional and sandbox-gated.
-- **Codex ownership**: PASS — Codex owns the profile, threat boundary, diff review,
-  security disposition, merge, and release decisions.
-- **Exact review and CI**: PASS — the final gates include diff inspection, Graphify,
-  secret/security/failure tests, independent Codex review, and exact-head CI.
+## Design Decisions
+
+### 1. Provider capability registry
+
+`appcare/connectors/providers.py` will define immutable `ProviderSpec` records for `github`, `vercel`, and `supabase`. Required capabilities are read-oriented strings. A shared validator rejects any capability containing write/deploy/delete/mutate/execute semantics and rejects unknown providers.
+
+### 2. Metadata-only credential registry
+
+`appcare/connectors/credentials.py` will define immutable metadata and a small registry for active/revoked/expired versions. The registry accepts opaque references only. It never accepts a raw secret parameter, and `rotate()` revokes the old version before making the replacement available.
+
+### 3. Injected read-only connector
+
+`appcare/connectors/base.py` will define the read-only interface and a fixture-backed implementation. The interface contains health, permission, inventory, and ownership methods only. Provider classes will reuse the common implementation with provider-specific specs and snapshot validation.
+
+### 4. Deterministic inventory
+
+`appcare/inventory/service.py` will canonicalize safe remote records, de-duplicate by provider/kind/locator, sort records, calculate a SHA-256 digest, and reconcile only into the existing AppCare `Asset` table. Reconciliation is tenant-filtered and additive; it never deletes or writes to a provider.
+
+### 5. Ownership verification
+
+Ownership checks will require at least one expected resource identifier or approved domain. Domain matching will be exact or a deliberate subdomain of the normalized expected domain; malformed URLs, userinfo, and missing provider identity fail closed.
 
 ## Project Structure
-
-### Documentation
-
-```text
-specs/002-read-only-connectors/
-├── plan.md
-├── research.md
-├── data-model.md
-├── quickstart.md
-├── contracts/
-│   └── connectors.md
-├── checklists/
-│   └── requirements.md
-└── tasks.md
-```
-
-### Source Code
 
 ```text
 appcare/
 ├── connectors/
-│   ├── contracts.py       # fixed read descriptors and normalized observations
-│   ├── profiles.py        # provider capability allow/deny lists
-│   ├── transport.py       # deny-by-default injected transport boundary
-│   └── adapters.py        # GitHub, Vercel, and Supabase normalizers
-├── models/
-│   ├── operations.py      # connector, credential metadata, checks, inventory runs
-│   └── resources.py       # connector-linked asset inventory fields
-├── services/
-│   └── connectors.py      # registration, checks, ownership, reconciliation
-└── routes/
-    ├── connectors.py      # connector check/inventory endpoints
-    ├── operations.py      # existing connector registration/list/detail contract
-    └── schemas.py         # strict BETA-02 request/response models
+│   ├── __init__.py
+│   ├── base.py
+│   ├── credentials.py
+│   ├── providers.py
+│   └── types.py
+└── inventory/
+    ├── __init__.py
+    └── service.py
 
 tests/
-├── contract/
-│   └── test_connectors_api.py
-├── integration/
-│   ├── test_connector_inventory.py
-│   ├── test_connector_tenant_isolation.py
-│   └── test_connector_failures.py
-└── unit/
-    ├── test_connector_profiles.py
-    ├── test_connector_transport.py
-    └── test_connector_redaction.py
-```
+├── unit/test_connectors.py
+├── integration/test_read_only_connectors.py
+└── integration/test_asset_inventory.py
 
-**Structure Decision**: Extend the existing single FastAPI/SQLAlchemy AppCare
-service. Provider-specific concerns live in `appcare/connectors`; persistence and
-HTTP boundaries reuse the existing models, tenant-scope repository, audit sanitizer,
-authentication, and application factory. There is no frontend, worker, provider SDK,
-or deployment code in this beta slice.
+specs/002-read-only-connectors/
+├── spec.md
+├── plan.md
+├── research.md
+├── data-model.md
+├── contracts/api.md
+├── quickstart.md
+├── checklists/requirements.md
+└── tasks.md
+```
 
 ## Complexity Tracking
 
-No constitution violations. The adapter and transport boundary is the smallest
-additional structure that prevents provider-specific URL/method expansion from
-leaking into the tenant-facing API while keeping tests offline and deterministic.
+No constitution violations require justification. The additional capability and credential metadata types are the minimum boundary needed to prevent provider write authority and raw-secret handling from leaking into later beta phases.
+
+## Reconciliation with PR #16
+
+The previously reviewed PR #16 GET-only transport, provider profiles, adapter,
+tenant-scoped service, route, model, and API contract remain in this branch.
+The fixture-backed contract and deterministic inventory layer in this plan is
+an additional lower-level validation boundary; it does not remove or weaken
+the existing API/service boundary.

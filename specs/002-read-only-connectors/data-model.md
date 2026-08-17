@@ -1,72 +1,96 @@
-# BETA-02 Data Model
+# BETA-02 Connector and Inventory Data Model
 
-## Connector
+## Cross-cutting rules
 
-The existing tenant-owned `Connector` record is extended with:
+- Provider names are the closed set `github`, `vercel`, and `supabase`.
+- Capability strings are immutable and read-only. Any capability containing `write`, `deploy`, `delete`, `mutate`, `execute`, `sql`, `secret`, or `key` is rejected from the BETA-02 connector boundary.
+- Credential records contain an opaque reference and metadata only. Raw token, key, password, cookie, and private-key values are never fields of the model.
+- Every persisted AppCare asset has the authenticated tenant and application owner. Provider records are never persisted without those local owners.
+- Inventory output is normalized, sorted, de-duplicated, and hashed from canonical safe fields.
+- Ownership verification is fail-closed and does not treat a matching display name as proof of ownership.
 
-- `provider`: one of `github`, `vercel`, or `supabase`.
-- `kind`: provider resource class such as `repository`, `project`, or `supabase-project`.
-- `resource_reference`: opaque provider resource identity; never a credential-bearing URL.
-- `owner_reference`: normalized provider owner/account/team/organization identity used for the ownership check.
-- `scope_json`: approved capability names only.
-- `health_status`, `permission_status`, `ownership_status`: `unknown`, `passed`, or `failed`.
-- `last_checked_at`: timestamp of the latest local check.
+## Entities
 
-All fields remain tenant-scoped through the owning application and existing authorization dependency.
+### ProviderSpec
 
-## Connector credential metadata
+| Field | Type | Rules |
+|---|---|---|
+| provider | literal | Closed provider set |
+| required_capabilities | tuple[str, ...] | Read-only allowlist |
+| forbidden_capabilities | tuple[str, ...] | Includes all write/deploy/delete/execute families |
 
-`ConnectorCredential` stores the current non-secret reference for a connector:
+### CredentialMetadata
 
-- `reference`: opaque secret-service reference, not the provider token.
-- `authority`: provider or credential authority label.
-- `scopes_json`: requested read-only scopes.
-- `status`: `active`, `expired`, `revoked`, `invalid`, or `insufficient_scope`.
-- `expires_at`: optional expiry timestamp.
-- `fingerprint`: optional non-reversible identifier for rotation/audit correlation.
+| Field | Type | Rules |
+|---|---|---|
+| credential_id | opaque string | Non-secret reference; stable format check |
+| provider | provider literal | Must match connector |
+| tenant_id | opaque AppCare tenant ID | Credential metadata is never shared across tenants |
+| scopes | tuple[str, ...] | Must satisfy provider required capabilities and contain no forbidden capability |
+| version | positive integer | Increases on rotation |
+| issued_at | UTC datetime | Required |
+| expires_at | UTC datetime or null | Past expiry is unusable |
+| revoked_at | UTC datetime or null | Any value makes it unusable |
 
-There is deliberately no token, password, private key, API key, cookie, header, or provider-secret column. The API rejects those field names through strict schemas and rejects credential-shaped values through the shared safety validator.
+Derived state is `active`, `expired`, `revoked`, or `invalid`.
 
-## Connector check
+### ConnectorHealth
 
-`ConnectorCheck` is an append-only-ish status history record tied to one tenant and connector:
+| Field | Type | Rules |
+|---|---|---|
+| provider | provider literal | Never includes a token |
+| usable | bool | True only for active credential and complete read scopes |
+| credential_status | literal | Stable lifecycle result |
+| missing_capabilities | tuple[str, ...] | Safe names only |
+| reason | literal | No provider response or credential value |
 
-- `check_kind`: `health`, `permissions`, or `ownership`.
-- `status`: `passed`, `failed`, or `unknown`.
-- `reason_code`: stable non-sensitive failure classification.
-- `evidence_json`: allowlisted booleans, provider names, scope names, and normalized references only.
-- `checked_at`: check timestamp.
+### ProviderSnapshot
 
-Raw provider payloads are never persisted, returned, or written to audit metadata.
+| Field | Type | Rules |
+|---|---|---|
+| provider | provider literal | Must match connector |
+| resource_id | opaque string | Provider account/project/repository identity |
+| domains | tuple[str, ...] | Normalized hostnames only; no userinfo/query/fragment |
+| records | tuple[RemoteRecord, ...] | Safe fixture/provider metadata |
 
-## Inventory run
+### RemoteRecord
 
-`InventoryRun` represents a local reconciliation for a connector and snapshot key:
+| Field | Type | Rules |
+|---|---|---|
+| kind | string | Bounded non-secret category, e.g. repository/project/deployment/table/bucket |
+| provider_id | string | Provider-side opaque identifier |
+| name | string | Bounded display label |
+| locator | string | Safe URL or provider locator; credential-bearing references rejected |
+| metadata | mapping | Safe scalar metadata only; secret-shaped keys/values rejected or redacted |
 
-- `snapshot_key`: caller-selected safe idempotency key, defaulting to `current`.
-- `status`: `running`, `succeeded`, or `failed`.
-- `asset_count`: normalized active asset count.
-- `failure_code`: stable non-sensitive failure classification.
-- `started_at` and `finished_at`.
+### InventoryAsset
 
-The unique tenant/connector/snapshot-key identity means retries update the same local run rather than creating duplicate inventory records.
+| Field | Type | Rules |
+|---|---|---|
+| asset_key | SHA-256 string | Derived from provider, kind, provider ID, and canonical locator |
+| provider | provider literal | Source provider |
+| kind | string | Normalized provider category |
+| provider_id | string | Stable source identity |
+| name | string | Safe display label |
+| locator | string | Canonical safe locator |
+| metadata | mapping | Sanitized scalar metadata |
 
-## Asset
+### OwnershipResult
 
-Existing tenant-owned `Asset` records gain nullable connector inventory fields:
+| Field | Type | Rules |
+|---|---|---|
+| verified | bool | True only for resource/domain match |
+| reason | literal | `matched`, `missing_target`, `resource_mismatch`, `domain_mismatch`, or `invalid_target` |
+| matched_resource | bool | Safe boolean |
+| matched_domain | bool | Safe boolean |
 
-- `connector_id`: owning connector for provider inventory assets.
-- `provider` and `provider_reference`: stable provider identity.
-- `display_metadata_json`: allowlisted non-secret display metadata.
-- `last_seen_at`: latest successful inventory observation.
+### InventoryResult
 
-The stable local identity is `(tenant_id, connector_id, provider_reference)`. Missing assets are marked `retired`; provider deletion is never requested and local history is retained.
+Contains normalized `InventoryAsset` values, deterministic `digest`, record count, and `OwnershipResult`. It is safe to serialize and contains no credential material or raw provider payload.
 
-## Invariants
+## Relationships and persistence
 
-1. A connector, credential record, check, inventory run, and asset can be read only by its tenant.
-2. A connector must have a valid supported provider profile before a check or inventory request.
-3. Check and inventory fail closed when the credential reference is absent, expired, revoked, insufficient, or invalid.
-4. Ownership must match the configured resource and owner references plus
-   provider-side credential identity before assets are persisted.
-5. Provider operations are fixed `GET` descriptors. No database mutation, deploy, delete, arbitrary method, or arbitrary URL is represented by these entities.
+- A `ReadOnlyConnector` has one `ProviderSpec` and one active tenant-bound `CredentialMetadata` reference at a time.
+- A connector produces one `ProviderSnapshot` and many `InventoryAsset` values.
+- An `InventoryAsset` may reconcile to one existing AppCare `Asset` under one tenant/application pair.
+- Reconciliation is additive and idempotent. It does not delete or update provider state and does not create a local asset for a failed ownership check.

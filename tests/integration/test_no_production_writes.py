@@ -72,3 +72,11 @@ def test_repository_has_no_provider_sdk_or_deployment_socket_in_control_plane_tr
     assert "boto3" not in source
     assert "from vercel" not in source
     assert "import vercel" not in source
+    for forbidden in (
+        "provider_write",
+        "execute_sql",
+        "deploy_now",
+        "delete_remote",
+        "mutate_remote",
+    ):
+        assert forbidden not in source

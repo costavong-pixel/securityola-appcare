@@ -1,35 +1,36 @@
-# Specification Quality Checklist: Read-Only Connectors and Asset Inventory
+# Specification Quality Checklist: Read-Only Supported-Stack Connectors and Asset Inventory
 
-**Purpose**: Validate specification completeness and quality before planning and implementation.
-**Created**: 2026-08-15
+**Purpose**: Validate specification completeness and quality before implementation
+
+**Created**: 2026-08-17
+
 **Feature**: [spec.md](../spec.md)
 
 ## Content Quality
 
-- [x] No implementation details; the specification describes user outcomes and security boundaries.
-- [x] Focused on AppCare operator value and safe customer asset inventory.
-- [x] Written in user-facing language with testable security expectations.
-- [x] All mandatory sections are completed.
+- [x] No implementation details (languages, frameworks, APIs)
+- [x] Focused on user value and business needs
+- [x] Written for non-technical stakeholders
+- [x] All mandatory sections completed
 
 ## Requirement Completeness
 
-- [x] No `[NEEDS CLARIFICATION]` markers remain.
-- [x] Requirements are testable and unambiguous.
-- [x] Success criteria are measurable.
-- [x] Success criteria are technology-agnostic.
-- [x] All acceptance scenarios are defined for the three prioritized stories.
-- [x] Provider, tenant, credential, retry, idempotency, and failure edge cases are identified.
-- [x] Scope is bounded to read-only GitHub, Vercel, and Supabase inventory and checks.
-- [x] Dependencies and assumptions are identified, including reuse of the BETA-01 control-plane boundary.
+- [x] No [NEEDS CLARIFICATION] markers remain
+- [x] Requirements are testable and unambiguous
+- [x] Success criteria are measurable
+- [x] Success criteria are technology-agnostic where possible
+- [x] All acceptance scenarios are defined
+- [x] Edge cases are identified through fail-closed requirements
+- [x] Scope is clearly bounded
+- [x] Dependencies and assumptions identified
 
 ## Feature Readiness
 
-- [x] All functional requirements have clear acceptance criteria.
-- [x] User stories cover connection, inventory, and safe failure/lifecycle flows.
-- [x] Feature outcomes are measurable without relying on a particular implementation.
-- [x] No implementation details leak into the user-facing specification.
+- [x] All functional requirements have clear acceptance criteria
+- [x] User scenarios cover primary flows
+- [x] Feature meets measurable outcomes defined in Success Criteria
+- [x] No production or WordPress capability leaks into the specification
 
 ## Notes
 
-- BETA-02 explicitly excludes deployment, database mutation, deletion, write synchronization, credential rotation execution, production systems, and WordPress Security resources.
-- DeepSeek is an optional implementation worker; its unavailability is not a specification or release blocker.
+The live provider transport, OAuth, and vault custody decisions are explicitly deferred and are not blockers for the deterministic read-only contract and inventory slice.

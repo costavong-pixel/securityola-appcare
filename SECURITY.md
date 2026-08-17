@@ -26,6 +26,18 @@ SecurityOla AppCare is security-sensitive software.
   development/staging state only. Provider credentials, deployment sockets,
   production write methods, and external provider SDKs remain out of scope.
 
+## BETA-02 read-only connector boundary
+
+- GitHub, Vercel, and Supabase capability sets are allowlisted as read-only;
+  write/deploy/delete/execute capability names fail closed.
+- Connector state contains only opaque credential metadata. Expired and revoked
+  references are unusable, and rotation invalidates the old version.
+- Provider inventory is accepted only after explicit resource/domain ownership
+  verification and is normalized before tenant-scoped local reconciliation.
+- The connector surface exposes health, inventory, and ownership checks only;
+  no provider mutation, deployment, deletion, arbitrary SQL, OAuth, or live
+  customer transport is available in BETA-02.
+
 ## Public repository rule
 
 Do not publish customer-specific vulnerabilities, secrets, infrastructure details, exploit evidence, internal credentials, or production access instructions in public issues or commits.

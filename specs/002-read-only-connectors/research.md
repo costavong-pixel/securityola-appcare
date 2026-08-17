@@ -1,54 +1,41 @@
-# BETA-02 Read-Only Connector Research
+# BETA-02 Research and Decisions
 
-**Date**: 2026-08-15
-**Scope**: AppCare development/staging control-plane design only. No provider account or live credential was accessed.
+## Decision: Keep provider permissions as explicit internal read-only capabilities
 
-## Decision 1: Use provider-specific read-only capability profiles
+**Rationale**: Provider authorization models use different names and granularity. AppCare needs one stable safety contract that can be tested before live credentials are authorized. The connector rejects capabilities outside its immutable provider specification; a future live adapter maps those capabilities to the provider's current grant model.
 
-**Decision**: Every connector declares a provider capability profile and the application rejects any capability outside that profile before a provider request is constructed. The default profiles are:
+**Evidence**:
 
-- GitHub App: repository metadata read. Contents read is a separately named capability and is not implicitly granted. Administration, deployments, Actions/workflows, secrets, variables, webhooks, issues/pull-request writes, and all other write permissions are denied.
-- Vercel: project read, deployment read, team read, and current-user read only when required for ownership evidence. Project writes, domains, environment variables, log drains, Edge Config writes, and deployment creation are denied.
-- Supabase OAuth/Management API: Auth read, Database read, Organizations read, Projects read, and Storage read only as needed by the inventory contract. All write scopes and Secrets read are denied.
+- [GitHub choosing permissions for a GitHub App](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app) says apps should select the minimum permissions required and that endpoint documentation defines the required permission level. The initial AppCare mapping is repository metadata/content/pull-request read access only; no issue, workflow, administration, or write permission is allowed.
+- [Vercel API integrations](https://vercel.com/docs/integrations/create-integration/vercel-api-integrations) documents separate integration scopes for deployment, project, domain, and team access and notes that updating project/domain resources requires write permissions. AppCare records only project/deployment/domain/team read capabilities in this phase and does not implement update calls.
+- [Supabase Management API](https://supabase.com/docs/reference/api/introduction) documents OAuth scopes and endpoint-level fine-grained permissions, requires HTTPS bearer authentication, and distinguishes read endpoints from project/database/storage writes. AppCare uses internal project/auth/database/storage metadata-read capabilities and excludes migration, SQL execution, secret, key, project-admin, and storage-config write capabilities.
 
-**Rationale**: GitHub recommends selecting the minimum permissions required for an App, and its endpoint documentation maps each REST operation to required permissions. Vercel’s integration scopes distinguish read-only project/deployment access from project, domain, environment-variable, and deployment writes. Supabase’s current OAuth scope table separates read and write categories, and the Secrets read scope can expose project API keys/secrets, so it is outside BETA-02 even though the inventory is read-only.
+## Decision: Metadata-only credential references
 
-**Sources**:
+**Rationale**: BETA-02 needs expiry, revocation, and rotation behavior but does not need to decide where raw provider secrets live. A metadata registry proves the lifecycle without creating a second secret store or copying the existing OpenCode auth store.
 
-- [GitHub: Choosing permissions for a GitHub App](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app)
-- [GitHub: Permissions required for GitHub Apps](https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps?apiVersion=latest)
-- [Vercel: Building integrations with the REST API](https://vercel.com/docs/integrations/create-integration/vercel-api-integrations)
-- [Vercel: REST API reference](https://vercel.com/docs/rest-api)
-- [Supabase: OAuth app scopes](https://supabase.com/docs/guides/integrations/build-a-supabase-oauth-integration/oauth-scopes)
+**Alternatives considered**:
 
-## Decision 2: Keep live credential custody outside the BETA-02 control-plane records
+- Store provider tokens in the AppCare database: rejected because this phase has no approved vault/custody design and would widen the secret boundary.
+- Read provider tokens from `.env` or another user's OpenCode auth store: rejected by the AppCare/WordPress and no-secret rules.
+- Implement OAuth now: deferred until owner-controlled provider application/account and callback authorization are explicitly available.
 
-**Decision**: BETA-02 stores only a non-secret credential reference, provider, scope set, lifecycle status, expiration timestamp, and safe fingerprint. There is no credential-value column, API-key retrieval route, token echo, or provider secret response persistence.
+## Decision: Injected snapshots before live transport
 
-**Rationale**: Supabase documents that personal access tokens carry the user’s privileges and that its Secrets read scope retrieves project API keys and secrets. The control plane therefore records only scoped metadata and delegates any future secret custody to an explicitly approved isolated secret service. Automated tests use fake references and provider fixtures.
+**Rationale**: Deterministic tests must not call customer systems, mutate remote state, or depend on network availability. A fixture-backed connector proves permission, ownership, normalization, and idempotence while leaving transport and account authorization as a later controlled integration step.
 
-**Source**: [Supabase Management API authentication and scopes](https://supabase.com/docs/reference/api/introduction)
+**Alternatives considered**:
 
-## Decision 3: Use narrow adapter contracts with a deny-by-default transport
+- Add provider SDKs: rejected because they enlarge the dependency and secret surface without being required for BETA-02 acceptance.
+- Add unrestricted HTTP requests: rejected because a generic client could reach an unapproved host or expose a write method accidentally.
+- Use a fake provider account: rejected because owner-controlled credentials and account authorization are not needed for this phase.
 
-**Decision**: Provider adapters emit only fixed read request descriptors and normalize provider observations into AppCare assets and check outcomes. The transport contract accepts `GET` requests only, has no generic method or arbitrary URL field, and is injected for deterministic tests. The default development adapter has no live credential or provider transport.
+## Decision: Additive local reconciliation
 
-**Rationale**: This keeps provider-specific API details behind a small boundary and makes it impossible for a BETA-02 route to gain deployment, mutation, deletion, or arbitrary command authority by passing a new request method or path from user input.
+**Rationale**: Replaying inventory must be idempotent, but an inventory run must not delete local evidence or imply provider mutation. Existing `Asset` records are reused when the tenant/application/provider/kind/locator key matches; new observations are inserted; no remote operation exists.
 
-## Decision 4: Treat provider ownership as an explicit invariant
+## Unresolved later integration work
 
-**Decision**: A connector is bound to one tenant-owned AppCare application and an expected provider resource reference. Health/permission/ownership checks must compare normalized provider resource owner and provider-side credential identity (account/team/organization) with that expected reference before inventory results are persisted. Unknown or ambiguous ownership fails closed.
-
-**Rationale**: Provider authentication alone does not prove that a returned repository, Vercel project, or Supabase project belongs to the AppCare tenant. Ownership evidence is part of the persisted check result but raw provider responses are not.
-
-## Decision 5: Reconcile locally and idempotently without destructive provider actions
-
-**Decision**: Inventory uses a stable `(tenant, connector, provider, provider_reference)` identity. Repeated observations update safe local metadata and `last_seen` state; missing observations retire local assets while preserving their history. The connector never issues delete, deploy, database mutation, sync-write, or credential-rotation calls.
-
-**Rationale**: This supports repeatable baselines and later scanning without turning inventory into a destructive synchronization system.
-
-## Resolved questions and limitations
-
-- Supabase project/database metadata endpoints change over time and some database configuration endpoints can return connection strings. BETA-02 uses only documented read endpoints whose responses are filtered to safe metadata; connection strings, API keys, JWTs, and secrets are never persisted.
-- Provider SDK adoption is deferred. The first implementation uses repository-owned contracts and fake transports, so CI does not need provider credentials or network access. A future live transport requires a separate security review and exact provider endpoint allowlist.
-- Ownership evidence differs by provider, so the common contract uses a normalized ownership result rather than pretending the providers expose identical fields.
+- Owner-authorized provider app registrations, callback URLs, account/domain verification, and secret-vault custody.
+- Current endpoint-to-scope mappings and response parsers for live GitHub, Vercel, and Supabase APIs.
+- Rate-limit, pagination, retry, and live connector audit policy.

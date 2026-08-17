@@ -1,115 +1,83 @@
-# Feature Specification: Read-Only Connectors and Asset Inventory
+# Feature Specification: Read-Only Supported-Stack Connectors and Asset Inventory
 
 **Feature Branch**: `codex/beta-02-connectors`
 
-**Created**: 2026-08-15
+**Created**: 2026-08-17
 
-**Status**: Draft
+**Status**: Ready for implementation
 
-**Input**: BETA-02 issue #3 — read-only GitHub, Vercel, and Supabase connectors with asset inventory, scoped connection reference metadata, health/permission checks, and ownership verification.
+**Input**: GitHub issue #3, `[BETA-02] Add read-only GitHub, Vercel, Supabase connectors and asset inventory`.
 
 ## User Scenarios & Testing
 
-### User Story 1 - Connect a supported application safely (Priority: P1)
+### User Story 1 - Check a supported connector safely (Priority: P1)
 
-As an AppCare operator, I want to register a GitHub, Vercel, or Supabase connection for one tenant-owned application so that AppCare can verify access and ownership without receiving broader authority than the connection needs.
+An AppCare operator can represent a GitHub, Vercel, or Supabase connection with only the minimum read permissions needed for inventory. The connection reports a safe health/permission result and refuses to operate when its credential is expired, revoked, or under-scoped.
 
-**Why this priority**: A trustworthy, least-privilege connection boundary is required before any inventory can be collected. It prevents an inventory feature from becoming an accidental deployment, mutation, or cross-tenant access path.
+**Independent Test**: Exercise synthetic provider fixtures for all three providers with complete, missing, expired, and revoked credential metadata. Verify that only the complete read-only fixture is usable and that no credential value appears in the result.
 
-**Independent Test**: With fake provider responses and two test tenants, register each supported provider, run health/permission/ownership checks, and verify that only the owning tenant can read the connection result and that no write operation is exposed.
+### User Story 2 - Build a repeatable tenant-owned inventory (Priority: P1)
 
-**Acceptance Scenarios**:
+An AppCare operator can collect normalized repositories/projects/deployments/domains and Supabase project/auth/storage/database metadata for one approved application. Repeating the same snapshot produces the same inventory keys and does not create duplicate AppCare assets.
 
-1. **Given** a tenant-owned application and a declared provider scope, **When** an operator registers a connection, **Then** the connection records the provider, tenant, application, permitted read capabilities, and safe status without storing a live credential value.
-2. **Given** a connection with valid read-only permission, **When** AppCare runs its health and permission check, **Then** the result identifies the connection as usable for its declared read capabilities and does not attempt deployment, mutation, or deletion.
-3. **Given** a connection that cannot prove ownership of the tenant’s application, **When** the ownership check runs, **Then** the connection is rejected or marked unusable without revealing another tenant’s identifiers or provider response details.
+**Independent Test**: Submit the same synthetic snapshots twice, with reordered records and duplicate provider records. Verify a stable digest, stable normalized keys, one tenant-owned AppCare asset per observed item, and no cross-tenant persistence.
 
----
+### User Story 3 - Verify application/domain ownership without granting write authority (Priority: P1)
 
-### User Story 2 - Reconcile an application inventory (Priority: P2)
+Before inventory is accepted, AppCare can compare the expected application/resource identity and approved domain with provider-reported ownership. A missing or mismatched identity fails closed. The connector surface contains no deployment, mutation, deletion, or database-write operation.
 
-As an AppCare operator, I want to inventory the read-only resources associated with an owned application so that the dashboard can show a repeatable security-relevant asset baseline.
+**Independent Test**: Verify matching and mismatching resource/domain fixtures and inspect the public connector surface for read-only operations only. Attempted write-shaped inputs are rejected and never reach provider code.
 
-**Why this priority**: Inventory is the first customer-visible value of the connectors and provides the asset set used by later scanning and monitoring stages.
+### User Story 4 - Rotate and revoke credential references safely (Priority: P2)
 
-**Independent Test**: Replay the same deterministic provider snapshot twice and verify that the second run produces the same tenant-scoped asset set without duplicate records or mutation outside the inventory boundary.
+An AppCare operator can register, rotate, expire, and revoke a credential reference without storing or returning the raw credential. A rotated or revoked reference cannot be used by a connector, and diagnostic output contains only provider, opaque reference, scope, version, and status metadata.
 
-**Acceptance Scenarios**:
-
-1. **Given** a usable read-only connection, **When** inventory runs, **Then** GitHub repositories, Vercel projects/deployments, and Supabase project/auth/storage/database metadata are represented as tenant-owned assets with safe references and provenance.
-2. **Given** the same provider snapshot is inventoried again, **When** reconciliation completes, **Then** existing assets are reused or deterministically reconciled and no duplicate assets or contradictory audit events are created.
-3. **Given** one provider resource disappears from a later snapshot, **When** reconciliation runs, **Then** the prior asset is marked according to the documented read-only lifecycle policy and is not deleted from customer history by the connector.
-
----
-
-### User Story 3 - Handle credentials and failures safely (Priority: P3)
-
-As an AppCare operator, I want connector failures and credential lifecycle changes to be visible without exposing secrets, so that access can be repaired safely.
-
-**Why this priority**: Revocation, expiration, provider outages, and insufficient scopes are normal integration conditions. They must fail closed without leaking credentials into logs, responses, audit history, or job state.
-
-**Independent Test**: Run health and inventory checks against fake expired, revoked, insufficient-scope, timeout, rate-limit, and malformed-provider responses and verify stable sanitized outcomes, bounded retries, and preserved tenant isolation.
-
-**Acceptance Scenarios**:
-
-1. **Given** an expired, revoked, or insufficiently scoped credential reference, **When** a check runs, **Then** the connection fails safely with a non-secret reason and no retry loop that could amplify provider access.
-2. **Given** a provider timeout, rate limit, or malformed response, **When** inventory runs, **Then** the job records a bounded failure state without logging raw headers, tokens, response bodies, or connection URLs containing credentials.
-3. **Given** a connection belongs to tenant A, **When** tenant B submits its identifier or attempts to read its health or inventory state, **Then** the request is denied without an existence oracle.
-
----
-
-### Edge Cases
-
-- A provider returns an expired, revoked, invalid, or insufficiently scoped credential result.
-- A provider is unavailable, rate-limited, times out, or returns malformed data.
-- An ownership check returns a resource belonging to another tenant or an ambiguous ownership result.
-- The same inventory snapshot is submitted repeatedly or arrives out of order.
-- A resource disappears from a later snapshot; history remains auditable and no destructive connector action occurs.
-- A request names an invalid, foreign, disabled, or deleted connection identifier.
-- A provider response contains token-shaped values, authorization headers, credential-bearing URLs, or unexpectedly large metadata.
-- A connector is configured with a capability outside the approved read-only scope.
+**Independent Test**: Register a synthetic metadata record, rotate it, revoke the old version, and verify that old/expired/revoked states fail closed while the active replacement remains usable.
 
 ## Requirements
 
 ### Functional Requirements
 
-- **FR-001**: The system MUST support read-only connection records for GitHub, Vercel, and Supabase under an authenticated AppCare tenant and application.
-- **FR-002**: The system MUST record the minimum approved capability scope for every connection and MUST reject capabilities that can deploy, mutate databases, delete data, or otherwise write to a provider.
-- **FR-003**: The system MUST keep live credential values outside repository artifacts, logs, API responses, audit metadata, and job state; stored connection information MUST be limited to scoped, non-secret references and lifecycle metadata.
-- **FR-004**: The system MUST verify that a connection and its discovered resources belong to the authenticated tenant before returning or persisting them.
-- **FR-005**: The system MUST provide health, permission, and ownership outcomes for each connection using stable, sanitized states that do not disclose provider secrets or another tenant’s data.
-- **FR-006**: The system MUST inventory GitHub repositories, Vercel projects/deployments, and Supabase project/auth/storage/database metadata only through read-only provider capabilities.
-- **FR-007**: The system MUST reconcile repeated inventory snapshots idempotently using stable provider references and tenant ownership, without creating duplicate assets or destructive provider actions.
-- **FR-008**: The system MUST preserve an auditable local history when a previously observed asset is absent from a later snapshot; connector reconciliation MUST NOT delete customer history.
-- **FR-009**: The system MUST fail closed for expired, revoked, malformed, insufficiently scoped, or ambiguous credential/ownership results and MUST bound retries for provider failures.
-- **FR-010**: The system MUST prevent one tenant from reading, updating, inventorying, or checking the health of another tenant’s connections, assets, jobs, or audit events.
-- **FR-011**: The system MUST expose no deployment, database mutation, deletion, synchronization-write, or arbitrary provider-command operation in BETA-02.
-- **FR-012**: The system MUST provide deterministic tests for least-privilege scope enforcement, revoked/expired credentials, redaction, tenant isolation, ownership checks, provider failures, and idempotent inventory.
+- **FR-001**: The system MUST define explicit read-only capability requirements for GitHub, Vercel, and Supabase and reject any scope containing write, deploy, delete, mutate, or database-execute authority.
+- **FR-002**: Each provider connector MUST expose health/permission, read-only inventory, and ownership-verification operations through a provider-neutral contract.
+- **FR-003**: Connector health MUST distinguish active, missing-scope, expired, revoked, and invalid credential states using stable non-secret reasons.
+- **FR-004**: Credential handling MUST store tenant-bound metadata and an opaque reference only; raw access tokens, private keys, passwords, and API keys MUST never enter connector state, logs, job state, audit metadata, or inventory output.
+- **FR-005**: Credential rotation MUST create a new version and invalidate the superseded reference without exposing either raw credential material or a provider write path.
+- **FR-006**: Inventory MUST normalize provider records into stable tenant/application-scoped asset keys, de-duplicate repeated records, and produce a deterministic digest independent of input ordering.
+- **FR-007**: Inventory persistence MUST be idempotent: repeating an unchanged snapshot MUST reuse existing AppCare assets and MUST NOT delete or mutate provider data.
+- **FR-008**: Ownership verification MUST require an expected resource identity or approved domain and MUST fail closed for missing, malformed, or mismatched provider identity.
+- **FR-009**: Provider adapters MUST use synthetic/injected transport data in deterministic tests; no customer account, production endpoint, or live credential is required or permitted for this phase.
+- **FR-010**: The connector boundary MUST contain no deployment, mutation, deletion, arbitrary SQL, credential-management, or provider-write operation.
+- **FR-011**: Connector errors and serialized results MUST redact secret-shaped values and avoid account-existence, credential, or customer-data oracles.
+- **FR-012**: All connector and inventory records MUST remain tenant-scoped and must not reference WordPress Security resources, production API state, or shared credentials.
 
 ### Key Entities
 
-- **Connector**: A tenant-owned connection registration for one supported provider and application, with provider identity, safe lifecycle state, approved read-only capabilities, health status, permission status, and ownership status.
-- **Scoped Credential Reference**: Non-secret metadata describing the credential authority, scope family, expiration/revocation state, and reference identity without containing the credential value.
-- **Asset**: A tenant-owned provider resource discovered by inventory, with stable provider reference, resource type, safe display metadata, ownership evidence, and lifecycle state.
-- **Inventory Snapshot**: A repeatable, auditable result set for one connector run, including a deterministic input/version marker, outcome, counts, and references to discovered assets without raw provider secrets.
-- **Connector Check**: A sanitized health, permission, or ownership result attached to a connector and job, including status, reason code, checked time, and safe evidence references.
+- **ProviderSpec**: Provider name, minimum read-only capabilities, and forbidden capability families.
+- **CredentialMetadata**: Opaque credential reference, provider, scope set, version, issue/expiry/revocation timestamps, and no raw secret.
+- **ConnectorHealth**: Safe provider, credential status, permission result, and stable diagnostic reason.
+- **ProviderSnapshot**: Synthetic or adapter-produced provider identity, domains, and remote records.
+- **InventoryAsset**: Stable normalized provider record with kind, locator, provider identity, and deterministic key.
+- **OwnershipResult**: Boolean verification result and non-sensitive reason for an expected resource/domain target.
+- **InventoryResult**: Normalized assets, digest, ownership result, and counts for an inventory run.
 
 ## Success Criteria
 
-### Measurable Outcomes
-
-- **SC-001**: 100% of connector capability tests reject deployment, mutation, deletion, or arbitrary provider-command permissions before a provider call is eligible.
-- **SC-002**: 100% of cross-tenant connection, asset, health, inventory, job, and audit access attempts are denied without returning foreign data or secret-bearing error details.
-- **SC-003**: 100% of deterministic expired, revoked, insufficient-scope, timeout, rate-limit, and malformed-response fixtures produce bounded sanitized outcomes with no credential value in logs, responses, audit metadata, or job state.
-- **SC-004**: Replaying the same provider snapshot at least three times produces one stable asset set per provider reference with no duplicate inventory records.
-- **SC-005**: A supported read-only connection can complete health, permission, ownership, and initial inventory checks using only approved read capabilities, with no deployment, database mutation, or deletion request emitted.
-- **SC-006**: The complete BETA-02 deterministic, security, failure, dependency, secret, independent-review, and exact-head CI gates pass before merge.
+- **SC-001**: 100% of synthetic GitHub, Vercel, and Supabase fixtures with missing, write, expired, revoked, or under-scoped authorization are rejected before inventory data is accepted.
+- **SC-002**: Replaying an unchanged fixture at least twice yields identical normalized keys and digest and creates no duplicate tenant-owned AppCare assets.
+- **SC-003**: 100% of ownership mismatch and missing-target tests fail closed without exposing provider payloads or credential material.
+- **SC-004**: Static and runtime negative tests find no connector operation capable of deploy, mutate, delete, execute SQL, or write to a provider.
+- **SC-005**: A repository-wide secret/public-safety scan finds no raw credential value in source, fixtures, logs, job state, or generated evidence.
+- **SC-006**: Existing BETA-01 tests plus the full deterministic, security, failure, dependency, Graphify, and exact-head CI gates pass.
 
 ## Assumptions
 
-- AppCare users have already authenticated and selected an application they own; provider-specific account ownership remains subject to the explicit ownership check.
-- BETA-02 uses fake provider responses and non-live credential metadata in automated tests; no production provider account is required for implementation or CI.
-- Existing AppCare tenant authentication, tenant-scoped repositories, durable jobs, sanitized audit events, and no-production-write boundary are reused as the foundation.
-- Provider capability names and ownership evidence are modeled through narrow connector contracts so the implementation can use approved adapters without exposing provider SDK authority to the rest of the application.
-- Provider inventory is read-only in this beta; deployment, database mutation, deletion, write synchronization, and credential rotation execution are deferred to later explicitly authorized work.
-- A missing or unavailable optional DeepSeek worker does not block Codex implementation, review, or release gates.
+- BETA-02 is an isolated read-only capability and inventory foundation; provider OAuth installation and owner-authorized live transport are later integration gates.
+- The existing descriptive `Connector` record remains the tenant-scoped control-plane record; this feature adds a provider-neutral connector service boundary and uses existing `Asset` records for idempotent local inventory persistence.
+- Provider permission names can differ by provider. The implementation records internal capability names and maps them to the current provider documentation without granting any write capability.
+- Real customer credentials, provider accounts, deployment systems, databases, and domain changes are not needed to prove this phase.
+
+## Out of Scope
+
+- OAuth consent flows, token exchange, secret-vault implementation, live customer API calls, webhooks, scans, remediation, deployment, database queries, storage-object reads, or provider-side mutations.
+- Any work in the WordPress Security repositories/runtime or `/var/www/api.securityola.com`.

@@ -75,3 +75,18 @@ Rules:
 - Lovable-generated or similar web apps
 
 Custom or messy infrastructure is assessed before acceptance.
+
+## BETA-02 read-only connector boundary
+
+The first supported-stack connector slice is intentionally provider-neutral:
+
+- immutable provider capability specifications for GitHub, Vercel, and Supabase;
+- metadata-only credential lifecycle with expiry, revocation, and rotation;
+- injected/fixture snapshots for deterministic health, permission, inventory,
+  and ownership checks;
+- stable normalization and additive reconciliation into tenant-owned AppCare
+  assets.
+
+No live transport, OAuth callback, provider write method, deployment method,
+database query executor, or secret-vault implementation is part of this slice.
+Those require a separate owner-authorized integration design.
