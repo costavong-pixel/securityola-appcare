@@ -234,3 +234,81 @@ class Deployment(IdentityMixin, TimestampMixin, Base):
     )
     revision: Mapped[str] = mapped_column(String(200), nullable=False)
     failure_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+
+class WorkflowAction(IdentityMixin, TimestampMixin, Base):
+    """Durable idempotency ledger for one bounded workflow side effect."""
+
+    __tablename__ = "workflow_actions"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'running', 'succeeded', 'failed', 'escalated')",
+            name="ck_workflow_action_status",
+        ),
+        CheckConstraint("attempt_count >= 0", name="ck_workflow_action_attempt_count"),
+        UniqueConstraint(
+            "tenant_id", "workflow_id", "action_key", name="uq_workflow_action_idempotency"
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    workflow_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    action_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    action_kind: Mapped[str] = mapped_column(String(80), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    attempt_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    result_reference: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    failure_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+
+class WorkflowEvidence(IdentityMixin, TimestampMixin, Base):
+    """Durable, bounded evidence reference separate from AI explanations."""
+
+    __tablename__ = "workflow_evidence"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "workflow_id", "evidence_ref", name="uq_workflow_evidence_reference"
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    workflow_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    evidence_ref: Mapped[str] = mapped_column(String(200), nullable=False)
+    kind: Mapped[str] = mapped_column(String(50), nullable=False)
+    source: Mapped[str] = mapped_column(String(100), nullable=False)
+    digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    summary_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
+
+
+class WorkflowTransition(IdentityMixin, Base):
+    """Idempotent workflow transition linked to the append-only audit chain."""
+
+    __tablename__ = "workflow_transitions"
+    __table_args__ = (
+        CheckConstraint(
+            "outcome IN ('started', 'succeeded', 'failed', 'paused', 'escalated')",
+            name="ck_workflow_transition_outcome",
+        ),
+        UniqueConstraint(
+            "tenant_id", "workflow_id", "transition_key", name="uq_workflow_transition_key"
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    workflow_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    transition_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    from_phase: Mapped[str] = mapped_column(String(80), nullable=False)
+    to_phase: Mapped[str] = mapped_column(String(80), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(20), nullable=False)
+    evidence_refs_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    metadata_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
+    audit_event_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("audit_events.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
