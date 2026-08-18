@@ -64,6 +64,13 @@ AppCare-only fixture preview, a denied-unapproved Vercel adapter, and an
 internal approval record. No production access, live provider call, merge
 authority, or WordPress resource is in scope.
 
+BETA-06 implementation is committed at
+`0847c13c7114141075aa210cbcfe5a63f221f2d6` on PR #21 (draft). Exact-head CI
+run `32104247854` passed, local Codex Security recorded zero reportable
+findings, and the Saveruflo checkpoint is recorded. Issue #7 remains open
+because live Vercel preview authorization and a bounded project/credential
+boundary are not available; the live adapter remains fail-closed.
+
 ## Production rule
 
 No customer production write without:

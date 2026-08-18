@@ -56,9 +56,16 @@
 - [x] T019 [P] Export the remediation boundary through `appcare/remediation/__init__.py` and document its workflow integration boundary without adding provider authority.
 - [x] T020 [P] Add BETA-06 deterministic validation instructions and sanitized evidence format in `docs/engineering/BETA-06-REMEDIATION.md` and `specs/006-remediation/quickstart.md`.
 - [x] T021 Run unit/integration/security/failure tests, Ruff, mypy, public-safety, worker restrictions, dependency audit, and inspect the actual diff.
-- [ ] T022 Run applicable Codex Security review, Graphify final update/impact query, and Saveruflo checkpoint for the exact reviewed head.
-- [ ] T023 Push the BETA-06 branch, wait for exact-head CI, update PR evidence, and merge through protected main only if all gates pass and no live preview owner blocker remains.
+- [x] T022 Run applicable Codex Security review, Graphify final update/impact query, and Saveruflo checkpoint for the exact reviewed head.
+- [x] T023 Push the BETA-06 branch, wait for exact-head CI, and update PR evidence; protected merge remains gated by the live-preview acceptance condition.
 - [ ] T024 Close issue #7 and update BETA-MASTER only after acceptance evidence is complete; otherwise record the precise external preview blocker and keep the issue open.
+
+## Current completion state
+
+T001–T023 are complete on exact head `0847c13c7114141075aa210cbcfe5a63f221f2d6`.
+PR #21 is draft and exact-head CI run `32104247854` passed. T024 remains open
+because no owner-controlled Vercel skill, project authorization, or credential
+boundary is available; the live adapter correctly fails closed.
 
 ## Dependencies and Execution Order
 
