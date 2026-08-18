@@ -16,8 +16,8 @@ Inside AppCare keep `development → staging → production` isolated; developme
 - [x] BETA-01 — control plane, tenancy, audit trail
 - [x] BETA-02 — read-only GitHub/Vercel/Supabase connectors (merged through protected main at `4eae0682f6e421b65f7ff75c521b331ccd164de1`)
 - [x] BETA-03 — security scanning and normalized evidence-backed findings (merged through protected main at `22196c9bface2cfeff1b049bb9e9890520ce38c6`)
-- [ ] BETA-04 — B2 immutable backup, Glacier archive, restore rehearsal
-- [ ] BETA-05 — LangGraph durable scan-to-recovery workflow
+- [x] BETA-04 — B2 immutable backup, Glacier archive, restore rehearsal (merged through protected main at `574b90932b794d548d9e12f64ef91f01b96b5130`)
+- [ ] BETA-05 — LangGraph durable scan-to-recovery workflow (active on `codex/beta-05-scanning`)
 - [ ] BETA-06 — isolated remediation, tests, PR, preview deployment
 - [ ] BETA-07 — controlled production deploy, verification, automatic rollback
 - [ ] BETA-08 — monitoring, backup health, alerts, reports, service-cost tracking
@@ -48,18 +48,20 @@ For the current open beta issue:
 
 If a skill cannot be made safe and maintainable, drop it and replace it.
 
-## Current BETA-04 state
+## Current BETA-05 state
 
-The isolated AppCare workspace is completing BETA-04 from protected main at
-`a7e568f16e28c1d7ec43bb4984943d39f9bba19e`. The implementation slice provides
-provider-neutral backup and restore contracts, encrypted artifact envelopes,
-checksum verification, immutable-retention job evidence, and a controlled
-test-app restore into an isolated destination. One bounded live rehearsal using
-synthetic AppCare data is recorded in
-`docs/engineering/BETA-04-LIVE-REHEARSAL-2026-08-18.md`. Issue #5 remains open
-until the evidence documentation is committed, exact-head CI passes, and the
-branch merges through protected main. No production access, remediation,
-deployment, or WordPress resource is in scope.
+BETA-04 is accepted through protected main at
+`574b90932b794d548d9e12f64ef91f01b96b5130`. Its one bounded live rehearsal
+used synthetic AppCare data and recorded B2 immutable readback/restore evidence,
+AWS S3 Deep Archive metadata, measured B2 retrieval RTO, and
+`SECRETS_EXPOSED=NO`/`WORDPRESS=UNTOUCHED`.
+
+The isolated AppCare workspace is now implementing BETA-05 from that protected
+main. The LangGraph boundary provides PostgreSQL checkpoint construction,
+typed bounded state, idempotent actions, evidence/transition ledgers, approval
+interrupts, retry/cost limits, and failure-injection tests. Provider and deploy
+adapters remain injected test boundaries; no production access, remediation,
+deployment, live provider calls, or WordPress resource is in scope.
 
 ## Production rule
 

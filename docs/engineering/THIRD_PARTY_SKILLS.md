@@ -12,8 +12,8 @@ The project does not treat a registry listing or model recommendation as an acce
 | OpenCode | Accepted at pinned `1.18.16`, worker smoke pending | Official upstream release/tag and package integrity were verified. The exact catalog model `opencode/deepseek-v4-flash-free` resolves, static/negative permission tests pass, and the live provider has returned rate-limit responses before a complete smoke. |
 | Supabase skills | Deferred, not installed | BETA-02/BETA-03 will inspect official Supabase material and implement least-privilege connector checks; no customer credentials are needed for BETA-00. |
 | Vercel skills | Deferred, not installed | BETA-06 will audit preview/promotion/rollback behavior before acceptance. |
-| Database/cloud-backup skills | Deferred, not installed | BETA-04 will inspect the named raw material and prefer AppCare-owned B2/S3 wrappers if safe immutable-restore evidence is not available. |
-| LangGraph | Deferred, not installed | Introduced only for the durable workflow in BETA-05. |
+| Database/cloud-backup skills | Accepted for BETA-04 provider boundary | The live rehearsal used an AppCare-only AWS CLI boundary for B2 and S3 Deep Archive; raw credentials stayed outside OpenCode and Git. |
+| LangGraph | Accepted at pinned `1.2.9` with PostgreSQL checkpoint `3.1.2` | Official persistence/interrupt/fault-tolerance contracts were reviewed; strict serializer setup, AppCare PostgreSQL scope validation, and failure-injection tests are required by BETA-05. |
 | Impeccable | Deferred, not installed | Introduced only after functional dashboard/site flows in BETA-09. |
 
 No candidate in the deferred list is authorized to access production, credentials, customer data, or the WordPress application.

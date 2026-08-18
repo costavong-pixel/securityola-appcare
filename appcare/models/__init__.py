@@ -12,6 +12,9 @@ from .operations import (
     Deployment,
     InventoryRun,
     Job,
+    WorkflowAction,
+    WorkflowEvidence,
+    WorkflowTransition,
 )
 from .resources import Application, Asset, Finding
 
@@ -33,6 +36,9 @@ __all__ = [
     "Tenant",
     "TimestampMixin",
     "User",
+    "WorkflowAction",
+    "WorkflowEvidence",
+    "WorkflowTransition",
     "new_id",
     "utcnow",
 ]
