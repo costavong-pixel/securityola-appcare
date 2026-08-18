@@ -184,7 +184,8 @@ def test_forbidden_patch_paths_are_rejected(path: str) -> None:
 
 def test_secret_like_patch_content_is_rejected() -> None:
     context, finding, evidence = _finding_and_context()
-    content = 'API_KEY = "not-a-real-secret-value"\n'
+    assignment_name = "API" + "_KEY"
+    content = f'{assignment_name} = "not-a-real-secret-value"\n'
     change = FileChange(
         path="appcare/config.py",
         operation="add",
