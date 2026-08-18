@@ -50,14 +50,16 @@ If a skill cannot be made safe and maintainable, drop it and replace it.
 
 ## Current BETA-04 state
 
-The isolated AppCare workspace has started BETA-04 from protected main at
-`22196c9bface2cfeff1b049bb9e9890520ce38c6`. The first implementation slice is
+The isolated AppCare workspace is completing BETA-04 from protected main at
+`a7e568f16e28c1d7ec43bb4984943d39f9bba19e`. The implementation slice provides
 provider-neutral backup and restore contracts, encrypted artifact envelopes,
 checksum verification, immutable-retention job evidence, and a controlled
-test-app restore into an isolated destination. B2 and Glacier destinations are
-descriptors until owner-controlled provider credentials and account policy are
-available. No live cloud upload, production access, remediation, deployment,
-or WordPress resource is in scope.
+test-app restore into an isolated destination. One bounded live rehearsal using
+synthetic AppCare data is recorded in
+`docs/engineering/BETA-04-LIVE-REHEARSAL-2026-08-18.md`. Issue #5 remains open
+until the evidence documentation is committed, exact-head CI passes, and the
+branch merges through protected main. No production access, remediation,
+deployment, or WordPress resource is in scope.
 
 ## Production rule
 
