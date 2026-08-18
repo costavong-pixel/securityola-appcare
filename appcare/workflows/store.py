@@ -200,9 +200,9 @@ class WorkflowStore:
             raise ValueError("max_attempts must be between 1 and 10")
         if any(not isinstance(key, str) for key in state):
             raise ValueError("workflow state keys must be strings")
-        if any(
-            is_secret_key(key) and key != "verification_passed" for key in state
-        ) or any(contains_credential_like_data(value) for value in state.values()):
+        if any(is_secret_key(key) and key != "verification_passed" for key in state) or any(
+            contains_credential_like_data(value) for value in state.values()
+        ):
             raise ValueError("workflow state contains credential-like data")
 
         # Create the ledger row in its own short transaction. A concurrent creator
@@ -299,9 +299,7 @@ class WorkflowStore:
                 except Exception:
                     action.status = "failed"
                     action.failure_code = "action_execution_failed"
-                    terminal_error = WorkflowActionError(
-                        "action_execution_failed", escalated=False
-                    )
+                    terminal_error = WorkflowActionError("action_execution_failed", escalated=False)
                     break
 
         if retry_exhausted:
