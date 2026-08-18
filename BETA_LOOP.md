@@ -17,8 +17,8 @@ Inside AppCare keep `development → staging → production` isolated; developme
 - [x] BETA-02 — read-only GitHub/Vercel/Supabase connectors (merged through protected main at `4eae0682f6e421b65f7ff75c521b331ccd164de1`)
 - [x] BETA-03 — security scanning and normalized evidence-backed findings (merged through protected main at `22196c9bface2cfeff1b049bb9e9890520ce38c6`)
 - [x] BETA-04 — B2 immutable backup, Glacier archive, restore rehearsal (merged through protected main at `574b90932b794d548d9e12f64ef91f01b96b5130`)
-- [ ] BETA-05 — LangGraph durable scan-to-recovery workflow (active on `codex/beta-05-scanning`)
-- [ ] BETA-06 — isolated remediation, tests, PR, preview deployment
+- [x] BETA-05 — LangGraph durable scan-to-recovery workflow (merged through protected main at `06e97122a6b3a3b373928924cb6331cc1b36af79`)
+- [ ] BETA-06 — isolated remediation, tests, PR, preview deployment (active on `codex/beta-06-remediation`)
 - [ ] BETA-07 — controlled production deploy, verification, automatic rollback
 - [ ] BETA-08 — monitoring, backup health, alerts, reports, service-cost tracking
 - [ ] BETA-09 — dashboard + SecurityOla beta website + Impeccable QA
@@ -48,7 +48,7 @@ For the current open beta issue:
 
 If a skill cannot be made safe and maintainable, drop it and replace it.
 
-## Current BETA-05 state
+## Current BETA-06 state
 
 BETA-04 is accepted through protected main at
 `574b90932b794d548d9e12f64ef91f01b96b5130`. Its one bounded live rehearsal
@@ -56,12 +56,13 @@ used synthetic AppCare data and recorded B2 immutable readback/restore evidence,
 AWS S3 Deep Archive metadata, measured B2 retrieval RTO, and
 `SECRETS_EXPOSED=NO`/`WORDPRESS=UNTOUCHED`.
 
-The isolated AppCare workspace is now implementing BETA-05 from that protected
-main. The LangGraph boundary provides PostgreSQL checkpoint construction,
-typed bounded state, idempotent actions, evidence/transition ledgers, approval
-interrupts, retry/cost limits, and failure-injection tests. Provider and deploy
-adapters remain injected test boundaries; no production access, remediation,
-deployment, live provider calls, or WordPress resource is in scope.
+The isolated AppCare workspace is implementing BETA-06 from protected main at
+`06e97122a6b3a3b373928924cb6331cc1b36af79`. The remediation boundary adds
+tenant/job-scoped disposable workspaces, deterministic patch/evidence contracts,
+fail-closed regression/security gates, sanitized rollback references, an
+AppCare-only fixture preview, a denied-unapproved Vercel adapter, and an
+internal approval record. No production access, live provider call, merge
+authority, or WordPress resource is in scope.
 
 ## Production rule
 
