@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import cast
 
 from .contracts import (
     DrillEvidence,
@@ -83,7 +82,7 @@ class ReleaseGate:
 
         unique_reasons = tuple(dict.fromkeys(reasons))
         unique_checks = tuple(dict.fromkeys(failed_checks))
-        status = cast(ReleaseStatus, "ready" if not unique_reasons else "blocked")
+        status: ReleaseStatus = "ready" if not unique_reasons else "blocked"
         return ReleaseDecision(
             status=status,
             reason_codes=unique_reasons,
