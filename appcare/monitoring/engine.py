@@ -11,7 +11,6 @@ from ..deployment.contracts import evidence_digest
 from .contracts import (
     AlertRecord,
     AlertSeverity,
-    InMemoryMonitoringStore,
     MonitorTarget,
     MonitoringEvent,
     MonitoringStore,
