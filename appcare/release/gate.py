@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import cast
 
 from .contracts import (
     DrillEvidence,
     ReleaseDecision,
     ReleaseEvidence,
     ReleaseEvidenceError,
+    ReleaseStatus,
 )
 
 REQUIRED_DRILLS = (
@@ -81,7 +83,7 @@ class ReleaseGate:
 
         unique_reasons = tuple(dict.fromkeys(reasons))
         unique_checks = tuple(dict.fromkeys(failed_checks))
-        status = "ready" if not unique_reasons else "blocked"
+        status = cast(ReleaseStatus, "ready" if not unique_reasons else "blocked")
         return ReleaseDecision(
             status=status,
             reason_codes=unique_reasons,
@@ -99,9 +101,11 @@ def require_blocked(decision: ReleaseDecision, *, reason_code: str) -> None:
 
 def all_drills_passed(drills: Iterable[DrillEvidence]) -> bool:
     values = tuple(drills)
-    return len(values) == len(REQUIRED_DRILLS) and {
-        drill.name for drill in values
-    } == set(REQUIRED_DRILLS) and all(drill.status == "passed" for drill in values)
+    return (
+        len(values) == len(REQUIRED_DRILLS)
+        and {drill.name for drill in values} == set(REQUIRED_DRILLS)
+        and all(drill.status == "passed" for drill in values)
+    )
 
 
 __all__ = ["REQUIRED_DRILLS", "ReleaseGate", "all_drills_passed", "require_blocked"]
