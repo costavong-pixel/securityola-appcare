@@ -36,7 +36,9 @@ class DeploymentRecord:
         object.__setattr__(self, "evidence", tuple(self.evidence))
         if self.failure_code is not None:
             object.__setattr__(
-                self, "failure_code", validate_reason_code(self.failure_code, field_name="failure_code")
+                self,
+                "failure_code",
+                validate_reason_code(self.failure_code, field_name="failure_code"),
             )
         for name in ("deployment_ref", "rollback_ref"):
             value = getattr(self, name)
@@ -51,12 +53,12 @@ class CredentialRevocationRegistry:
         self._revoked: set[str] = set()
 
     def revoke(self, credential_ref: str) -> None:
-        self._revoked.add(
-            validate_opaque_reference(credential_ref, field_name="credential_ref")
-        )
+        self._revoked.add(validate_opaque_reference(credential_ref, field_name="credential_ref"))
 
     def is_revoked(self, credential_ref: str) -> bool:
-        return validate_opaque_reference(credential_ref, field_name="credential_ref") in self._revoked
+        return (
+            validate_opaque_reference(credential_ref, field_name="credential_ref") in self._revoked
+        )
 
 
 class ProductionDeploymentController:
@@ -102,7 +104,9 @@ class ProductionDeploymentController:
 
         if self._emergency_stopped:
             return self._save(
-                self._transition(record, "emergency_stopped", "emergency_stop_active", "emergency_stop_active")
+                self._transition(
+                    record, "emergency_stopped", "emergency_stop_active", "emergency_stop_active"
+                )
             )
         if not live_preview_is_passed(intent.beta06_verified_live_preview):
             return self._save(
@@ -175,7 +179,9 @@ class ProductionDeploymentController:
             )
         if self._emergency_stopped:
             return self._save(
-                self._transition(record, "emergency_stopped", "emergency_stop_active", "emergency_stop_active")
+                self._transition(
+                    record, "emergency_stopped", "emergency_stop_active", "emergency_stop_active"
+                )
             )
         if self._revocations.is_revoked(record.intent.credential_ref):
             return self._save(
@@ -196,7 +202,9 @@ class ProductionDeploymentController:
             deployment = self._provider.deploy(record.intent)
         except Exception:
             return self._save(
-                self._transition(record, "failed", "provider_deploy_failed", "provider_deploy_failed")
+                self._transition(
+                    record, "failed", "provider_deploy_failed", "provider_deploy_failed"
+                )
             )
         record = self._save(replace(record, deployment_ref=deployment.deployment_ref))
 
@@ -238,9 +246,7 @@ class ProductionDeploymentController:
         return self.get(intent_id).evidence
 
     @staticmethod
-    def _identity_failure(
-        intent: DeploymentIntent, deployment: ProviderDeployment
-    ) -> str | None:
+    def _identity_failure(intent: DeploymentIntent, deployment: ProviderDeployment) -> str | None:
         if deployment.target_environment != intent.target_environment:
             return "provider_target_mismatch"
         if deployment.source_revision != intent.source_revision:
@@ -255,9 +261,7 @@ class ProductionDeploymentController:
         deployment: ProviderDeployment,
         failure_code: str,
     ) -> DeploymentRecord:
-        record = self._save(
-            self._transition(record, "rolling_back", failure_code, failure_code)
-        )
+        record = self._save(self._transition(record, "rolling_back", failure_code, failure_code))
         try:
             rollback = self._provider.rollback(record.intent, deployment)
         except Exception:
