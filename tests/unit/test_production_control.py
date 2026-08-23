@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, replace
+from typing import cast
 
 import pytest
 
@@ -19,7 +20,7 @@ from appcare.deployment import (
 
 def _intent(
     *,
-    preview_status: LivePreviewStatus = "pass",
+    preview_status: str = "pass",
     idempotency_key: str = "idempotency-1",
     intent_id: str = "intent-1",
 ) -> DeploymentIntent:
@@ -35,7 +36,7 @@ def _intent(
         requested_by="owner-1",
         backup_evidence_ref="backup-evidence-1",
         credential_ref="vault://appcare/vercel-beta07",
-        beta06_verified_live_preview=preview_status,
+        beta06_verified_live_preview=cast(LivePreviewStatus, preview_status),
     )
 
 
