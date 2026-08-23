@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import IntegrityError
 
 from .config import Settings
 from .connectors import ConnectorRegistry
 from .db import Database
-from .routes import audit, auth, connectors, health, jobs, operations, resources
+from .routes import audit, auth, connectors, dashboard, health, jobs, operations, resources
 
 
 def create_app(
@@ -38,6 +41,18 @@ def create_app(
     app.state.settings = resolved_settings
     app.state.database = resolved_database
     app.state.connector_registry = connector_registry or ConnectorRegistry()
+
+    web_directory = Path(__file__).with_name("web")
+    app.mount("/static", StaticFiles(directory=web_directory), name="appcare-static")
+
+    @app.get("/", include_in_schema=False)
+    def public_site() -> FileResponse:
+        return FileResponse(web_directory / "index.html")
+
+    @app.get("/dashboard", include_in_schema=False)
+    def dashboard_shell() -> FileResponse:
+        return FileResponse(web_directory / "dashboard.html")
+
     app.include_router(auth.router)
     app.include_router(health.router)
     app.include_router(resources.router)
@@ -45,6 +60,7 @@ def create_app(
     app.include_router(connectors.router)
     app.include_router(jobs.router)
     app.include_router(audit.router)
+    app.include_router(dashboard.router)
 
     @app.exception_handler(IntegrityError)
     async def persistence_constraint_error(_request: Request, _exc: IntegrityError) -> JSONResponse:
@@ -54,7 +70,7 @@ def create_app(
     async def request_validation_error(
         _request: Request, _exc: RequestValidationError
     ) -> JSONResponse:
-        # FastAPI's default validation payload includes submitted ``input`` values.
+        # FastAPI's default validation payload includes submitted input values.
         # BETA-01 accepts bearer material only at the auth boundary, so never echo
         # arbitrary request data back to a caller.
         return JSONResponse(
