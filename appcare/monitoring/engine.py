@@ -77,9 +77,7 @@ class MonitoringEngine:
                         state=event.alert_state or current.state,
                         last_seen=event.occurred_at,
                         occurrences=max(current.occurrences, event.occurrences),
-                        suppressed_count=max(
-                            current.suppressed_count, event.suppressed_count
-                        ),
+                        suppressed_count=max(current.suppressed_count, event.suppressed_count),
                         evidence_refs=current.evidence_refs + (event.evidence_ref,),
                     )
                 self._alerts[event.fingerprint] = current
@@ -99,11 +97,7 @@ class MonitoringEngine:
         return tuple(sorted(alerts, key=lambda alert: alert.alert_id))
 
     def active_alerts(self, *, target: MonitorTarget | None = None) -> tuple[AlertRecord, ...]:
-        return tuple(
-            alert
-            for alert in self.alerts(target=target)
-            if alert.state == "open"
-        )
+        return tuple(alert for alert in self.alerts(target=target) if alert.state == "open")
 
     def _append(self, event: MonitoringEvent) -> None:
         self._store.append(event)
@@ -215,9 +209,7 @@ class MonitoringEngine:
             evidence_refs=current.evidence_refs + (observation.evidence_ref,),
         )
         self._alerts[fingerprint] = alert
-        event_type: LiteralAlertEvent = (
-            "alert_suppressed" if within_window else "alert_repeated"
-        )
+        event_type: LiteralAlertEvent = "alert_suppressed" if within_window else "alert_repeated"
         self._append(
             self._event_for_alert(
                 event_type=event_type,
