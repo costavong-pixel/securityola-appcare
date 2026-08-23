@@ -83,9 +83,7 @@ def test_alerts_are_deduplicated_and_suppressed() -> None:
     engine = MonitoringEngine(store, suppression_seconds=3_600)
 
     first = engine.observe(observation())
-    second = engine.observe(
-        observation(when=BASE + timedelta(minutes=10), evidence="evidence-2")
-    )
+    second = engine.observe(observation(when=BASE + timedelta(minutes=10), evidence="evidence-2"))
 
     assert first is not None
     assert second is not None
