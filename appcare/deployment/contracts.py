@@ -279,6 +279,7 @@ class ProviderRollback:
     """Sanitized rollback result bound to the requested rollback reference."""
 
     rollback_ref: str
+    rollback_reference: str
     succeeded: bool
     failure_code: str | None = None
 
@@ -287,6 +288,11 @@ class ProviderRollback:
             self,
             "rollback_ref",
             validate_opaque_reference(self.rollback_ref, field_name="rollback_ref"),
+        )
+        object.__setattr__(
+            self,
+            "rollback_reference",
+            _revision(self.rollback_reference, field_name="rollback_reference"),
         )
         if self.failure_code is not None:
             object.__setattr__(
