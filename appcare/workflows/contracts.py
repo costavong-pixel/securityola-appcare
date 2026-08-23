@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal, Protocol, TypedDict
 
+from ..deployment.contracts import normalize_live_preview_status
 from ..services.security import contains_credential_like, contains_credential_like_data
 
 WorkflowPhase = Literal[
@@ -55,6 +56,7 @@ class WorkflowState(TypedDict, total=False):
     phase: WorkflowPhase | str
     status: str
     target_environment: Literal["development", "staging", "production"] | str
+    beta06_verified_live_preview: str
     risk_level: Literal["low", "medium", "high", "critical"] | str
     backup_status: str
     inventory_status: str
@@ -87,6 +89,7 @@ class WorkflowInput(TypedDict, total=False):
     application_id: str
     job_id: str
     target_environment: str
+    beta06_verified_live_preview: str
     risk_level: str
     backup_status: str
     retry_budget: int
@@ -133,6 +136,7 @@ def validate_checkpoint_state(state: Mapping[str, object]) -> None:
         "phase",
         "status",
         "target_environment",
+        "beta06_verified_live_preview",
         "risk_level",
         "backup_status",
         "inventory_status",
@@ -184,6 +188,10 @@ def validate_checkpoint_state(state: Mapping[str, object]) -> None:
             if not isinstance(value, str):
                 raise ValueError(f"workflow state {name} is invalid")
             validate_safe_id(value, field_name=name)
+    try:
+        normalize_live_preview_status(state.get("beta06_verified_live_preview", "unverified"))
+    except ValueError as exc:
+        raise ValueError("workflow state beta06_verified_live_preview is invalid") from exc
     for name in ("scanner_failure_code", "failure_code"):
         value = state.get(name)
         if value is not None:
