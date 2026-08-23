@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Protocol
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Literal, Protocol
 
 from ..deployment.contracts import (
     evidence_digest,
