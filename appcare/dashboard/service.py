@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime
+from typing import Literal, cast
 
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
@@ -24,6 +25,7 @@ from .contracts import (
     DashboardFindingSummary,
     DashboardSignal,
     DashboardSnapshot,
+    DashboardStatus,
 )
 
 
@@ -127,8 +129,10 @@ def build_dashboard_snapshot(session: Session, user: User) -> DashboardSnapshot:
         DashboardApplication(
             id=application.id,
             name=_safe_text(application.name, "Unnamed application"),
-            environment=application.environment,
-            status=application.status,
+            environment=cast(
+                Literal["development", "staging", "production"], application.environment
+            ),
+            status=cast(Literal["active", "archived"], application.status),
             finding_count=len(by_application.get(application.id, [])),
             open_finding_count=sum(
                 item.status == "open" for item in by_application.get(application.id, [])
@@ -221,7 +225,7 @@ def build_dashboard_snapshot(session: Session, user: User) -> DashboardSnapshot:
         monitoring_signal.status,
     ]
     if not applications:
-        overall_status = "empty"
+        overall_status: DashboardStatus = "empty"
     elif any(value == "attention" for value in signal_statuses) or open_findings:
         overall_status = "attention"
     elif any(value in {"pending", "unknown"} for value in signal_statuses):
