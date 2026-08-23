@@ -166,6 +166,7 @@ class MonitoringEngine:
     def observe(self, observation: Observation) -> AlertRecord | None:
         """Persist an observation and deduplicate or resolve its incident."""
 
+        self._observations.append(observation)
         self._append(self._event_for_observation(observation))
         if observation.status == "healthy":
             self._resolve_for_observation(observation)
