@@ -21,6 +21,24 @@ def test_dashboard_requires_authentication() -> None:
     assert response.status_code == 401
 
 
+def test_dashboard_is_tenant_scoped() -> None:
+    app = new_test_app()
+    first = seed_user(app, "First")
+    second = seed_user(app, "Second")
+    with TestClient(app) as client:
+        first_token = issue_token(client, first.email)
+        second_token = issue_token(client, second.email)
+        create_application(client, first_token, "First tenant application")
+        first_response = client.get("/dashboard/state", headers=auth_headers(first_token))
+        second_response = client.get("/dashboard/state", headers=auth_headers(second_token))
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert first_response.json()["application_count"] == 1
+    assert second_response.json()["application_count"] == 0
+    assert second_response.json()["overall_status"] == "empty"
+
+
 def test_dashboard_reports_real_empty_backend_state() -> None:
     app = new_test_app()
     user = seed_user(app, "Empty")
