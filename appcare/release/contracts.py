@@ -117,8 +117,7 @@ class ReleaseEvidence:
             "known_limitations_published": self.known_limitations_published,
             "beta06_live_preview": self.beta06_live_preview,
             "drills": [
-                drill.canonical()
-                for drill in sorted(self.drills, key=lambda item: item.name)
+                drill.canonical() for drill in sorted(self.drills, key=lambda item: item.name)
             ],
         }
 
