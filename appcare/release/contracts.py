@@ -16,6 +16,7 @@ ReleaseStatus = Literal["ready", "blocked"]
 
 _SAFE_CODE = re.compile(r"^[a-z0-9][a-z0-9_.:-]{0,95}$")
 _REVISION = re.compile(r"^[0-9a-f]{7,64}$")
+_UNSAFE_TEXT_MARKERS = ("bearer ", "-----begin", "private key")
 
 
 class ReleaseEvidenceError(ValueError):
@@ -52,9 +53,15 @@ class DrillEvidence:
         object.__setattr__(
             self, "evidence_ref", _safe_code(self.evidence_ref, field_name="evidence_ref")
         )
-        if not self.summary or len(self.summary) > 300 or contains_credential_like(self.summary):
+        normalized_summary = self.summary.strip()
+        if (
+            not normalized_summary
+            or len(normalized_summary) > 300
+            or contains_credential_like(normalized_summary)
+            or any(marker in normalized_summary.casefold() for marker in _UNSAFE_TEXT_MARKERS)
+        ):
             raise ReleaseEvidenceError("drill summary is unsafe")
-        object.__setattr__(self, "summary", self.summary.strip())
+        object.__setattr__(self, "summary", normalized_summary)
 
     def canonical(self) -> tuple[str, str, str, str]:
         return (self.name, self.status, self.evidence_ref, self.summary)
@@ -109,7 +116,10 @@ class ReleaseEvidence:
             "pricing_margin": self.pricing_margin,
             "known_limitations_published": self.known_limitations_published,
             "beta06_live_preview": self.beta06_live_preview,
-            "drills": [drill.canonical() for drill in sorted(self.drills, key=lambda item: item.name)],
+            "drills": [
+                drill.canonical()
+                for drill in sorted(self.drills, key=lambda item: item.name)
+            ],
         }
 
     @property
