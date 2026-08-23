@@ -75,7 +75,7 @@ def test_backup_and_approval_gates_precede_one_successful_deployment() -> None:
     assert missing_backup.status == "denied"
     assert missing_backup.failure_code == "backup_gate_required"
 
-    intent = _intent(intent_id="intent-approved")
+    intent = _intent(intent_id="intent-approved", idempotency_key="idempotency-approved")
     pending = controller.submit(intent, backup_verified=True)
     assert pending.status == "approval_pending"
     approved = controller.approve(intent.intent_id, _approve(intent))
