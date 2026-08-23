@@ -11,6 +11,7 @@ from appcare.deployment import (
     DeploymentIntent,
     DuplicateDeploymentError,
     FixtureProductionProvider,
+    LivePreviewStatus,
     ProductionControlError,
     ProductionDeploymentController,
 )
@@ -18,7 +19,7 @@ from appcare.deployment import (
 
 def _intent(
     *,
-    preview_status: str = "pass",
+    preview_status: LivePreviewStatus = "pass",
     idempotency_key: str = "idempotency-1",
     intent_id: str = "intent-1",
 ) -> DeploymentIntent:
