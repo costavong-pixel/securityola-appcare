@@ -21,6 +21,9 @@ dependencies = [
 [tool.setuptools.packages.find]
 include = ["appcare*"]
 
+[tool.setuptools.package-data]
+appcare = ["web/*.html", "web/*.css", "web/*.js"]
+
 [tool.pytest.ini_options]
 addopts = "-ra"
 testpaths = ["tests"]
