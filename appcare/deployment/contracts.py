@@ -268,7 +268,9 @@ class ProviderVerification:
         )
         if self.failure_code is not None:
             object.__setattr__(
-                self, "failure_code", validate_reason_code(self.failure_code, field_name="failure_code")
+                self,
+                "failure_code",
+                validate_reason_code(self.failure_code, field_name="failure_code"),
             )
         if self.passed and self.failure_code is not None:
             raise ProductionControlError("passed verification cannot carry a failure")
@@ -296,7 +298,9 @@ class ProviderRollback:
         )
         if self.failure_code is not None:
             object.__setattr__(
-                self, "failure_code", validate_reason_code(self.failure_code, field_name="failure_code")
+                self,
+                "failure_code",
+                validate_reason_code(self.failure_code, field_name="failure_code"),
             )
 
 
@@ -345,18 +349,15 @@ class DeploymentEvidence:
 class ProductionProvider(Protocol):
     """Injected provider boundary; this package performs no network calls."""
 
-    def deploy(self, intent: DeploymentIntent) -> ProviderDeployment:
-        ...
+    def deploy(self, intent: DeploymentIntent) -> ProviderDeployment: ...
 
     def verify(
         self, intent: DeploymentIntent, deployment: ProviderDeployment
-    ) -> ProviderVerification:
-        ...
+    ) -> ProviderVerification: ...
 
     def rollback(
         self, intent: DeploymentIntent, deployment: ProviderDeployment
-    ) -> ProviderRollback:
-        ...
+    ) -> ProviderRollback: ...
 
 
 __all__ = [
