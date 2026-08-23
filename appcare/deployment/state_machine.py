@@ -13,9 +13,9 @@ from .contracts import (
     ProductionControlError,
     ProductionProvider,
     ProviderDeployment,
+    live_preview_is_passed,
     validate_opaque_reference,
     validate_reason_code,
-    live_preview_is_passed,
 )
 
 
