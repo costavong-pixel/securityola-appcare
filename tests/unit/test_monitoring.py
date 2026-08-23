@@ -9,9 +9,9 @@ import pytest
 from appcare.monitoring import (
     BackupHealthCheck,
     InMemoryMonitoringStore,
-    MonitorTarget,
     MonitoringBoundaryError,
     MonitoringEngine,
+    MonitorTarget,
     Observation,
     UsageCostSample,
 )
