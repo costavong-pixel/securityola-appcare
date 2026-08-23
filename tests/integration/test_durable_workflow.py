@@ -143,7 +143,8 @@ def test_high_risk_approval_survives_graph_recreation(tmp_path: Path) -> None:
             target_environment="production",
             risk_level="high",
             beta06_verified_live_preview="pass",
-        ), config
+        ),
+        config,
     )
     assert len(first["__interrupt__"]) == 1
     assert not any(kind == "controlled_deploy" for _, kind in action.calls)
