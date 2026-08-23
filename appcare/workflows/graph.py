@@ -24,6 +24,7 @@ from .contracts import (
     validate_failure_code,
     validate_safe_id,
 )
+from ..deployment.contracts import live_preview_is_passed, normalize_live_preview_status
 from .store import WorkflowActionError, WorkflowBudgetExceeded, WorkflowStore
 
 
@@ -84,6 +85,7 @@ def initial_state(
     application_id: str,
     job_id: str,
     target_environment: str = "staging",
+    beta06_verified_live_preview: str = "unverified",
     risk_level: str = "low",
     backup_status: str = "required",
     retry_budget: int = 3,
@@ -100,6 +102,7 @@ def initial_state(
         "phase": "intake",
         "status": "running",
         "target_environment": target_environment,
+        "beta06_verified_live_preview": normalize_live_preview_status(beta06_verified_live_preview),
         "risk_level": risk_level,
         "backup_status": backup_status,
         "inventory_status": "pending",
@@ -383,6 +386,10 @@ def build_workflow(runtime: WorkflowRuntime, checkpointer: Any) -> Any:
         return {"phase": "isolated_workspace", "approval_status": approval_status}
 
     def approval(state: WorkflowState) -> dict[str, object]:
+        if state.get("target_environment") == "production" and not live_preview_is_passed(
+            state.get("beta06_verified_live_preview")
+        ):
+            return _failure(runtime, state, "beta06_live_preview_required")
         if state.get("approval_status") != "required":
             _transition(
                 runtime,
@@ -441,6 +448,10 @@ def build_workflow(runtime: WorkflowRuntime, checkpointer: Any) -> Any:
         }
 
     def controlled_deploy(state: WorkflowState) -> dict[str, object]:
+        if state.get("target_environment") == "production" and not live_preview_is_passed(
+            state.get("beta06_verified_live_preview")
+        ):
+            return _failure(runtime, state, "beta06_live_preview_required")
         if state.get("approval_status") not in {"approved", "not_required"}:
             return _failure(runtime, state, "approval_required_before_deploy")
         try:
