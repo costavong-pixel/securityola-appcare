@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
@@ -16,6 +16,7 @@ BACKUP_TMP_ROOT: Final = Path("/var/tmp/securityola/appcare-backups")  # noqa: S
 
 B2_BACKUP_PREFIX: Final = "appcare/backups"
 GLACIER_ARCHIVE_PREFIX: Final = "appcare/archive"
+_TEST_BOUNDARY_TOKEN: Final[object] = object()
 
 _DATA_SUBDIRECTORIES: Final = (
     "staging",
@@ -93,8 +94,14 @@ class BackupFilesystemBoundary:
     log_root: Path = BACKUP_LOG_ROOT
     config_root: Path = BACKUP_CONFIG_ROOT
     tmp_root: Path = BACKUP_TMP_ROOT
+    _scope_token: object | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
+        if self._scope_token is not _TEST_BOUNDARY_TOKEN:
+            expected = (BACKUP_ROOT, BACKUP_LOG_ROOT, BACKUP_CONFIG_ROOT, BACKUP_TMP_ROOT)
+            actual = (self.backup_root, self.log_root, self.config_root, self.tmp_root)
+            if actual != expected:
+                raise BackupBoundaryError("production backup boundary roots are not canonical")
         for field_name in ("backup_root", "log_root", "config_root", "tmp_root"):
             path = _reject_protected_path(
                 Path(getattr(self, field_name)),
@@ -130,6 +137,7 @@ class BackupFilesystemBoundary:
             base / "logs",
             base / "config",
             base / "tmp",
+            _scope_token=_TEST_BOUNDARY_TOKEN,
         )
 
     @property
