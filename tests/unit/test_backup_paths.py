@@ -41,8 +41,7 @@ def test_required_paths_are_scoped_and_provider_prefixes_are_stable(tmp_path: Pa
     assert snapshot == boundary.backup_root / "snapshots" / "tenant-a" / "app-a" / "backup-a"
     assert manifest == boundary.backup_root / "manifests" / "tenant-a" / "app-a" / "backup-a.json"
     assert (
-        restore
-        == boundary.backup_root / "restore-rehearsal" / "tenant-a" / "app-a" / "restore-a"
+        restore == boundary.backup_root / "restore-rehearsal" / "tenant-a" / "app-a" / "restore-a"
     )
     assert job == boundary.backup_root / "jobs" / "job-a"
     assert failed == boundary.backup_root / "failed" / "job-a"
