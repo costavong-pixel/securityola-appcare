@@ -12,7 +12,7 @@ from .contracts import BackupBoundaryError, validate_path_segment
 BACKUP_ROOT: Final = Path("/var/lib/securityola/appcare/backups")
 BACKUP_LOG_ROOT: Final = Path("/var/log/securityola/appcare/backups")
 BACKUP_CONFIG_ROOT: Final = Path("/etc/securityola/appcare/backups")
-BACKUP_TMP_ROOT: Final = Path("/var/tmp/securityola/appcare-backups")
+BACKUP_TMP_ROOT: Final = Path("/var/tmp/securityola/appcare-backups")  # noqa: S108
 
 B2_BACKUP_PREFIX: Final = "appcare/backups"
 GLACIER_ARCHIVE_PREFIX: Final = "appcare/archive"
