@@ -334,7 +334,7 @@ class FilesystemImmutableVault:
             raise VaultError("persisted backup artifact is malformed") from exc
 
     def put(self, artifact: BackupArtifact, *, idempotency_key: str) -> VaultReceipt:
-        backup_id, tenant_id, application_id = _scope(
+        tenant_id, application_id, backup_id = _scope(
             artifact.manifest.backup_id,
             artifact.manifest.target.tenant_id,
             artifact.manifest.target.application_id,
@@ -394,7 +394,7 @@ class FilesystemImmutableVault:
         application_id: str,
         now: datetime,
     ) -> None:
-        backup_id, tenant_id, application_id = _scope(backup_id, tenant_id, application_id)
+        tenant_id, application_id, backup_id = _scope(backup_id, tenant_id, application_id)
         artifact = self._read_artifact(
             backup_id,
             tenant_id=tenant_id,
