@@ -12,9 +12,9 @@ from .contracts import (
     BackupBoundaryError,
     BackupDestination,
     BackupTarget,
+    utc,
     validate_backup_id,
     validate_path_segment,
-    utc,
 )
 from .models import (
     BackupArtifact,
