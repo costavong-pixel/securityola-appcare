@@ -136,7 +136,7 @@ def test_complete_controlled_test_app_backup_and_isolated_restore(tmp_path: Path
     assert (
         restore_root / "restored" / "backup-beta04-1" / "components" / "database.bin"
     ).read_bytes() == source.components[1].payload
-    assert not (restore_root / ".restore-staging" / "backup-beta04-1").exists()
+    assert not (restore_root / "restore-staging" / "backup-beta04-1").exists()
 
 
 def test_failed_upload_is_unhealthy_and_not_a_verified_backup() -> None:
@@ -385,7 +385,7 @@ def test_restore_does_not_delete_preexisting_staging_on_mkdir_failure(tmp_path: 
     assert outcome.healthy is True
     restore_target, _ = _restore_target(tmp_path, "rehearsal-existing")
     restore_root = restore_target.root
-    staging = restore_root / ".restore-staging" / "backup-beta04-1"
+    staging = restore_root / "restore-staging" / "backup-beta04-1"
     staging.mkdir(parents=True)
     marker = staging / "must-survive.txt"
     marker.write_text("pre-existing", encoding="utf-8")
