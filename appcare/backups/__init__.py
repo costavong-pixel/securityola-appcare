@@ -20,6 +20,16 @@ from .models import (
     RestoreEvidence,
     VaultReceipt,
 )
+from .paths import (
+    BACKUP_CONFIG_ROOT,
+    BACKUP_LOG_ROOT,
+    BACKUP_ROOT,
+    BACKUP_TMP_ROOT,
+    B2_BACKUP_PREFIX,
+    GLACIER_ARCHIVE_PREFIX,
+    BackupFilesystemBoundary,
+    validate_read_only_source,
+)
 from .pipeline import BackupCoordinator, BackupError
 from .stores import (
     FilesystemImmutableVault,
@@ -36,6 +46,14 @@ __all__ = [
     "BackupCoordinator",
     "BackupDestination",
     "BackupError",
+    "BACKUP_CONFIG_ROOT",
+    "BACKUP_LOG_ROOT",
+    "BACKUP_ROOT",
+    "BACKUP_TMP_ROOT",
+    "B2_BACKUP_PREFIX",
+    "GLACIER_ARCHIVE_PREFIX",
+    "BackupFilesystemBoundary",
+    "validate_read_only_source",
     "BackupJobEvent",
     "BackupManifest",
     "BackupOutcome",
