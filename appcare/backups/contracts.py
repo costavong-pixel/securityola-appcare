@@ -188,7 +188,7 @@ class RestoreTarget:
     environment: Literal["development", "staging", "test"]
     root: Path
     isolation_id: str
-    filesystem: "BackupFilesystemBoundary | None" = None
+    filesystem: BackupFilesystemBoundary | None = None
 
     def __post_init__(self) -> None:
         _safe_identifier(self.tenant_id, field="restore tenant_id")
