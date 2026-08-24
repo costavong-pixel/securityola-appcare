@@ -6,6 +6,7 @@ import base64
 import json
 import os
 from datetime import UTC, datetime
+from pathlib import Path
 
 from .contracts import (
     BackupBoundaryError,
@@ -56,7 +57,7 @@ def _scope(backup_id: str, tenant_id: str, application_id: str) -> tuple[str, st
         raise VaultError(str(exc)) from exc
 
 
-def _write_private(path: object, payload: bytes) -> None:
+def _write_private(path: Path, payload: bytes) -> None:
     """Create one sensitive artifact file without following an existing path."""
 
     file_path = os.fspath(path)
@@ -212,7 +213,7 @@ class FilesystemImmutableVault:
         self.filesystem.ensure_data_dirs()
         self._memory = InMemoryImmutableVault(destination)
 
-    def _artifact_dir(self, backup_id: str, tenant_id: str, application_id: str):
+    def _artifact_dir(self, backup_id: str, tenant_id: str, application_id: str) -> Path:
         try:
             return self.filesystem.snapshot_path(tenant_id, application_id, backup_id)
         except BackupBoundaryError as exc:
@@ -224,7 +225,7 @@ class FilesystemImmutableVault:
         tenant_id: str,
         application_id: str,
         filename: str,
-    ):
+    ) -> Path:
         if filename not in self._SNAPSHOT_FILES:
             raise VaultError("unsupported backup artifact filename")
         try:
@@ -237,7 +238,7 @@ class FilesystemImmutableVault:
         except BackupBoundaryError as exc:
             raise VaultError(str(exc)) from exc
 
-    def _manifest_path(self, backup_id: str, tenant_id: str, application_id: str):
+    def _manifest_path(self, backup_id: str, tenant_id: str, application_id: str) -> Path:
         try:
             return self.filesystem.manifest_path(tenant_id, application_id, backup_id)
         except BackupBoundaryError as exc:
