@@ -338,7 +338,7 @@ class BackupCoordinator:
                 target.root, "restored", field="restore destination"
             )
             staging_root = validate_isolated_child(
-                target.root, ".restore-staging", field="restore staging"
+                target.root, "restore-staging", field="restore staging"
             )
             final = validate_isolated_child(
                 restored_root, backup_id, field="restore destination artifact"
