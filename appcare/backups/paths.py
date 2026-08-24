@@ -112,9 +112,7 @@ class BackupFilesystemBoundary:
                 if left_name == right_name:
                     continue
                 if _within(left, right) or _within(right, left):
-                    raise BackupBoundaryError(
-                        f"backup {left_name} overlaps backup {right_name}"
-                    )
+                    raise BackupBoundaryError(f"backup {left_name} overlaps backup {right_name}")
 
     @classmethod
     def canonical(cls) -> BackupFilesystemBoundary:
