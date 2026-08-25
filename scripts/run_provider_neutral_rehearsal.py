@@ -60,8 +60,6 @@ TENANT_ID = "tenant-appcare-e2e"
 APPLICATION_ID = "appcare-e2e-app"
 USER_ID = "appcare-e2e-user"
 BASELINE_REVISION = "c1dc80ba3fb838bbf36a2e8fceec3ca312a965f1"
-BACKUP_ID = "provider-neutral-e2e-backup"
-BACKUP_JOB_ID = "provider-neutral-e2e-job"
 STAGING_ROOT = Path("/opt/securityola/appcare-staging")
 REFERENCE_ROOT = Path("/opt/securityola/appcare-reference-production")
 REFERENCE_DATABASE = Path("/var/lib/securityola/appcare/reference/appcare_reference.db")
@@ -194,7 +192,7 @@ def _seed(database: Database) -> User:
         return user
 
 
-def _backup(restore_job_id: str) -> dict[str, str]:
+def _backup(backup_id: str, backup_job_id: str, restore_job_id: str) -> dict[str, str]:
     now = datetime.now(UTC).replace(microsecond=0)
     filesystem = BackupFilesystemBoundary.canonical()
     destination = BackupDestination(
@@ -207,8 +205,8 @@ def _backup(restore_job_id: str) -> dict[str, str]:
     request = BackupRequest(
         target,
         destination,
-        BACKUP_ID,
-        BACKUP_JOB_ID,
+        backup_id,
+        backup_job_id,
         now - timedelta(minutes=2),
     )
     coordinator = BackupCoordinator()
@@ -226,10 +224,10 @@ def _backup(restore_job_id: str) -> dict[str, str]:
     if not outcome.healthy or outcome.receipt is None or outcome.evidence is None:
         raise RuntimeError("synthetic backup did not verify")
     reopened = FilesystemImmutableVault(filesystem, destination)
-    artifact = reopened.get(BACKUP_ID, tenant_id=TENANT_ID, application_id=APPLICATION_ID)
+    artifact = reopened.get(backup_id, tenant_id=TENANT_ID, application_id=APPLICATION_ID)
     restore_root = filesystem.restore_rehearsal_path(TENANT_ID, APPLICATION_ID, restore_job_id)
     restore = coordinator.restore_backup(
-        backup_id=BACKUP_ID,
+        backup_id=backup_id,
         vault=reopened,
         encryptor=AesGcmEnvelopeEncryptor(
             b"c" * 32,
@@ -252,8 +250,8 @@ def _backup(restore_job_id: str) -> dict[str, str]:
         "backup_artifact_digest": artifact.artifact_digest,
         "backup_manifest_digest": sha256(artifact.manifest_bytes).hexdigest(),
         "restore_status": restore.status,
-        "backup_path": str(filesystem.snapshot_path(TENANT_ID, APPLICATION_ID, BACKUP_ID)),
-        "manifest_path": str(filesystem.manifest_path(TENANT_ID, APPLICATION_ID, BACKUP_ID)),
+        "backup_path": str(filesystem.snapshot_path(TENANT_ID, APPLICATION_ID, backup_id)),
+        "manifest_path": str(filesystem.manifest_path(TENANT_ID, APPLICATION_ID, backup_id)),
     }
 
 
@@ -330,7 +328,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     inventory = sorted(path.name for path in source_root.iterdir() if not path.is_symlink())
     scan_receipt = _sha(json.dumps({"revision": args.source_revision, "inventory": inventory}))
     test_receipt = _run_tests(source_root)
-    backup = _backup(args.restore_job_id)
+    backup = _backup(args.backup_id, args.backup_job_id, args.restore_job_id)
 
     staging_provider = FilesystemReferenceProvider(
         ReferenceDeploymentConfig(
@@ -644,6 +642,8 @@ def main() -> int:
     parser.add_argument("--source-revision", required=True)
     parser.add_argument("--artifact-digest", required=True)
     parser.add_argument("--baseline-artifact-digest", required=True)
+    parser.add_argument("--backup-id", required=True)
+    parser.add_argument("--backup-job-id", required=True)
     parser.add_argument("--restore-job-id", required=True)
     args = parser.parse_args()
     print(json.dumps(run(args), sort_keys=True, indent=2))
