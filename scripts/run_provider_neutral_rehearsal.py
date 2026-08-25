@@ -328,6 +328,48 @@ def _run_tests(source_root: Path) -> str:
     return _sha(result.stdout)
 
 
+def _release_receipt(
+    kind: str,
+    *,
+    source_revision: str,
+    preproduction: PreproductionEvidence,
+    exact_head_ci_reference: str | None,
+    exact_head_ci_digest: str | None,
+    codex_security_reference: str | None,
+    codex_security_digest: str | None,
+) -> EvidenceReceipt:
+    """Build one sanitized receipt, failing closed when external proof is absent."""
+
+    if kind == "preproduction_environment":
+        reference = "receipt-preproduction-environment"
+        digest = preproduction.authoritative_evidence_digest
+        passed = True
+    else:
+        external = {
+            "exact_head_ci": (exact_head_ci_reference, exact_head_ci_digest),
+            "codex_security": (codex_security_reference, codex_security_digest),
+        }.get(kind)
+        if external is not None:
+            external_reference, external_digest = external
+        else:
+            external_reference, external_digest = None, None
+        if external_reference is not None and external_digest is not None:
+            reference = external_reference
+            digest = external_digest
+            passed = True
+        else:
+            reference = f"unverified-{kind}"
+            digest = _sha(f"unverified|{kind}|{source_revision}")
+            passed = False
+    return EvidenceReceipt(
+        kind=kind,
+        reference=reference,
+        exact_head=source_revision,
+        digest=digest,
+        passed=passed,
+    )
+
+
 def run(args: argparse.Namespace) -> dict[str, object]:
     _validate_operational_paths(args)
     source_root = args.source_root.resolve()
@@ -567,28 +609,22 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         dashboard = build_dashboard_snapshot(session, dashboard_user)
 
     receipts = tuple(
-        EvidenceReceipt(
-            kind=kind,
-            reference=(
-                "receipt-preproduction-environment"
-                if kind == "preproduction_environment"
-                else f"receipt-{kind}"
-            ),
-            exact_head=args.source_revision,
-            digest=(
-                preproduction.authoritative_evidence_digest
-                if kind == "preproduction_environment"
-                else _sha(f"{kind}|{args.source_revision}")
-            ),
-            passed=kind not in {"exact_head_ci", "codex_security"},
+        _release_receipt(
+            kind,
+            source_revision=args.source_revision,
+            preproduction=preproduction,
+            exact_head_ci_reference=args.exact_head_ci_reference,
+            exact_head_ci_digest=args.exact_head_ci_digest,
+            codex_security_reference=args.codex_security_reference,
+            codex_security_digest=args.codex_security_digest,
         )
         for kind in REQUIRED_AUTHORITATIVE_RECEIPTS
     )
     release_evidence = ReleaseEvidence(
         exact_head=args.source_revision,
-        ci_passed=False,
-        test_count=1,
-        codex_security_findings=0,
+        ci_passed=any(receipt.kind == "exact_head_ci" and receipt.passed for receipt in receipts),
+        test_count=args.test_count,
+        codex_security_findings=args.codex_security_findings,
         tenant_isolation=True,
         backup_restore=True,
         production_rollback=failure_record.status == "rolled_back",
@@ -645,6 +681,9 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         "monthly_report_source": "persisted" if monthly.observation_count >= 1 else "missing",
         "beta10_status": release_decision.status,
         "beta10_reason_codes": list(release_decision.reason_codes),
+        "beta10_failed_checks": list(release_decision.failed_checks),
+        "beta10_evidence_digest": release_decision.evidence_digest,
+        "beta10_authoritative_receipts": list(release_decision.authoritative_evidence_refs),
         "vercel_read_only": VERCEL_CAPABILITIES.read_only,
         "vercel_scan": VERCEL_CAPABILITIES.scan,
         "vercel_preview": VERCEL_CAPABILITIES.preview,
@@ -668,6 +707,12 @@ def main() -> int:
     parser.add_argument("--backup-job-id", required=True)
     parser.add_argument("--restore-job-id", required=True)
     parser.add_argument("--rehearsal-id", required=True)
+    parser.add_argument("--test-count", type=int, required=True)
+    parser.add_argument("--codex-security-findings", type=int, default=0)
+    parser.add_argument("--exact-head-ci-reference")
+    parser.add_argument("--exact-head-ci-digest")
+    parser.add_argument("--codex-security-reference")
+    parser.add_argument("--codex-security-digest")
     args = parser.parse_args()
     print(json.dumps(run(args), sort_keys=True, indent=2))
     return 0
