@@ -57,6 +57,8 @@ class WorkflowState(TypedDict, total=False):
     status: str
     target_environment: Literal["development", "staging", "production"] | str
     preproduction_evidence_ref: str | None
+    source_revision: str | None
+    artifact_digest: str | None
     risk_level: Literal["low", "medium", "high", "critical"] | str
     backup_status: str
     inventory_status: str
@@ -90,6 +92,8 @@ class WorkflowInput(TypedDict, total=False):
     job_id: str
     target_environment: str
     preproduction_evidence_ref: str
+    source_revision: str
+    artifact_digest: str
     risk_level: str
     backup_status: str
     retry_budget: int
@@ -125,6 +129,28 @@ def validate_failure_code(value: str, *, field_name: str = "failure_code") -> st
     return value.strip()
 
 
+def validate_source_revision(value: str, *, field_name: str = "source_revision") -> str:
+    """Accept only a bounded Git revision for production evidence binding."""
+
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a Git revision")
+    normalized = value.strip().casefold()
+    if _REVISION.fullmatch(normalized) is None:
+        raise ValueError(f"{field_name} must be a Git revision")
+    return normalized
+
+
+def validate_artifact_digest(value: str, *, field_name: str = "artifact_digest") -> str:
+    """Accept only a SHA-256 artifact identity for production binding."""
+
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a SHA-256 digest")
+    normalized = value.strip().casefold()
+    if _SHA256.fullmatch(normalized) is None:
+        raise ValueError(f"{field_name} must be a SHA-256 digest")
+    return normalized
+
+
 def validate_checkpoint_state(state: Mapping[str, object]) -> None:
     """Fail closed if a caller tries to checkpoint raw or unbounded data."""
 
@@ -137,6 +163,8 @@ def validate_checkpoint_state(state: Mapping[str, object]) -> None:
         "status",
         "target_environment",
         "preproduction_evidence_ref",
+        "source_revision",
+        "artifact_digest",
         "risk_level",
         "backup_status",
         "inventory_status",
@@ -193,6 +221,16 @@ def validate_checkpoint_state(state: Mapping[str, object]) -> None:
         if not isinstance(preproduction_ref, str):
             raise ValueError("workflow state preproduction_evidence_ref is invalid")
         validate_safe_id(preproduction_ref, field_name="preproduction_evidence_ref")
+    source_revision = state.get("source_revision")
+    if source_revision is not None:
+        if not isinstance(source_revision, str):
+            raise ValueError("workflow state source_revision is invalid")
+        validate_source_revision(source_revision)
+    artifact_digest = state.get("artifact_digest")
+    if artifact_digest is not None:
+        if not isinstance(artifact_digest, str):
+            raise ValueError("workflow state artifact_digest is invalid")
+        validate_artifact_digest(artifact_digest)
     for name in ("scanner_failure_code", "failure_code"):
         value = state.get(name)
         if value is not None:
@@ -360,6 +398,8 @@ __all__ = [
     "WorkflowPhase",
     "WorkflowState",
     "validate_checkpoint_state",
+    "validate_artifact_digest",
     "validate_failure_code",
     "validate_safe_id",
+    "validate_source_revision",
 ]

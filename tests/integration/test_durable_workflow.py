@@ -90,6 +90,14 @@ class StaticPreproductionResolver:
         return PREPRODUCTION
 
 
+class PermissivePreproductionResolver:
+    """A deliberately broad resolver used to test workflow-side binding."""
+
+    def resolve(self, state: Mapping[str, object]) -> PreproductionEvidence:
+        del state
+        return PREPRODUCTION
+
+
 def _database(tmp_path: Path) -> Database:
     database = Database(f"sqlite+pysqlite:///{(tmp_path / 'workflow.db').as_posix()}")
     database.initialize()
@@ -110,6 +118,8 @@ def _state(workflow_id: str, **overrides: str | int) -> WorkflowState:
             if "preproduction_evidence_ref" not in overrides
             else str(overrides["preproduction_evidence_ref"])
         ),
+        source_revision=str(overrides.get("source_revision", PREPRODUCTION.source_revision)),
+        artifact_digest=str(overrides.get("artifact_digest", PREPRODUCTION.artifact_digest)),
         risk_level=str(overrides.get("risk_level", "low")),
         backup_status=str(overrides.get("backup_status", "verified")),
         retry_budget=int(overrides.get("retry_budget", 3)),
@@ -299,4 +309,43 @@ def test_production_workflow_denies_without_authoritative_preproduction(tmp_path
 
     assert result["status"] == "escalated"
     assert result["failure_code"] == "verified_preproduction_environment_required"
+    assert not any(kind == "controlled_deploy" for _, kind in action.calls)
+
+
+def test_production_workflow_requires_exact_preproduction_reference_and_artifact(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path)
+    action = RecordingAction()
+    graph = build_workflow(
+        WorkflowRuntime(
+            WorkflowStore(database),
+            action_adapter=action,
+            preproduction_evidence_resolver=PermissivePreproductionResolver(),
+        ),
+        build_in_memory_checkpointer(),
+    )
+
+    missing_reference = graph.invoke(
+        _state(
+            "workflow-missing-preproduction-reference",
+            target_environment="production",
+        ),
+        {"configurable": {"thread_id": "workflow-missing-preproduction-reference"}},
+    )
+    assert missing_reference["status"] == "escalated"
+    assert missing_reference["failure_code"] == "verified_preproduction_environment_required"
+    assert not any(kind == "controlled_deploy" for _, kind in action.calls)
+
+    mismatched_artifact = graph.invoke(
+        _state(
+            "workflow-mismatched-preproduction-artifact",
+            target_environment="production",
+            preproduction_evidence_ref=PREPRODUCTION.authoritative_evidence_digest,
+            artifact_digest="d" * 64,
+        ),
+        {"configurable": {"thread_id": "workflow-mismatched-preproduction-artifact"}},
+    )
+    assert mismatched_artifact["status"] == "escalated"
+    assert mismatched_artifact["failure_code"] == "verified_preproduction_environment_required"
     assert not any(kind == "controlled_deploy" for _, kind in action.calls)

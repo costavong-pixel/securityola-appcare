@@ -21,9 +21,11 @@ from .contracts import (
     TerminalWorkflowError,
     WorkflowConfigurationError,
     WorkflowState,
+    validate_artifact_digest,
     validate_checkpoint_state,
     validate_failure_code,
     validate_safe_id,
+    validate_source_revision,
 )
 from .store import WorkflowActionError, WorkflowBudgetExceeded, WorkflowStore
 
@@ -87,6 +89,8 @@ def initial_state(
     job_id: str,
     target_environment: str = "staging",
     preproduction_evidence_ref: str | None = None,
+    source_revision: str | None = None,
+    artifact_digest: str | None = None,
     risk_level: str = "low",
     backup_status: str = "required",
     retry_budget: int = 3,
@@ -109,6 +113,12 @@ def initial_state(
             else validate_safe_id(
                 preproduction_evidence_ref, field_name="preproduction_evidence_ref"
             )
+        ),
+        "source_revision": (
+            None if source_revision is None else validate_source_revision(source_revision)
+        ),
+        "artifact_digest": (
+            None if artifact_digest is None else validate_artifact_digest(artifact_digest)
         ),
         "risk_level": risk_level,
         "backup_status": backup_status,
@@ -172,16 +182,34 @@ def _preproduction_verified(runtime: WorkflowRuntime, state: WorkflowState) -> b
     resolver = runtime.preproduction_evidence_resolver
     if resolver is None:
         return False
+    supplied_ref = state.get("preproduction_evidence_ref")
+    source_revision = state.get("source_revision")
+    artifact_digest = state.get("artifact_digest")
+    if (
+        not isinstance(supplied_ref, str)
+        or not isinstance(source_revision, str)
+        or not isinstance(artifact_digest, str)
+    ):
+        return False
+    try:
+        normalized_ref = validate_safe_id(supplied_ref, field_name="preproduction_evidence_ref")
+        normalized_revision = validate_source_revision(source_revision)
+        normalized_artifact = validate_artifact_digest(artifact_digest)
+    except ValueError:
+        return False
     evidence = resolver.resolve(dict(state))
     if evidence is None or not evidence.passed:
         return False
     if (
         evidence.tenant_id != state["tenant_id"]
         or evidence.application_id != state["application_id"]
+        or evidence.source_revision != normalized_revision
+        or evidence.exact_head != normalized_revision
+        or evidence.artifact_digest != normalized_artifact
+        or evidence.authoritative_evidence_digest != normalized_ref
     ):
         return False
-    supplied_ref = state.get("preproduction_evidence_ref")
-    return supplied_ref is None or supplied_ref == evidence.authoritative_evidence_digest
+    return True
 
 
 def _transition(
