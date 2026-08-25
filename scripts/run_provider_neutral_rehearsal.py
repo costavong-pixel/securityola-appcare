@@ -336,6 +336,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             artifact_root=staging_root / "artifacts",
             service_name="appcare-staging",
             health_url="http://127.0.0.1:18567/health/ready",
+            service_user="appcare-staging",
+            service_group="appcare-staging",
         )
     )
     staging_intent = _intent(
@@ -388,6 +390,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         artifact_root=reference_root / "artifacts",
         service_name="appcare-reference-production",
         health_url="http://127.0.0.1:18568/health/ready",
+        service_user="appcare-reference",
+        service_group="appcare-reference",
     )
     reference_provider = FilesystemReferenceProvider(reference_config)
     if not reference_provider.recover_current():
@@ -433,6 +437,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             service_name="appcare-reference-production",
             health_url="http://127.0.0.1:18568/health/ready",
             failure_health_url="http://127.0.0.1:18569/health/ready",
+            service_user="appcare-reference",
+            service_group="appcare-reference",
         )
     )
     failure_intent = _intent(

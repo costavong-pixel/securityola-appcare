@@ -137,6 +137,8 @@ class ReferenceDeploymentConfig:
     health_url: str
     systemctl_path: str = "/usr/bin/systemctl"
     failure_health_url: str | None = None
+    service_user: str | None = None
+    service_group: str | None = None
 
     def __post_init__(self) -> None:
         target_root = _reject_protected_target(self.target_root)
@@ -146,6 +148,11 @@ class ReferenceDeploymentConfig:
         validate_opaque_reference(self.service_name, field_name="service_name")
         if self.systemctl_path != "/usr/bin/systemctl":
             raise ProductionControlError("systemctl_path is fixed to the AppCare systemd binary")
+        if (self.service_user is None) != (self.service_group is None):
+            raise ProductionControlError("service user and group must be configured together")
+        if self.service_user is not None:
+            validate_opaque_reference(self.service_user, field_name="service_user")
+            validate_opaque_reference(self.service_group or "", field_name="service_group")
         _loopback_url(self.health_url, field_name="reference health URL")
         if self.failure_health_url is not None:
             _loopback_url(self.failure_health_url, field_name="failure health URL")
@@ -254,6 +261,25 @@ class FilesystemReferenceProvider:
             return False
         return result.returncode == 0
 
+    def _set_release_owner(self, release: Path) -> None:
+        if self.config.service_user is None or self.config.service_group is None:
+            return
+        for directory, directories, files in os.walk(release, followlinks=False):
+            paths = (
+                Path(directory),
+                *(Path(directory) / name for name in directories),
+                *(Path(directory) / name for name in files),
+            )
+            for path in paths:
+                if path.is_symlink():
+                    raise ProductionControlError("release contains a symlink")
+                try:
+                    shutil.chown(
+                        path, user=self.config.service_user, group=self.config.service_group
+                    )
+                except (LookupError, OSError) as exc:
+                    raise ProductionControlError("release owner could not be assigned") from exc
+
     def _switch_current(self, release: Path) -> None:
         release = _inside(release, self._releases, field_name="release")
         if not release.is_dir() or release.is_symlink():
@@ -293,6 +319,7 @@ class FilesystemReferenceProvider:
         if not release.exists():
             shutil.copytree(artifact, release, symlinks=False)
         _safe_tree(release, self._releases, field_name="release")
+        self._set_release_owner(release)
         self._switch_current(release)
         deployment = ProviderDeployment(
             deployment_ref=f"filesystem:{self.config.service_name}:{intent.artifact_digest[:24]}",
