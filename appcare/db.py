@@ -66,6 +66,7 @@ def install_audit_immutability(engine: Engine) -> None:
             for table, label in (
                 ("deployment_evidence", "deployment evidence"),
                 ("monitoring_events", "monitoring events"),
+                ("preproduction_evidence", "preproduction evidence"),
             ):
                 connection.execute(
                     text(
@@ -121,6 +122,7 @@ def install_audit_immutability(engine: Engine) -> None:
             for table, trigger in (
                 ("deployment_evidence", "appcare_deployment_evidence_immutable"),
                 ("monitoring_events", "appcare_monitoring_events_immutable"),
+                ("preproduction_evidence", "appcare_preproduction_evidence_immutable"),
             ):
                 connection.execute(text(f"DROP TRIGGER IF EXISTS {trigger} ON {table}"))
                 connection.execute(

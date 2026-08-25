@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal, Protocol, TypedDict
 
-from ..deployment.contracts import normalize_live_preview_status
+from ..deployment.preproduction import PreproductionEvidence
 from ..services.security import contains_credential_like, contains_credential_like_data
 
 WorkflowPhase = Literal[
@@ -56,7 +56,7 @@ class WorkflowState(TypedDict, total=False):
     phase: WorkflowPhase | str
     status: str
     target_environment: Literal["development", "staging", "production"] | str
-    beta06_verified_live_preview: str
+    preproduction_evidence_ref: str | None
     risk_level: Literal["low", "medium", "high", "critical"] | str
     backup_status: str
     inventory_status: str
@@ -89,7 +89,7 @@ class WorkflowInput(TypedDict, total=False):
     application_id: str
     job_id: str
     target_environment: str
-    beta06_verified_live_preview: str
+    preproduction_evidence_ref: str
     risk_level: str
     backup_status: str
     retry_budget: int
@@ -136,7 +136,7 @@ def validate_checkpoint_state(state: Mapping[str, object]) -> None:
         "phase",
         "status",
         "target_environment",
-        "beta06_verified_live_preview",
+        "preproduction_evidence_ref",
         "risk_level",
         "backup_status",
         "inventory_status",
@@ -188,10 +188,11 @@ def validate_checkpoint_state(state: Mapping[str, object]) -> None:
             if not isinstance(value, str):
                 raise ValueError(f"workflow state {name} is invalid")
             validate_safe_id(value, field_name=name)
-    try:
-        normalize_live_preview_status(state.get("beta06_verified_live_preview", "unverified"))
-    except ValueError as exc:
-        raise ValueError("workflow state beta06_verified_live_preview is invalid") from exc
+    preproduction_ref = state.get("preproduction_evidence_ref")
+    if preproduction_ref is not None:
+        if not isinstance(preproduction_ref, str):
+            raise ValueError("workflow state preproduction_evidence_ref is invalid")
+        validate_safe_id(preproduction_ref, field_name="preproduction_evidence_ref")
     for name in ("scanner_failure_code", "failure_code"):
         value = state.get(name)
         if value is not None:
@@ -310,6 +311,12 @@ class ActionAdapter(Protocol):
         ...
 
 
+class PreproductionEvidenceResolver(Protocol):
+    """Resolve persisted preproduction evidence for one production request."""
+
+    def resolve(self, state: Mapping[str, object]) -> PreproductionEvidence | None: ...
+
+
 class ScanAdapter(Protocol):
     """Injected deterministic scanner boundary."""
 
@@ -346,6 +353,7 @@ __all__ = [
     "RetryableWorkflowError",
     "ScanAdapter",
     "ScanResult",
+    "PreproductionEvidenceResolver",
     "TerminalWorkflowError",
     "WorkflowConfigurationError",
     "WorkflowInput",

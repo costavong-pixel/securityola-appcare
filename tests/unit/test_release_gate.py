@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC, datetime
 
 import pytest
 
+from appcare.deployment.preproduction import PreproductionEvidence
 from appcare.release.contracts import (
     DrillEvidence,
     EvidenceReceipt,
@@ -22,7 +24,22 @@ from appcare.release.gate import (
 HEAD = "1814c41c8269ad64fab6df659968550e6e85cb95"
 
 
-def complete_evidence(*, beta06_live_preview: str = "pass") -> ReleaseEvidence:
+def complete_evidence(*, preproduction_status: str = "pass") -> ReleaseEvidence:
+    preproduction = PreproductionEvidence.create(
+        tenant_id="tenant-release",
+        application_id="application-release",
+        provider="securityola-vps",
+        target_type="controlled-reference",
+        source_revision=HEAD,
+        artifact_digest="d" * 64,
+        environment_identity="appcare-staging-18567",
+        deployment_reference="staging-deployment-release",
+        deployment_timestamp=datetime(2026, 8, 25, tzinfo=UTC),
+        smoke_test_receipt="smoke-release",
+        security_test_receipt="security-release",
+        rollback_reference_receipt="rollback-release",
+        status=preproduction_status,  # type: ignore[arg-type]
+    )
     return ReleaseEvidence(
         exact_head=HEAD,
         ci_passed=True,
@@ -37,14 +54,18 @@ def complete_evidence(*, beta06_live_preview: str = "pass") -> ReleaseEvidence:
         secret_scan=True,
         pricing_margin=True,
         known_limitations_published=True,
-        beta06_live_preview=beta06_live_preview,  # type: ignore[arg-type]
+        preproduction_evidence=preproduction,
         drills=run_adversarial_fixtures(),
         authoritative_receipts=tuple(
             EvidenceReceipt(
                 kind=kind,
                 reference=f"receipt-{kind}",
                 exact_head=HEAD,
-                digest="e" * 64,
+                digest=(
+                    preproduction.authoritative_evidence_digest
+                    if kind == "preproduction_environment"
+                    else "e" * 64
+                ),
                 passed=True,
             )
             for kind in REQUIRED_AUTHORITATIVE_RECEIPTS
@@ -58,7 +79,7 @@ def test_all_controlled_adversarial_fixtures_pass_without_network() -> None:
     assert all_drills_passed(drills)
 
 
-def test_complete_evidence_is_ready_only_when_live_preview_passes() -> None:
+def test_complete_evidence_is_ready_only_when_preproduction_evidence_passes() -> None:
     decision = ReleaseGate().evaluate(complete_evidence())
     assert decision.ready is True
     assert decision.status == "ready"
@@ -67,9 +88,9 @@ def test_complete_evidence_is_ready_only_when_live_preview_passes() -> None:
     assert len(decision.evidence_digest) == 64
 
 
-def test_current_beta06_blocker_denies_release_even_when_drills_pass() -> None:
-    decision = ReleaseGate().evaluate(complete_evidence(beta06_live_preview="blocked"))
-    require_blocked(decision, reason_code="BETA06_LIVE_PREVIEW_REQUIRED")
+def test_unverified_preproduction_denies_release_even_when_drills_pass() -> None:
+    decision = ReleaseGate().evaluate(complete_evidence(preproduction_status="fail"))
+    require_blocked(decision, reason_code="VERIFIED_PREPRODUCTION_ENVIRONMENT_REQUIRED")
     assert decision.ready is False
     assert decision.status == "blocked"
     assert decision.to_public_dict()["live_production_enabled"] is False
@@ -124,7 +145,7 @@ def test_missing_or_failed_authoritative_receipt_blocks_release() -> None:
 
 
 def test_evidence_digest_is_deterministic_and_public_output_is_sanitized() -> None:
-    first = complete_evidence(beta06_live_preview="blocked")
+    first = complete_evidence(preproduction_status="fail")
     second = replace(first, drills=tuple(reversed(first.drills)))
     assert first.evidence_digest == second.evidence_digest
     assert "credential" not in str(ReleaseGate().evaluate(first).to_public_dict()).casefold()

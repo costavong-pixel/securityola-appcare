@@ -58,7 +58,7 @@ def test_dashboard_reports_real_empty_backend_state() -> None:
     assert payload["overall_status"] == "empty"
     assert payload["application_count"] == 0
     assert payload["production"]["enabled"] is False
-    assert payload["production"]["reason_code"] == "BETA06_LIVE_PREVIEW_REQUIRED"
+    assert payload["production"]["reason_code"] == "VERIFIED_PREPRODUCTION_ENVIRONMENT_REQUIRED"
 
 
 def test_dashboard_aggregates_persisted_records_without_exposing_credentials() -> None:

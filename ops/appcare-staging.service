@@ -1,0 +1,29 @@
+[Unit]
+Description=SecurityOla AppCare controlled staging
+After=network.target
+
+[Service]
+Type=simple
+User=appcare-staging
+Group=appcare-staging
+WorkingDirectory=/opt/securityola/appcare-staging/current/source
+EnvironmentFile=/etc/securityola/appcare/staging/appcare-staging.env
+Environment=PYTHONPATH=/opt/securityola/appcare-staging/current/source
+ExecStart=/opt/securityola/appcare-staging/venv/bin/uvicorn appcare.api:app --host 127.0.0.1 --port 18567 --no-access-log
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadOnlyPaths=/opt/securityola/appcare-staging/current/source /opt/securityola/appcare-staging/venv
+ReadWritePaths=/opt/securityola/appcare-staging/data /opt/securityola/appcare-staging/logs /opt/securityola/appcare-staging/tmp
+IPAddressDeny=0.0.0.0/0
+IPAddressDeny=::/0
+IPAddressAllow=127.0.0.0/8
+IPAddressAllow=::1
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+PrivateTmp=no
+
+[Install]
+WantedBy=multi-user.target

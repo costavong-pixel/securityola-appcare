@@ -19,6 +19,7 @@ REQUIRED_AUTHORITATIVE_RECEIPTS = (
     "graphify",
     "saveruflo",
     "staging_rehearsal",
+    "preproduction_environment",
     "tenant_isolation",
     "backup_restore",
     "production_rollback",
@@ -89,9 +90,17 @@ class ReleaseGate:
             reasons.append("AUTHORITATIVE_EVIDENCE_FAILED")
             failed_checks.extend(f"receipt_failed:{kind}" for kind in failed_receipts)
 
-        if evidence.beta06_live_preview != "pass":
-            reasons.append("BETA06_LIVE_PREVIEW_REQUIRED")
-            failed_checks.append("beta06_live_preview")
+        preproduction = evidence.preproduction_evidence
+        if not preproduction.passed or preproduction.exact_head != evidence.exact_head:
+            reasons.append("VERIFIED_PREPRODUCTION_ENVIRONMENT_REQUIRED")
+            failed_checks.append("preproduction_environment")
+        preproduction_receipt = receipts.get("preproduction_environment")
+        if (
+            preproduction_receipt is not None
+            and preproduction_receipt.digest != preproduction.authoritative_evidence_digest
+        ):
+            reasons.append("AUTHORITATIVE_PREPRODUCTION_EVIDENCE_MISMATCH")
+            failed_checks.append("preproduction_evidence_digest")
 
         if evidence.codex_security_findings > 0:
             reasons.append("UNRESOLVED_CODEX_SECURITY_FINDINGS")

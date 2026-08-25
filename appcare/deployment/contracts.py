@@ -6,11 +6,10 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol
 
 from ..services.security import contains_credential_like, is_safe_credential_reference
 
-LivePreviewStatus = Literal["pass", "blocked", "unverified"]
 DeploymentStatus = Literal[
     "approval_pending",
     "approved",
@@ -81,22 +80,6 @@ def validate_reason_code(value: object, *, field_name: str = "reason_code") -> s
     return normalized
 
 
-def normalize_live_preview_status(value: object) -> LivePreviewStatus:
-    if not isinstance(value, str):
-        raise ProductionControlError("beta06_verified_live_preview is invalid")
-    normalized = value.strip().casefold()
-    if normalized not in {"pass", "blocked", "unverified"}:
-        raise ProductionControlError("beta06_verified_live_preview is invalid")
-    return cast(LivePreviewStatus, normalized)
-
-
-def live_preview_is_passed(value: object) -> bool:
-    try:
-        return normalize_live_preview_status(value) == "pass"
-    except ProductionControlError:
-        return False
-
-
 def evidence_digest(*parts: str) -> str:
     """Create a deterministic digest over sanitized evidence fields."""
 
@@ -123,7 +106,7 @@ class DeploymentIntent:
     requested_by: str
     backup_evidence_ref: str
     credential_ref: str
-    beta06_verified_live_preview: LivePreviewStatus = "unverified"
+    preproduction_evidence_digest: str
     target_environment: Literal["production"] = "production"
 
     def __post_init__(self) -> None:
@@ -141,6 +124,14 @@ class DeploymentIntent:
         if not is_safe_credential_reference(self.credential_ref):
             raise ProductionControlError("credential_ref must be an opaque custody reference")
         object.__setattr__(self, "credential_ref", self.credential_ref.strip())
+        object.__setattr__(
+            self,
+            "preproduction_evidence_digest",
+            _digest(
+                self.preproduction_evidence_digest,
+                field_name="preproduction_evidence_digest",
+            ),
+        )
         object.__setattr__(
             self,
             "artifact_digest",
@@ -161,11 +152,6 @@ class DeploymentIntent:
             "rollback_reference",
             _revision(self.rollback_reference, field_name="rollback_reference"),
         )
-        object.__setattr__(
-            self,
-            "beta06_verified_live_preview",
-            normalize_live_preview_status(self.beta06_verified_live_preview),
-        )
         if self.target_environment != "production":
             raise ProductionControlError("production intent target is immutable")
 
@@ -184,7 +170,7 @@ class DeploymentIntent:
             self.requested_by,
             self.backup_evidence_ref,
             self.credential_ref,
-            self.beta06_verified_live_preview,
+            self.preproduction_evidence_digest,
             self.target_environment,
         )
 
@@ -392,15 +378,12 @@ __all__ = [
     "DeploymentIntent",
     "DeploymentStatus",
     "DuplicateDeploymentError",
-    "LivePreviewStatus",
     "ProductionControlError",
     "ProductionProvider",
     "ProviderDeployment",
     "ProviderRollback",
     "ProviderVerification",
     "evidence_digest",
-    "live_preview_is_passed",
-    "normalize_live_preview_status",
     "validate_opaque_reference",
     "validate_reason_code",
 ]

@@ -10,7 +10,8 @@ Do not declare the AppCare private beta ready until deterministic evidence cover
 - Required evidence includes exact-head CI, tests, tenant isolation, backup/restore, production verification rollback, operator stop, customer report accuracy, dependency/secret scans, pricing/margin review, and published limitations.
 - All named adversarial drills must be present and passed.
 - Any Codex Security finding blocks readiness.
-- beta06_live_preview must be exactly pass; blocked and unverified are release blockers.
+- verified preproduction evidence must be exact-head-bound and exactly pass;
+  failed and unverified evidence are release blockers.
 - The decision always reports live_production_enabled=false.
 
 ## Controlled fixtures
@@ -22,7 +23,8 @@ Fixture PASS is not live acceptance. Current repository evidence must still carr
 ## Acceptance
 
 - A complete all-pass fixture evidence set becomes ready only when BETA-06 live Preview is pass.
-- The exact current BETA-06 evidence (blocked) produces status=blocked with BETA06_LIVE_PREVIEW_REQUIRED.
+- Missing, stale, failed, or mismatched preproduction evidence produces
+  status=blocked with VERIFIED_PREPRODUCTION_ENVIRONMENT_REQUIRED.
 - Missing or failed drills produce a blocked decision.
 - Evidence digest and public decision output are deterministic and credential-free.
 - No provider, production, WordPress, or customer resource is accessed.
