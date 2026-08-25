@@ -4,9 +4,20 @@ from dataclasses import replace
 
 import pytest
 
-from appcare.release.contracts import DrillEvidence, ReleaseEvidence, ReleaseEvidenceError
+from appcare.release.contracts import (
+    DrillEvidence,
+    EvidenceReceipt,
+    ReleaseEvidence,
+    ReleaseEvidenceError,
+)
 from appcare.release.fixtures import run_adversarial_fixtures
-from appcare.release.gate import REQUIRED_DRILLS, ReleaseGate, all_drills_passed, require_blocked
+from appcare.release.gate import (
+    REQUIRED_AUTHORITATIVE_RECEIPTS,
+    REQUIRED_DRILLS,
+    ReleaseGate,
+    all_drills_passed,
+    require_blocked,
+)
 
 HEAD = "1814c41c8269ad64fab6df659968550e6e85cb95"
 
@@ -28,6 +39,16 @@ def complete_evidence(*, beta06_live_preview: str = "pass") -> ReleaseEvidence:
         known_limitations_published=True,
         beta06_live_preview=beta06_live_preview,  # type: ignore[arg-type]
         drills=run_adversarial_fixtures(),
+        authoritative_receipts=tuple(
+            EvidenceReceipt(
+                kind=kind,
+                reference=f"receipt-{kind}",
+                exact_head=HEAD,
+                digest="e" * 64,
+                passed=True,
+            )
+            for kind in REQUIRED_AUTHORITATIVE_RECEIPTS
+        ),
     )
 
 
@@ -69,6 +90,37 @@ def test_security_findings_and_missing_control_block_readiness() -> None:
     decision = ReleaseGate().evaluate(evidence)
     assert "UNRESOLVED_CODEX_SECURITY_FINDINGS" in decision.reason_codes
     assert "OPERATOR_STOP_REQUIRED" in decision.reason_codes
+
+
+def test_stale_authoritative_receipt_blocks_release() -> None:
+    evidence = complete_evidence()
+    stale = replace(
+        evidence.authoritative_receipts[0],
+        exact_head="f" * 40,
+    )
+    changed = replace(
+        evidence,
+        authoritative_receipts=(stale, *evidence.authoritative_receipts[1:]),
+    )
+
+    decision = ReleaseGate().evaluate(changed)
+
+    assert "AUTHORITATIVE_EVIDENCE_HEAD_MISMATCH" in decision.reason_codes
+    assert "receipt_head:exact_head_ci" in decision.failed_checks
+
+
+def test_missing_or_failed_authoritative_receipt_blocks_release() -> None:
+    evidence = complete_evidence()
+    failed = replace(evidence.authoritative_receipts[1], passed=False)
+    changed = replace(
+        evidence,
+        authoritative_receipts=(evidence.authoritative_receipts[0], failed),
+    )
+
+    decision = ReleaseGate().evaluate(changed)
+
+    assert "AUTHORITATIVE_EVIDENCE_INCOMPLETE" in decision.reason_codes
+    assert "AUTHORITATIVE_EVIDENCE_FAILED" in decision.reason_codes
 
 
 def test_evidence_digest_is_deterministic_and_public_output_is_sanitized() -> None:

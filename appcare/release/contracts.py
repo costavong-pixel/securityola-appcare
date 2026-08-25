@@ -16,6 +16,7 @@ ReleaseStatus = Literal["ready", "blocked"]
 
 _SAFE_CODE = re.compile(r"^[a-z0-9][a-z0-9_.:-]{0,95}$")
 _REVISION = re.compile(r"^[0-9a-f]{7,64}$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _UNSAFE_TEXT_MARKERS = ("bearer ", "-----begin", "private key")
 
 
@@ -68,6 +69,35 @@ class DrillEvidence:
 
 
 @dataclass(frozen=True, slots=True)
+class EvidenceReceipt:
+    """One exact-head-bound, sanitized result from an authoritative gate."""
+
+    kind: str
+    reference: str
+    exact_head: str
+    digest: str
+    passed: bool
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "kind", _safe_code(self.kind, field_name="receipt_kind"))
+        object.__setattr__(
+            self,
+            "reference",
+            _safe_code(self.reference, field_name="receipt_reference"),
+        )
+        object.__setattr__(self, "exact_head", _revision(self.exact_head))
+        normalized_digest = self.digest.strip().casefold()
+        if _SHA256.fullmatch(normalized_digest) is None:
+            raise ReleaseEvidenceError("receipt digest must be a SHA-256 digest")
+        object.__setattr__(self, "digest", normalized_digest)
+        if not isinstance(self.passed, bool):
+            raise ReleaseEvidenceError("receipt passed flag is invalid")
+
+    def canonical(self) -> tuple[str, str, str, str, bool]:
+        return (self.kind, self.reference, self.exact_head, self.digest, self.passed)
+
+
+@dataclass(frozen=True, slots=True)
 class ReleaseEvidence:
     """Complete evidence input for a private-beta release decision."""
 
@@ -86,6 +116,7 @@ class ReleaseEvidence:
     known_limitations_published: bool
     beta06_live_preview: LivePreviewStatus
     drills: tuple[DrillEvidence, ...]
+    authoritative_receipts: tuple[EvidenceReceipt, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "exact_head", _revision(self.exact_head))
@@ -94,11 +125,40 @@ class ReleaseEvidence:
             "beta06_live_preview",
             normalize_live_preview_status(self.beta06_live_preview),
         )
-        if self.test_count < 0 or self.codex_security_findings < 0:
-            raise ReleaseEvidenceError("numeric evidence cannot be negative")
+        if (
+            not isinstance(self.test_count, int)
+            or isinstance(self.test_count, bool)
+            or not isinstance(self.codex_security_findings, int)
+            or isinstance(self.codex_security_findings, bool)
+            or self.test_count < 0
+            or self.codex_security_findings < 0
+        ):
+            raise ReleaseEvidenceError("numeric evidence must be non-negative integers")
+        for field_name in (
+            "ci_passed",
+            "tenant_isolation",
+            "backup_restore",
+            "production_rollback",
+            "operator_stop",
+            "customer_report",
+            "dependency_scan",
+            "secret_scan",
+            "pricing_margin",
+            "known_limitations_published",
+        ):
+            if not isinstance(getattr(self, field_name), bool):
+                raise ReleaseEvidenceError(f"{field_name} must be boolean")
         names = [drill.name for drill in self.drills]
         if len(names) != len(set(names)):
             raise ReleaseEvidenceError("drill evidence names must be unique")
+        receipt_keys = [
+            (receipt.kind, receipt.reference) for receipt in self.authoritative_receipts
+        ]
+        if len(receipt_keys) != len(set(receipt_keys)):
+            raise ReleaseEvidenceError("authoritative evidence receipts must be unique")
+        receipt_kinds = [receipt.kind for receipt in self.authoritative_receipts]
+        if len(receipt_kinds) != len(set(receipt_kinds)):
+            raise ReleaseEvidenceError("authoritative evidence receipt kinds must be unique")
 
     def canonical(self) -> dict[str, object]:
         return {
@@ -119,6 +179,13 @@ class ReleaseEvidence:
             "drills": [
                 drill.canonical() for drill in sorted(self.drills, key=lambda item: item.name)
             ],
+            "authoritative_receipts": [
+                receipt.canonical()
+                for receipt in sorted(
+                    self.authoritative_receipts,
+                    key=lambda item: (item.kind, item.reference),
+                )
+            ],
         }
 
     @property
@@ -138,6 +205,7 @@ class ReleaseDecision:
     failed_checks: tuple[str, ...]
     evidence_digest: str
     live_production_enabled: Literal[False] = False
+    authoritative_evidence_refs: tuple[str, ...] = ()
 
     @property
     def ready(self) -> bool:
@@ -150,12 +218,14 @@ class ReleaseDecision:
             "reason_codes": list(self.reason_codes),
             "failed_checks": list(self.failed_checks),
             "evidence_digest": self.evidence_digest,
+            "authoritative_evidence_refs": list(self.authoritative_evidence_refs),
             "live_production_enabled": False,
         }
 
 
 __all__ = [
     "DrillEvidence",
+    "EvidenceReceipt",
     "DrillStatus",
     "ReleaseDecision",
     "ReleaseEvidence",

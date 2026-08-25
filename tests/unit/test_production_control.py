@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, replace
+from pathlib import Path
 from typing import cast
 
 import pytest
+from fastapi.testclient import TestClient
 
 from appcare.deployment import (
     DeploymentApproval,
@@ -15,7 +17,9 @@ from appcare.deployment import (
     LivePreviewStatus,
     ProductionControlError,
     ProductionDeploymentController,
+    SqlAlchemyDeploymentStore,
 )
+from tests.control_plane_helpers import create_application, issue_token, new_test_app, seed_user
 
 
 def _intent(
@@ -23,11 +27,13 @@ def _intent(
     preview_status: str = "pass",
     idempotency_key: str = "idempotency-1",
     intent_id: str = "intent-1",
+    tenant_id: str = "tenant-1",
+    application_id: str = "application-1",
 ) -> DeploymentIntent:
     return DeploymentIntent(
         intent_id=intent_id,
-        tenant_id="tenant-1",
-        application_id="application-1",
+        tenant_id=tenant_id,
+        application_id=application_id,
         artifact_digest="a" * 64,
         source_revision="c" * 40,
         rollback_reference="d" * 40,
@@ -195,3 +201,40 @@ def test_rejected_or_mismatched_approval_cannot_promote_intent() -> None:
     assert rejected.status == "denied"
     assert rejected.failure_code == "approval_identity_mismatch"
     assert provider.deploy_calls == 0
+
+
+def test_database_store_survives_restart_and_cannot_repeat_deployment(tmp_path: Path) -> None:
+    app = new_test_app(f"sqlite+pysqlite:///{(tmp_path / 'appcare-state.db').as_posix()}")
+    user = seed_user(app, "Durable deployment")
+    with TestClient(app) as client:
+        token = issue_token(client, user.email)
+        application = create_application(client, token, "Durable deployment app")
+
+    store = SqlAlchemyDeploymentStore(
+        app.state.database.session_factory,
+        tenant_id=user.tenant_id,
+    )
+    intent = _intent(tenant_id=user.tenant_id, application_id=str(application["id"]))
+    provider = FixtureProductionProvider()
+    controller = ProductionDeploymentController(provider, store=store)
+    controller.submit(intent, backup_verified=True)
+    controller.approve(intent.intent_id, _approve(intent))
+    completed = controller.execute(intent.intent_id)
+
+    restarted_provider = FixtureProductionProvider()
+    restarted = ProductionDeploymentController(
+        restarted_provider,
+        store=SqlAlchemyDeploymentStore(
+            app.state.database.session_factory,
+            tenant_id=user.tenant_id,
+        ),
+    )
+    recovered = restarted.execute(intent.intent_id)
+
+    assert completed.status == "succeeded"
+    assert recovered == completed
+    assert recovered.approval is not None
+    assert recovered.provider_source_revision == intent.source_revision
+    assert recovered.verification_ref == "fixture-verification-1"
+    assert restarted_provider.deploy_calls == 0
+    assert len(restarted.audit_log(intent.intent_id)) == len(completed.evidence)

@@ -63,6 +63,32 @@ def install_audit_immutability(engine: Engine) -> None:
                     """
                 )
             )
+            for table, label in (
+                ("deployment_evidence", "deployment evidence"),
+                ("monitoring_events", "monitoring events"),
+            ):
+                connection.execute(
+                    text(
+                        f"""
+                        CREATE TRIGGER IF NOT EXISTS appcare_{table}_no_update
+                        BEFORE UPDATE ON {table}
+                        BEGIN
+                            SELECT RAISE(ABORT, '{label} are immutable');
+                        END
+                        """
+                    )
+                )
+                connection.execute(
+                    text(
+                        f"""
+                        CREATE TRIGGER IF NOT EXISTS appcare_{table}_no_delete
+                        BEFORE DELETE ON {table}
+                        BEGIN
+                            SELECT RAISE(ABORT, '{label} are immutable');
+                        END
+                        """
+                    )
+                )
         elif engine.dialect.name == "postgresql":
             connection.execute(
                 text(
@@ -78,6 +104,34 @@ def install_audit_immutability(engine: Engine) -> None:
                     """
                 )
             )
+            connection.execute(
+                text(
+                    """
+                    CREATE OR REPLACE FUNCTION appcare_reject_evidence_mutation()
+                    RETURNS trigger
+                    LANGUAGE plpgsql
+                    AS $$
+                    BEGIN
+                        RAISE EXCEPTION 'append-only evidence is immutable';
+                    END;
+                    $$
+                    """
+                )
+            )
+            for table, trigger in (
+                ("deployment_evidence", "appcare_deployment_evidence_immutable"),
+                ("monitoring_events", "appcare_monitoring_events_immutable"),
+            ):
+                connection.execute(text(f"DROP TRIGGER IF EXISTS {trigger} ON {table}"))
+                connection.execute(
+                    text(
+                        f"""
+                        CREATE TRIGGER {trigger}
+                        BEFORE UPDATE OR DELETE ON {table}
+                        FOR EACH ROW EXECUTE FUNCTION appcare_reject_evidence_mutation()
+                        """
+                    )
+                )
             connection.execute(
                 text(
                     """

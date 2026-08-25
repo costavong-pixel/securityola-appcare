@@ -19,6 +19,7 @@ from .contracts import (
     utc,
 )
 from .engine import LiteralAlertEvent, MonitoringEngine
+from .persistence import SqlAlchemyMonitoringStore
 
 __all__ = [
     "AlertRecord",
@@ -35,6 +36,7 @@ __all__ = [
     "MonitoringEvent",
     "MonitoringEventType",
     "MonitoringStore",
+    "SqlAlchemyMonitoringStore",
     "MonthlyReport",
     "Observation",
     "UsageCostSample",

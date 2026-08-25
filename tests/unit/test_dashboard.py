@@ -1,10 +1,16 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 
 from appcare.models import Backup, Deployment, Finding
+from appcare.monitoring import (
+    MonitoringEngine,
+    MonitorTarget,
+    Observation,
+    SqlAlchemyMonitoringStore,
+)
 from tests.control_plane_helpers import (
     auth_headers,
     create_application,
@@ -96,6 +102,26 @@ def test_dashboard_aggregates_persisted_records_without_exposing_credentials() -
         )
         session.commit()
 
+    monitoring_target = MonitorTarget(
+        tenant_id=user.tenant_id,
+        application_id=str(application["id"]),
+        environment="development",
+        app_reference="dashboard-monitor-app",
+    )
+    MonitoringEngine(
+        SqlAlchemyMonitoringStore(database.session_factory, target=monitoring_target)
+    ).observe(
+        Observation(
+            target=monitoring_target,
+            check_kind="uptime",
+            status="failed",
+            observed_at=datetime(2026, 1, 1, tzinfo=UTC),
+            evidence_ref="dashboard-outage",
+            summary="synthetic monitoring failure",
+            reason_code="outage",
+        )
+    )
+
     with TestClient(app) as client:
         response = client.get("/dashboard/state", headers=auth_headers(token))
 
@@ -107,6 +133,8 @@ def test_dashboard_aggregates_persisted_records_without_exposing_credentials() -
     assert payload["findings"]["high"] == 1
     assert payload["backup"]["status"] == "pending"
     assert payload["deployments"]["status"] == "pending"
+    assert payload["monitoring"]["status"] == "attention"
+    assert payload["monitoring"]["last_event_at"] is not None
     assert payload["overall_status"] == "attention"
     assert "credential" not in response.text.casefold()
     assert "password" not in response.text.casefold()

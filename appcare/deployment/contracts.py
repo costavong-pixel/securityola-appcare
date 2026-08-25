@@ -315,6 +315,32 @@ class DeploymentEvidence:
     reason_code: str
     digest: str
 
+    def __post_init__(self) -> None:
+        normalized_event = validate_reason_code(self.event, field_name="event")
+        normalized_intent = validate_opaque_reference(self.intent_id, field_name="intent_id")
+        normalized_from = validate_reason_code(self.from_status, field_name="from_status")
+        normalized_to = validate_reason_code(self.to_status, field_name="to_status")
+        normalized_reason = validate_reason_code(self.reason_code)
+        normalized_digest = _digest(self.digest, field_name="evidence_digest")
+        expected_digest = evidence_digest(
+            normalized_event,
+            normalized_intent,
+            normalized_from,
+            normalized_to,
+            normalized_reason,
+        )
+        if normalized_digest != expected_digest:
+            raise ProductionControlError("deployment evidence digest mismatch")
+        for name, value in (
+            ("event", normalized_event),
+            ("intent_id", normalized_intent),
+            ("from_status", normalized_from),
+            ("to_status", normalized_to),
+            ("reason_code", normalized_reason),
+            ("digest", normalized_digest),
+        ):
+            object.__setattr__(self, name, value)
+
     @classmethod
     def create(
         cls,

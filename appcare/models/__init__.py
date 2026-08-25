@@ -2,7 +2,14 @@
 
 from .audit import AuditEvent
 from .base import Base, IdentityMixin, TimestampMixin, new_id, utcnow
+from .deployment import (
+    DeploymentControlRecord,
+    DeploymentEvidenceRecord,
+    DeploymentIntentRecord,
+    DeploymentRevokedCredential,
+)
 from .identity import Tenant, User
+from .monitoring import MonitoringEventRecord
 from .operations import (
     Approval,
     Backup,
@@ -29,10 +36,15 @@ __all__ = [
     "ConnectorCheck",
     "ConnectorCredential",
     "Deployment",
+    "DeploymentControlRecord",
+    "DeploymentEvidenceRecord",
+    "DeploymentIntentRecord",
+    "DeploymentRevokedCredential",
     "Finding",
     "IdentityMixin",
     "InventoryRun",
     "Job",
+    "MonitoringEventRecord",
     "Tenant",
     "TimestampMixin",
     "User",

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from appcare.monitoring import (
     BackupHealthCheck,
@@ -13,8 +15,10 @@ from appcare.monitoring import (
     MonitoringEngine,
     MonitorTarget,
     Observation,
+    SqlAlchemyMonitoringStore,
     UsageCostSample,
 )
+from tests.control_plane_helpers import create_application, issue_token, new_test_app, seed_user
 
 TARGET = MonitorTarget(
     tenant_id="tenant-1",
@@ -27,6 +31,7 @@ BASE = datetime(2026, 1, 1, tzinfo=UTC)
 
 def observation(
     *,
+    target: MonitorTarget = TARGET,
     kind: str = "uptime",
     status: str = "failed",
     when: datetime = BASE,
@@ -34,7 +39,7 @@ def observation(
     evidence: str = "evidence-1",
 ) -> Observation:
     return Observation(
-        target=TARGET,
+        target=target,
         check_kind=kind,  # type: ignore[arg-type]
         status=status,  # type: ignore[arg-type]
         observed_at=when,
@@ -190,3 +195,105 @@ def test_monitoring_rejects_credential_like_summary() -> None:
             summary="Bearer abcdefghijklmnopqrst",
             reason_code="credential_like",
         )
+
+
+def test_database_monitoring_store_replays_after_restart_and_is_tenant_scoped(
+    tmp_path: Path,
+) -> None:
+    app = new_test_app(f"sqlite+pysqlite:///{(tmp_path / 'appcare-monitor.db').as_posix()}")
+    first_user = seed_user(app, "Monitor first")
+    second_user = seed_user(app, "Monitor second")
+    with TestClient(app) as client:
+        first_token = issue_token(client, first_user.email)
+        second_token = issue_token(client, second_user.email)
+        first_application = create_application(client, first_token, "First monitor app")
+        second_application = create_application(client, second_token, "Second monitor app")
+
+    first_target = MonitorTarget(
+        tenant_id=first_user.tenant_id,
+        application_id=str(first_application["id"]),
+        environment="development",
+        app_reference="first-monitor-app",
+    )
+    second_target = MonitorTarget(
+        tenant_id=second_user.tenant_id,
+        application_id=str(second_application["id"]),
+        environment="development",
+        app_reference="second-monitor-app",
+    )
+    first_store = SqlAlchemyMonitoringStore(app.state.database.session_factory, target=first_target)
+    second_store = SqlAlchemyMonitoringStore(
+        app.state.database.session_factory,
+        target=second_target,
+    )
+    first_engine = MonitoringEngine(first_store)
+    first_engine.observe(
+        Observation(
+            target=first_target,
+            check_kind="uptime",
+            status="failed",
+            observed_at=BASE,
+            evidence_ref="first-outage",
+            summary="synthetic staging outage",
+            reason_code="outage",
+        )
+    )
+    second_engine = MonitoringEngine(second_store)
+    second_engine.observe(
+        Observation(
+            target=second_target,
+            check_kind="uptime",
+            status="healthy",
+            observed_at=BASE,
+            evidence_ref="second-healthy",
+            summary="synthetic staging healthy",
+            reason_code="healthy",
+        )
+    )
+
+    restarted = MonitoringEngine(
+        SqlAlchemyMonitoringStore(app.state.database.session_factory, target=first_target)
+    )
+
+    assert len(restarted.events) == 2
+    assert restarted.active_alerts()
+    assert all(event.target.tenant_id == first_user.tenant_id for event in restarted.events)
+    assert (
+        SqlAlchemyMonitoringStore(
+            app.state.database.session_factory,
+            target=second_target,
+        )
+        .read()[0]
+        .target.tenant_id
+        == second_user.tenant_id
+    )
+
+
+def test_database_monitoring_evidence_is_append_only(tmp_path: Path) -> None:
+    database_url = f"sqlite+pysqlite:///{(tmp_path / 'appcare-monitor-immutable.db').as_posix()}"
+    app = new_test_app(database_url)
+    user = seed_user(app, "Monitor immutable")
+    with TestClient(app) as client:
+        token = issue_token(client, user.email)
+        application = create_application(client, token, "Immutable monitor app")
+    target = MonitorTarget(
+        tenant_id=user.tenant_id,
+        application_id=str(application["id"]),
+        environment="development",
+        app_reference="immutable-monitor-app",
+    )
+    store = SqlAlchemyMonitoringStore(app.state.database.session_factory, target=target)
+    MonitoringEngine(store).observe(observation(target=target))
+
+    from sqlalchemy import update
+
+    from appcare.models import MonitoringEventRecord
+
+    with pytest.raises(Exception, match="immutable"):
+        with app.state.database.session_factory() as session:
+            session.execute(
+                update(MonitoringEventRecord)
+                .where(MonitoringEventRecord.tenant_id == user.tenant_id)
+                .values(summary="tampered")
+            )
+            session.commit()
