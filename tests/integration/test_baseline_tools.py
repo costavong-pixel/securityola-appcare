@@ -67,6 +67,30 @@ def test_public_safety_does_not_treat_version_text_as_private_ip(
     assert check_public_safety.scan(tmp_path) == []
 
 
+def test_public_safety_allows_explicit_loopback_only_bindings(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    task = tmp_path / ".codex" / "tasks" / "loopback.md"
+    task.parent.mkdir(parents=True)
+    task.write_text("service binds to 127.0.0.1 only", encoding="utf-8")
+
+    monkeypatch.setattr(check_public_safety, "tracked_files", lambda _root: [])
+    assert check_public_safety.scan(tmp_path) == []
+
+
+def test_public_safety_still_rejects_non_loopback_private_addresses(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    task = tmp_path / ".codex" / "tasks" / "private-ip.md"
+    task.parent.mkdir(parents=True)
+    task.write_text("service binds to " + ".".join(("10", "0", "0", "8")), encoding="utf-8")
+
+    monkeypatch.setattr(check_public_safety, "tracked_files", lambda _root: [])
+    assert check_public_safety.scan(tmp_path) == [
+        ".codex/tasks/private-ip.md:1: private IPv4 address"
+    ]
+
+
 def test_task_packet_validator_rejects_private_data(tmp_path: Path) -> None:
     packet = tmp_path / "task.md"
     packet.write_text("endpoint = 'https://user:password@example.test'", encoding="utf-8")
