@@ -139,10 +139,7 @@ def _record_from_row(
     for expected_sequence, evidence_row in enumerate(evidence_rows, start=1):
         if evidence_row.sequence != expected_sequence:
             raise ProductionControlError("deployment evidence sequence is not contiguous")
-        if (
-            evidence_row.tenant_id != row.tenant_id
-            or evidence_row.intent_id != row.intent_id
-        ):
+        if evidence_row.tenant_id != row.tenant_id or evidence_row.intent_id != row.intent_id:
             raise ProductionControlError("persisted deployment evidence scope mismatch")
         item = DeploymentEvidence(
             event=evidence_row.event,
@@ -296,10 +293,7 @@ class SqlAlchemyDeploymentStore(DeploymentRecordStore):
                     zip(existing_rows, record.evidence[: len(existing_rows)], strict=True),
                     start=1,
                 ):
-                    if (
-                        existing.sequence != sequence
-                        or existing.digest != candidate.digest
-                    ):
+                    if existing.sequence != sequence or existing.digest != candidate.digest:
                         raise ProductionControlError("deployment evidence cannot be rewritten")
                 row.status = record.status
                 row.backup_verified = record.backup_verified
@@ -393,3 +387,4 @@ class SqlAlchemyDeploymentStore(DeploymentRecordStore):
 
 
 __all__ = ["SqlAlchemyDeploymentStore"]
+

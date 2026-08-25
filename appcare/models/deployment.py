@@ -77,8 +77,10 @@ class DeploymentEvidenceRecord(IdentityMixin, Base):
         String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
     intent_id: Mapped[str] = mapped_column(
-        String(200), ForeignKey("deployment_intents.intent_id", ondelete="CASCADE"),
-        nullable=False, index=True
+        String(200),
+        ForeignKey("deployment_intents.intent_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     sequence: Mapped[int] = mapped_column(nullable=False)
     event: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -106,9 +108,7 @@ class DeploymentRevokedCredential(IdentityMixin, TimestampMixin, Base):
 
     __tablename__ = "deployment_revoked_credentials"
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "credential_ref", name="uq_deployment_revoked_credential"
-        ),
+        UniqueConstraint("tenant_id", "credential_ref", name="uq_deployment_revoked_credential"),
     )
 
     tenant_id: Mapped[str] = mapped_column(
@@ -123,3 +123,4 @@ __all__ = [
     "DeploymentIntentRecord",
     "DeploymentRevokedCredential",
 ]
+

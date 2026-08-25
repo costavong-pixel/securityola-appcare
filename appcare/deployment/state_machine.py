@@ -131,9 +131,10 @@ class InMemoryDeploymentStore:
         if existing is not None:
             if existing.intent.intent_digest != record.intent.intent_digest:
                 raise DuplicateDeploymentError("intent_id was reused for another intent")
-            if len(record.evidence) < len(existing.evidence) or tuple(
-                record.evidence[: len(existing.evidence)]
-            ) != existing.evidence:
+            if (
+                len(record.evidence) < len(existing.evidence)
+                or tuple(record.evidence[: len(existing.evidence)]) != existing.evidence
+            ):
                 raise ProductionControlError("deployment evidence is not append-only")
         self._records[record.intent.intent_id] = record
         return record
@@ -263,9 +264,7 @@ class ProductionDeploymentController:
     def emergency_stop(self, stop_ref: str) -> None:
         """Latch an emergency stop; there is no model or owner bypass."""
 
-        normalized = validate_opaque_reference(
-            stop_ref, field_name="emergency_stop_ref"
-        )
+        normalized = validate_opaque_reference(stop_ref, field_name="emergency_stop_ref")
         self._store.emergency_stop(normalized)
         self._emergency_stopped = True
 
@@ -479,3 +478,4 @@ __all__ = [
     "InMemoryDeploymentStore",
     "ProductionDeploymentController",
 ]
+

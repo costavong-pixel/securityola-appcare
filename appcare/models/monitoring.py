@@ -16,11 +16,17 @@ class MonitoringEventRecord(IdentityMixin, Base):
     __tablename__ = "monitoring_events"
     __table_args__ = (
         UniqueConstraint(
-            "tenant_id", "application_id", "environment", "sequence",
+            "tenant_id",
+            "application_id",
+            "environment",
+            "sequence",
             name="uq_monitoring_event_sequence",
         ),
         UniqueConstraint(
-            "tenant_id", "application_id", "environment", "digest",
+            "tenant_id",
+            "application_id",
+            "environment",
+            "digest",
             name="uq_monitoring_event_digest",
         ),
     )
@@ -54,3 +60,4 @@ class MonitoringEventRecord(IdentityMixin, Base):
 
 
 __all__ = ["MonitoringEventRecord"]
+

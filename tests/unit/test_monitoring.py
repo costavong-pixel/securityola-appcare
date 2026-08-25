@@ -258,10 +258,15 @@ def test_database_monitoring_store_replays_after_restart_and_is_tenant_scoped(
     assert len(restarted.events) == 2
     assert restarted.active_alerts()
     assert all(event.target.tenant_id == first_user.tenant_id for event in restarted.events)
-    assert SqlAlchemyMonitoringStore(
-        app.state.database.session_factory,
-        target=second_target,
-    ).read()[0].target.tenant_id == second_user.tenant_id
+    assert (
+        SqlAlchemyMonitoringStore(
+            app.state.database.session_factory,
+            target=second_target,
+        )
+        .read()[0]
+        .target.tenant_id
+        == second_user.tenant_id
+    )
 
 
 def test_database_monitoring_evidence_is_append_only(tmp_path: Path) -> None:
@@ -292,3 +297,4 @@ def test_database_monitoring_evidence_is_append_only(tmp_path: Path) -> None:
                 .values(summary="tampered")
             )
             session.commit()
+
