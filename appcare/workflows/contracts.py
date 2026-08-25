@@ -42,6 +42,7 @@ ActionKind = Literal[
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _SAFE_CODE = re.compile(r"^[a-z0-9][a-z0-9_.:-]{0,95}$")
+_REVISION = re.compile(r"^[0-9a-f]{7,64}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _FORBIDDEN_SCOPE = ("wordpress", "barnd", "shield", "api.securityola.com", "/var/www")
 
