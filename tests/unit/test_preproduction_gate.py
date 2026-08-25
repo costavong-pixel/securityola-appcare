@@ -177,3 +177,13 @@ def test_reference_adapter_rejects_artifact_symlink_crossing(tmp_path: Path) -> 
     )
     with pytest.raises(ProductionControlError, match="symlink"):
         provider.deploy(intent)
+
+
+def test_reference_adapter_rejects_non_loopback_health_url(tmp_path: Path) -> None:
+    with pytest.raises(ProductionControlError, match="loopback"):
+        ReferenceDeploymentConfig(
+            target_root=tmp_path / "reference",
+            artifact_root=tmp_path / "reference" / "artifacts",
+            service_name="appcare-reference-test",
+            health_url="http://127.0.0.1:18568@external.example/health/ready",
+        )

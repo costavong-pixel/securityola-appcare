@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import urllib.error
@@ -62,6 +63,9 @@ BASELINE_REVISION = "c1dc80ba3fb838bbf36a2e8fceec3ca312a965f1"
 BACKUP_ID = "provider-neutral-e2e-backup"
 BACKUP_JOB_ID = "provider-neutral-e2e-job"
 RESTORE_JOB_ID = "provider-neutral-e2e-restore"
+STAGING_ROOT = Path("/opt/securityola/appcare-staging")
+REFERENCE_ROOT = Path("/opt/securityola/appcare-reference-production")
+REFERENCE_DATABASE = Path("/var/lib/securityola/appcare/reference/appcare_reference.db")
 
 
 class SyntheticSource:
@@ -79,6 +83,45 @@ class SyntheticSource:
 
 def _sha(value: str) -> str:
     return sha256(value.encode("utf-8")).hexdigest()
+
+
+def _confined_path(path: Path, root: Path, *, field_name: str) -> Path:
+    """Validate an operational path without following a symlink boundary."""
+
+    candidate = Path(os.path.abspath(path))
+    boundary = Path(os.path.abspath(root))
+    try:
+        candidate.relative_to(boundary)
+    except ValueError as exc:
+        raise RuntimeError(f"{field_name} is outside the controlled AppCare namespace") from exc
+    current = candidate
+    while True:
+        if current.is_symlink():
+            raise RuntimeError(f"{field_name} crosses a symlink")
+        if current == boundary:
+            break
+        if current == current.parent:
+            raise RuntimeError(f"{field_name} has no valid boundary")
+        current = current.parent
+    return candidate
+
+
+def _validate_operational_paths(args: argparse.Namespace) -> None:
+    if Path(os.path.abspath(args.staging_root)) != STAGING_ROOT:
+        raise RuntimeError("staging_root is not the fixed AppCare staging namespace")
+    if Path(os.path.abspath(args.reference_root)) != REFERENCE_ROOT:
+        raise RuntimeError("reference_root is not the fixed AppCare reference namespace")
+    if Path(os.path.abspath(args.database_path)) != REFERENCE_DATABASE:
+        raise RuntimeError("database_path is not the fixed AppCare reference database")
+    source_root = _confined_path(
+        args.source_root,
+        STAGING_ROOT / "artifacts",
+        field_name="source_root",
+    )
+    if source_root.name != "source" or source_root.parent.name != args.artifact_digest:
+        raise RuntimeError("source_root is not the exact artifact source namespace")
+    if not source_root.is_dir():
+        raise RuntimeError("source_root is missing")
 
 
 def _restart(service_name: str) -> bool:
@@ -275,6 +318,7 @@ def _run_tests(source_root: Path) -> str:
 
 
 def run(args: argparse.Namespace) -> dict[str, object]:
+    _validate_operational_paths(args)
     source_root = args.source_root.resolve()
     staging_root = args.staging_root.resolve()
     reference_root = args.reference_root.resolve()

@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .contracts import (
     DeploymentIntent,
@@ -69,6 +70,65 @@ def _safe_tree(path: Path, root: Path, *, field_name: str) -> Path:
     return candidate
 
 
+def _loopback_url(value: str, *, field_name: str) -> str:
+    """Accept only a literal loopback HTTP endpoint with no redirect tricks."""
+
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except (TypeError, ValueError) as exc:
+        raise ProductionControlError(f"{field_name} must be a loopback URL") from exc
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname != "127.0.0.1"
+        or port is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or not parsed.path.startswith("/")
+    ):
+        raise ProductionControlError(f"{field_name} must be a loopback URL")
+    return value
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Keep health verification on the configured loopback endpoint."""
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> None:
+        del req, fp, code, msg, headers, newurl
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler())
+
+
+def _reject_protected_target(path: Path) -> Path:
+    candidate = Path(os.path.abspath(path))
+    if candidate == Path(candidate.anchor):
+        raise ProductionControlError("target_root is too broad")
+    normalized = os.fspath(candidate).replace("\\", "/").casefold()
+    protected = (
+        "/var/www",
+        "/root",
+        "/home/debian/apps/appcare-opencode",
+    )
+    markers = ("wordpress", "barnd", "shield", "api.securityola.com")
+    if any(normalized == value or normalized.startswith(f"{value}/") for value in protected):
+        raise ProductionControlError("target_root is outside the AppCare boundary")
+    if any(marker in normalized for marker in markers):
+        raise ProductionControlError("target_root is outside the AppCare boundary")
+    return candidate
+
+
 @dataclass(frozen=True, slots=True)
 class ReferenceDeploymentConfig:
     target_root: Path
@@ -79,15 +139,16 @@ class ReferenceDeploymentConfig:
     failure_health_url: str | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "target_root", self.target_root.absolute())
-        object.__setattr__(self, "artifact_root", self.artifact_root.absolute())
+        target_root = _reject_protected_target(self.target_root)
+        artifact_root = Path(os.path.abspath(self.artifact_root))
+        object.__setattr__(self, "target_root", target_root)
+        object.__setattr__(self, "artifact_root", artifact_root)
         validate_opaque_reference(self.service_name, field_name="service_name")
-        if not self.health_url.startswith("http://127.0.0.1:"):
-            raise ProductionControlError("reference health URL must be loopback-only")
-        if self.failure_health_url is not None and not self.failure_health_url.startswith(
-            "http://127.0.0.1:"
-        ):
-            raise ProductionControlError("failure health URL must be loopback-only")
+        if self.systemctl_path != "/usr/bin/systemctl":
+            raise ProductionControlError("systemctl_path is fixed to the AppCare systemd binary")
+        _loopback_url(self.health_url, field_name="reference health URL")
+        if self.failure_health_url is not None:
+            _loopback_url(self.failure_health_url, field_name="failure health URL")
         _inside(self.artifact_root, self.target_root, field_name="artifact_root")
 
 
@@ -132,6 +193,9 @@ class FilesystemReferenceProvider:
         )
         if not artifact.is_dir():
             raise ProductionControlError("artifact directory is missing")
+        source = _safe_tree(artifact / "source", artifact, field_name="artifact source")
+        if not source.is_dir():
+            raise ProductionControlError("artifact source directory is missing")
         manifest_path = _inside(
             artifact / ".appcare-artifact.json", artifact, field_name="manifest"
         )
@@ -156,12 +220,26 @@ class FilesystemReferenceProvider:
         return artifact, normalized
 
     def _ensure_layout(self) -> None:
+        _reject_symlink_parents(
+            self.config.target_root,
+            self.config.target_root.parent,
+            field_name="target_root",
+        )
+        if self.config.target_root.exists() and self.config.target_root.is_symlink():
+            raise ProductionControlError("target_root must not be a symlink")
         self.config.target_root.mkdir(parents=True, exist_ok=True)
+        _reject_symlink_parents(
+            self._releases,
+            self.config.target_root,
+            field_name="releases",
+        )
+        _reject_symlink_parents(
+            self.config.artifact_root,
+            self.config.target_root,
+            field_name="artifact_root",
+        )
         self._releases.mkdir(parents=True, exist_ok=True)
         self.config.artifact_root.mkdir(parents=True, exist_ok=True)
-        _reject_symlink_parents(
-            self.config.target_root, self.config.target_root.parent, field_name="target_root"
-        )
 
     def _restart(self) -> bool:
         try:
@@ -230,9 +308,7 @@ class FilesystemReferenceProvider:
     def _health_check(self, health_url: str | None = None) -> tuple[bool, str]:
         target_url = health_url or self.config.health_url
         try:
-            with urllib.request.urlopen(  # noqa: S310 - config enforces loopback HTTP only.
-                target_url, timeout=5
-            ) as response:
+            with _NO_REDIRECT_OPENER.open(target_url, timeout=5) as response:  # noqa: S310
                 payload = response.read(16_384)
             decoded: Any = json.loads(payload.decode("utf-8"))
             passed = isinstance(decoded, dict) and decoded.get("status") == "ready"
