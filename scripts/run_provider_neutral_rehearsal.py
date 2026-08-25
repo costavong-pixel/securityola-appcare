@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime, timedelta
@@ -121,7 +122,16 @@ def _validate_operational_paths(args: argparse.Namespace) -> None:
         raise RuntimeError("source_root is missing")
 
 
-def _restart(service_name: str) -> bool:
+def _wait_health(url: str, timeout_seconds: float = 10) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if _health(url):
+            return True
+        time.sleep(0.25)
+    return False
+
+
+def _restart(service_name: str, health_url: str) -> bool:
     try:
         result = subprocess.run(  # noqa: S603 - fixed systemd executable and validated service name.
             ["/usr/bin/systemctl", "restart", service_name],
@@ -132,7 +142,7 @@ def _restart(service_name: str) -> bool:
         )
     except (OSError, subprocess.SubprocessError):
         return False
-    return result.returncode == 0
+    return result.returncode == 0 and _wait_health(health_url)
 
 
 def _health(url: str) -> bool:
@@ -459,7 +469,9 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     failure_controller.approve(failure_intent.intent_id, _approval(failure_intent))
     failure_record = failure_controller.execute(failure_intent.intent_id)
     duplicate = failure_controller.submit(failure_intent, backup_verified=True)
-    restart_recovered = _restart("appcare-reference-production")
+    restart_recovered = _restart(
+        "appcare-reference-production", "http://127.0.0.1:18568/health/ready"
+    )
     restarted_provider = FilesystemReferenceProvider(reference_config)
     process_restart_recovery = restart_recovered and restarted_provider.recover_current()
     restarted_controller = ProductionDeploymentController(
@@ -607,7 +619,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         == args.source_revision,
         "rollback_artifact_digest": failure_record.intent.rollback_artifact_digest
         == args.artifact_digest,
-        "post_rollback_health": _health("http://127.0.0.1:18568/health/ready"),
+        "post_rollback_health": _wait_health("http://127.0.0.1:18568/health/ready"),
         "duplicate_deployment_prevented": duplicate == failure_record
         and failure_provider.deploy_calls == 1,
         "process_restart_state_recovery": process_restart_recovery
