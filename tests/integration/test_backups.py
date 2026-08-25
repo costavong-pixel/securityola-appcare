@@ -12,6 +12,7 @@ from appcare.backups import (
     BackupComponent,
     BackupCoordinator,
     BackupDestination,
+    BackupFilesystemBoundary,
     BackupRequest,
     BackupTarget,
     FilesystemImmutableVault,
@@ -76,6 +77,28 @@ def _encryptor() -> AesGcmEnvelopeEncryptor:
     return AesGcmEnvelopeEncryptor(b"c" * 32, key_reference="vault://appcare-test-key")
 
 
+def _restore_target(
+    tmp_path: Path, isolation_id: str
+) -> tuple[RestoreTarget, BackupFilesystemBoundary]:
+    filesystem = BackupFilesystemBoundary.for_test(tmp_path / f"boundary-{isolation_id}")
+    root = filesystem.restore_rehearsal_path(
+        "tenant-appcare-1",
+        "appcare-test-app",
+        isolation_id,
+    )
+    return (
+        RestoreTarget(
+            "tenant-appcare-1",
+            "appcare-test-app",
+            "test",
+            root,
+            isolation_id,
+            filesystem=filesystem,
+        ),
+        filesystem,
+    )
+
+
 def test_complete_controlled_test_app_backup_and_isolated_restore(tmp_path: Path) -> None:
     source = SyntheticAppSource()
     destination = _destination()
@@ -96,14 +119,13 @@ def test_complete_controlled_test_app_backup_and_isolated_restore(tmp_path: Path
     assert outcome.receipt is not None
     assert outcome.receipt.object_reference.startswith("memory://")
 
-    restore_root = tmp_path / "isolated-restore"
+    restore_target, _ = _restore_target(tmp_path, "rehearsal-1")
+    restore_root = restore_target.root
     evidence = coordinator.restore_backup(
         backup_id="backup-beta04-1",
         vault=vault,
         encryptor=_encryptor(),
-        target=RestoreTarget(
-            "tenant-appcare-1", "appcare-test-app", "test", restore_root, "rehearsal-1"
-        ),
+        target=restore_target,
         now=NOW + timedelta(minutes=2),
     )
 
@@ -114,7 +136,7 @@ def test_complete_controlled_test_app_backup_and_isolated_restore(tmp_path: Path
     assert (
         restore_root / "restored" / "backup-beta04-1" / "components" / "database.bin"
     ).read_bytes() == source.components[1].payload
-    assert not (restore_root / ".restore-staging" / "backup-beta04-1").exists()
+    assert not (restore_root / "restore-staging" / "backup-beta04-1").exists()
 
 
 def test_failed_upload_is_unhealthy_and_not_a_verified_backup() -> None:
@@ -211,10 +233,24 @@ def test_retention_lock_rejects_delete_until_expiry() -> None:
     assert outcome.healthy is True
 
     with pytest.raises(RetentionLockedError):
-        vault.delete("backup-beta04-1", now=NOW + timedelta(hours=1))
-    vault.delete("backup-beta04-1", now=NOW + timedelta(days=2))
+        vault.delete(
+            "backup-beta04-1",
+            tenant_id="tenant-appcare-1",
+            application_id="appcare-test-app",
+            now=NOW + timedelta(hours=1),
+        )
+    vault.delete(
+        "backup-beta04-1",
+        tenant_id="tenant-appcare-1",
+        application_id="appcare-test-app",
+        now=NOW + timedelta(days=2),
+    )
     with pytest.raises(VaultError):
-        vault.get("backup-beta04-1")
+        vault.get(
+            "backup-beta04-1",
+            tenant_id="tenant-appcare-1",
+            application_id="appcare-test-app",
+        )
 
 
 def test_restore_integrity_failure_never_promotes_partial_content(tmp_path: Path) -> None:
@@ -229,49 +265,47 @@ def test_restore_integrity_failure_never_promotes_partial_content(tmp_path: Path
         now=NOW,
     )
     assert outcome.healthy is True
-    original = vault.get("backup-beta04-1")
+    original = vault.get(
+        "backup-beta04-1",
+        tenant_id="tenant-appcare-1",
+        application_id="appcare-test-app",
+    )
     corrupted = EncryptedEnvelope(
         original.envelope.algorithm,
         original.envelope.key_reference,
         original.envelope.nonce,
         bytes([original.envelope.ciphertext[0] ^ 1]) + original.envelope.ciphertext[1:],
     )
-    vault._artifacts["backup-beta04-1"] = BackupArtifact(
+    vault._artifacts[("tenant-appcare-1", "appcare-test-app", "backup-beta04-1")] = BackupArtifact(
         original.manifest,
         original.manifest_bytes,
         corrupted,
         original.artifact_digest,
     )
 
+    restore_target, _ = _restore_target(tmp_path, "rehearsal-2")
     evidence = coordinator.restore_backup(
         backup_id="backup-beta04-1",
         vault=vault,
         encryptor=_encryptor(),
-        target=RestoreTarget(
-            "tenant-appcare-1", "appcare-test-app", "test", tmp_path / "isolated", "rehearsal-2"
-        ),
+        target=restore_target,
         now=NOW + timedelta(minutes=2),
     )
 
     assert evidence.status == "restore_failed"
     assert evidence.failure_code == "checksum_mismatch"
-    assert not (tmp_path / "isolated" / "restored" / "backup-beta04-1").exists()
+    assert not (restore_target.root / "restored" / "backup-beta04-1").exists()
 
 
 def test_restore_rejects_path_traversal_before_vault_access(tmp_path: Path) -> None:
     destination = _destination()
     vault = InMemoryImmutableVault(destination)
+    restore_target, _ = _restore_target(tmp_path, "rehearsal-path")
     evidence = BackupCoordinator().restore_backup(
         backup_id="../outside",
         vault=vault,
         encryptor=_encryptor(),
-        target=RestoreTarget(
-            "tenant-appcare-1",
-            "appcare-test-app",
-            "test",
-            tmp_path / "isolated",
-            "rehearsal-path",
-        ),
+        target=restore_target,
         now=NOW,
     )
 
@@ -282,8 +316,8 @@ def test_restore_rejects_path_traversal_before_vault_access(tmp_path: Path) -> N
 
 def test_filesystem_vault_reads_persisted_artifact_after_reopen(tmp_path: Path) -> None:
     destination = _destination()
-    root = tmp_path / "vault"
-    first_vault = FilesystemImmutableVault(root, destination)
+    filesystem = BackupFilesystemBoundary.for_test(tmp_path / "filesystem-boundary")
+    first_vault = FilesystemImmutableVault(filesystem, destination)
     outcome = BackupCoordinator().create_backup(
         _request(destination=destination),
         source=SyntheticAppSource(),
@@ -294,10 +328,47 @@ def test_filesystem_vault_reads_persisted_artifact_after_reopen(tmp_path: Path) 
     assert outcome.healthy is True
     assert outcome.evidence is not None
 
-    reopened_vault = FilesystemImmutableVault(root, destination)
-    restored = reopened_vault.get("backup-beta04-1")
+    reopened_vault = FilesystemImmutableVault(filesystem, destination)
+    restored = reopened_vault.get(
+        "backup-beta04-1",
+        tenant_id="tenant-appcare-1",
+        application_id="appcare-test-app",
+    )
+    assert filesystem.snapshot_path(
+        "tenant-appcare-1", "appcare-test-app", "backup-beta04-1"
+    ).is_dir()
+    assert filesystem.manifest_path(
+        "tenant-appcare-1", "appcare-test-app", "backup-beta04-1"
+    ).is_file()
     assert restored.artifact_digest == outcome.evidence.artifact_digest
     assert restored.manifest_bytes == restored.manifest.canonical_bytes()
+
+
+def test_filesystem_vault_rejects_foreign_tenant_scope(tmp_path: Path) -> None:
+    destination = _destination()
+    filesystem = BackupFilesystemBoundary.for_test(tmp_path / "tenant-boundary")
+    vault = FilesystemImmutableVault(filesystem, destination)
+    outcome = BackupCoordinator().create_backup(
+        _request(destination=destination),
+        source=SyntheticAppSource(),
+        vault=vault,
+        encryptor=_encryptor(),
+        now=NOW,
+    )
+    assert outcome.healthy is True
+
+    with pytest.raises(VaultError):
+        vault.get(
+            "backup-beta04-1",
+            tenant_id="tenant-foreign",
+            application_id="appcare-test-app",
+        )
+    with pytest.raises(VaultError):
+        vault.get(
+            "backup-beta04-1",
+            tenant_id="tenant-appcare-1",
+            application_id="foreign-app",
+        )
 
 
 def test_restore_does_not_delete_preexisting_staging_on_mkdir_failure(tmp_path: Path) -> None:
@@ -312,8 +383,9 @@ def test_restore_does_not_delete_preexisting_staging_on_mkdir_failure(tmp_path: 
         now=NOW,
     )
     assert outcome.healthy is True
-    restore_root = tmp_path / "isolated"
-    staging = restore_root / ".restore-staging" / "backup-beta04-1"
+    restore_target, _ = _restore_target(tmp_path, "rehearsal-existing")
+    restore_root = restore_target.root
+    staging = restore_root / "restore-staging" / "backup-beta04-1"
     staging.mkdir(parents=True)
     marker = staging / "must-survive.txt"
     marker.write_text("pre-existing", encoding="utf-8")
@@ -322,9 +394,7 @@ def test_restore_does_not_delete_preexisting_staging_on_mkdir_failure(tmp_path: 
         backup_id="backup-beta04-1",
         vault=vault,
         encryptor=_encryptor(),
-        target=RestoreTarget(
-            "tenant-appcare-1", "appcare-test-app", "test", restore_root, "rehearsal-existing"
-        ),
+        target=restore_target,
         now=NOW,
     )
 

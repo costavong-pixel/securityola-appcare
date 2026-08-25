@@ -235,7 +235,11 @@ class BackupCoordinator:
             )
             artifact = BackupArtifact.build(manifest, envelope)
             receipt = vault.put(artifact, idempotency_key=request.idempotency_key)
-            stored = vault.get(request.backup_id)
+            stored = vault.get(
+                request.backup_id,
+                tenant_id=request.target.tenant_id,
+                application_id=request.target.application_id,
+            )
             if stored.manifest.backup_id != request.backup_id:
                 raise ArtifactIntegrityError("stored artifact ID does not match request")
             if stored.manifest.destination != vault.destination:
@@ -316,7 +320,11 @@ class BackupCoordinator:
         staging: Path | None = None
         try:
             backup_id = validate_backup_id(backup_id)
-            artifact = vault.get(backup_id)
+            artifact = vault.get(
+                backup_id,
+                tenant_id=target.tenant_id,
+                application_id=target.application_id,
+            )
             if artifact.manifest.backup_id != backup_id:
                 raise BackupError("restore artifact ID does not match request")
             if artifact.manifest.destination != vault.destination:
@@ -330,7 +338,7 @@ class BackupCoordinator:
                 target.root, "restored", field="restore destination"
             )
             staging_root = validate_isolated_child(
-                target.root, ".restore-staging", field="restore staging"
+                target.root, "restore-staging", field="restore staging"
             )
             final = validate_isolated_child(
                 restored_root, backup_id, field="restore destination artifact"

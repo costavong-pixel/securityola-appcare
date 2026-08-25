@@ -14,6 +14,7 @@ from ..services.security import contains_credential_like, is_safe_credential_ref
 
 if TYPE_CHECKING:
     from .models import BackupArtifact, BackupComponent, EncryptedEnvelope, VaultReceipt
+    from .paths import BackupFilesystemBoundary
 
 BackupProvider = Literal["backblaze-b2", "aws-s3-glacier-deep-archive", "isolated-test-vault"]
 BackupEnvironment = Literal["development", "staging", "test", "production"]
@@ -27,9 +28,11 @@ _FORBIDDEN_MARKERS = (
     "/var/www",
     "\\var\\www",
     "production-server",
+    "/root",
+    "/home/debian/apps/appcare-opencode",
 )
+_PATH_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _COMPONENT_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
-_BACKUP_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 class BackupBoundaryError(ValueError):
@@ -53,23 +56,32 @@ def _safe_reference(value: str, *, field: str) -> str:
     return normalized
 
 
-def _safe_identifier(value: str, *, field: str) -> str:
-    normalized = value.strip()
-    if not normalized or len(normalized) > 128 or _SAFE_REFERENCE.fullmatch(normalized) is None:
+def validate_path_segment(value: str, *, field: str = "path segment") -> str:
+    """Validate one user-controlled path segment without path semantics."""
+
+    if (
+        not isinstance(value, str)
+        or value != value.strip()
+        or not value
+        or len(value) > 128
+        or ".." in value
+        or _PATH_SEGMENT.fullmatch(value) is None
+    ):
         raise BackupBoundaryError(f"{field} is unsafe")
-    lowered = normalized.casefold()
+    lowered = value.casefold()
     if any(marker in lowered for marker in _FORBIDDEN_MARKERS):
         raise BackupBoundaryError(f"{field} is outside the AppCare boundary")
-    return normalized
+    return value
+
+
+def _safe_identifier(value: str, *, field: str) -> str:
+    return validate_path_segment(value, field=field)
 
 
 def validate_backup_id(value: str) -> str:
     """Validate the single path segment used by vault and restore stores."""
 
-    normalized = value.strip()
-    if _BACKUP_ID.fullmatch(normalized) is None or ".." in normalized:
-        raise BackupBoundaryError("backup_id is unsafe")
-    return normalized
+    return validate_path_segment(value, field="backup_id")
 
 
 def validate_isolated_root(root: Path, *, field: str) -> Path:
@@ -97,8 +109,7 @@ def validate_isolated_root(root: Path, *, field: str) -> Path:
 def validate_isolated_child(root: Path, name: str, *, field: str) -> Path:
     """Validate an internal restore/vault directory without following links."""
 
-    if not name or Path(name).name != name or name in {".", ".."}:
-        raise BackupBoundaryError(f"{field} is unsafe")
+    validate_path_segment(name, field=field)
     canonical_root = validate_isolated_root(root, field=f"{field} root")
     child = canonical_root / name
     if child.is_symlink():
@@ -170,25 +181,37 @@ class BackupDestination:
 
 @dataclass(frozen=True, slots=True)
 class RestoreTarget:
-    """An isolated, non-production restore destination."""
+    """An isolated restore rehearsal rooted in the canonical filesystem boundary."""
 
     tenant_id: str
     application_id: str
     environment: Literal["development", "staging", "test"]
     root: Path
     isolation_id: str
+    filesystem: BackupFilesystemBoundary | None = None
 
     def __post_init__(self) -> None:
         _safe_identifier(self.tenant_id, field="restore tenant_id")
         _safe_identifier(self.application_id, field="restore application_id")
         if self.environment not in {"development", "staging", "test"}:
             raise BackupBoundaryError("restore target cannot be production")
-        object.__setattr__(
-            self,
-            "root",
-            validate_isolated_root(self.root, field="restore root"),
-        )
         _safe_identifier(self.isolation_id, field="isolation_id")
+        if self.filesystem is None:
+            from .paths import BackupFilesystemBoundary as _BackupFilesystemBoundary
+
+            filesystem = _BackupFilesystemBoundary.canonical()
+        else:
+            filesystem = self.filesystem
+        expected_root = filesystem.restore_rehearsal_path(
+            self.tenant_id,
+            self.application_id,
+            self.isolation_id,
+        )
+        provided_root = validate_isolated_root(self.root, field="restore root")
+        if provided_root != expected_root:
+            raise BackupBoundaryError("restore root is outside the canonical rehearsal path")
+        object.__setattr__(self, "root", expected_root)
+        object.__setattr__(self, "filesystem", filesystem)
 
 
 class BackupSource(Protocol):
@@ -218,10 +241,23 @@ class BackupVault(Protocol):
     def put(self, artifact: BackupArtifact, *, idempotency_key: str) -> VaultReceipt:
         """Store an immutable artifact or return a safe idempotent receipt."""
 
-    def get(self, backup_id: str) -> BackupArtifact:
-        """Read an artifact for independent verification or restore."""
+    def get(
+        self,
+        backup_id: str,
+        *,
+        tenant_id: str,
+        application_id: str,
+    ) -> BackupArtifact:
+        """Read one artifact inside the caller's tenant/application scope."""
 
-    def delete(self, backup_id: str, *, now: datetime) -> None:
+    def delete(
+        self,
+        backup_id: str,
+        *,
+        tenant_id: str,
+        application_id: str,
+        now: datetime,
+    ) -> None:
         """Delete only after retention expiry; locked deletion must fail."""
 
 
