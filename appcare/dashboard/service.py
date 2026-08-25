@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal, cast
 
 from sqlalchemy import desc, select
@@ -16,6 +16,7 @@ from ..models import (
     Connector,
     Deployment,
     Finding,
+    MonitoringEventRecord,
     User,
 )
 from ..services.audit import MetadataError, sanitize_text
@@ -35,6 +36,12 @@ def _safe_text(value: str | None, fallback: str) -> str:
     except MetadataError:
         return fallback
     return sanitized or fallback
+
+
+def _aware(value: datetime) -> datetime:
+    """SQLite may return timezone-aware columns without tzinfo."""
+
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value
 
 
 def _signal(
@@ -194,11 +201,45 @@ def build_dashboard_snapshot(session: Session, user: User) -> DashboardSnapshot:
         last_event_at=deployments[0].updated_at if deployments else None,
     )
 
-    monitoring_signal = DashboardSignal(
-        status="unknown",
-        label="Monitoring observations",
-        detail="No persisted monitoring observation is connected to this tenant.",
+    monitoring_rows = list(
+        session.scalars(
+            select(MonitoringEventRecord)
+            .where(
+                MonitoringEventRecord.tenant_id == user.tenant_id,
+                MonitoringEventRecord.status.is_not(None),
+            )
+            .order_by(desc(MonitoringEventRecord.occurred_at), desc(MonitoringEventRecord.sequence))
+            .limit(200)
+        ).all()
     )
+    latest_monitoring = monitoring_rows[0] if monitoring_rows else None
+    if latest_monitoring is None:
+        monitoring_signal = DashboardSignal(
+            status="unknown",
+            label="Monitoring observations",
+            detail="No persisted monitoring observation is recorded for this tenant.",
+        )
+    elif latest_monitoring.status == "healthy":
+        monitoring_signal = DashboardSignal(
+            status="healthy",
+            label="Monitoring observations",
+            detail="Latest persisted monitoring evidence is healthy.",
+            last_event_at=_aware(latest_monitoring.occurred_at),
+        )
+    elif latest_monitoring.status in {"failed", "degraded"}:
+        monitoring_signal = DashboardSignal(
+            status="attention",
+            label="Monitoring observations",
+            detail="Latest persisted monitoring evidence needs review.",
+            last_event_at=_aware(latest_monitoring.occurred_at),
+        )
+    else:
+        monitoring_signal = DashboardSignal(
+            status="unknown",
+            label="Monitoring observations",
+            detail="Latest persisted monitoring evidence is unknown.",
+            last_event_at=_aware(latest_monitoring.occurred_at),
+        )
 
     activity_rows = list(
         session.scalars(

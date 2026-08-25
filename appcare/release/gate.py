@@ -12,6 +12,24 @@ from .contracts import (
     ReleaseStatus,
 )
 
+REQUIRED_AUTHORITATIVE_RECEIPTS = (
+    "exact_head_ci",
+    "tests",
+    "codex_security",
+    "graphify",
+    "saveruflo",
+    "staging_rehearsal",
+    "tenant_isolation",
+    "backup_restore",
+    "production_rollback",
+    "operator_stop",
+    "customer_report",
+    "dependency_scan",
+    "secret_scan",
+    "pricing_margin",
+    "known_limitations",
+)
+
 REQUIRED_DRILLS = (
     "seeded_secret_exposure",
     "vulnerable_dependency",
@@ -48,6 +66,28 @@ class ReleaseGate:
     def evaluate(self, evidence: ReleaseEvidence) -> ReleaseDecision:
         reasons: list[str] = []
         failed_checks: list[str] = []
+
+        receipts = {receipt.kind: receipt for receipt in evidence.authoritative_receipts}
+        missing_receipts = [
+            kind for kind in REQUIRED_AUTHORITATIVE_RECEIPTS if kind not in receipts
+        ]
+        if missing_receipts:
+            reasons.append("AUTHORITATIVE_EVIDENCE_INCOMPLETE")
+            failed_checks.extend(f"receipt:{kind}" for kind in missing_receipts)
+        stale_receipts = [
+            receipt.kind
+            for receipt in evidence.authoritative_receipts
+            if receipt.exact_head != evidence.exact_head
+        ]
+        if stale_receipts:
+            reasons.append("AUTHORITATIVE_EVIDENCE_HEAD_MISMATCH")
+            failed_checks.extend(f"receipt_head:{kind}" for kind in stale_receipts)
+        failed_receipts = [
+            receipt.kind for receipt in evidence.authoritative_receipts if not receipt.passed
+        ]
+        if failed_receipts:
+            reasons.append("AUTHORITATIVE_EVIDENCE_FAILED")
+            failed_checks.extend(f"receipt_failed:{kind}" for kind in failed_receipts)
 
         if evidence.beta06_live_preview != "pass":
             reasons.append("BETA06_LIVE_PREVIEW_REQUIRED")
@@ -88,6 +128,9 @@ class ReleaseGate:
             reason_codes=unique_reasons,
             failed_checks=unique_checks,
             evidence_digest=evidence.evidence_digest,
+            authoritative_evidence_refs=tuple(
+                sorted(receipt.reference for receipt in evidence.authoritative_receipts)
+            ),
         )
 
 
@@ -107,4 +150,10 @@ def all_drills_passed(drills: Iterable[DrillEvidence]) -> bool:
     )
 
 
-__all__ = ["REQUIRED_DRILLS", "ReleaseGate", "all_drills_passed", "require_blocked"]
+__all__ = [
+    "REQUIRED_AUTHORITATIVE_RECEIPTS",
+    "REQUIRED_DRILLS",
+    "ReleaseGate",
+    "all_drills_passed",
+    "require_blocked",
+]

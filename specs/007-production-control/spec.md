@@ -2,7 +2,7 @@
 
 ## Status
 
-BETA-07 implementation is active on `codex/beta-07-production-control`, based on protected main `d4f021aa390d8b0c786ddacb9bda01c71f9c58cc`.
+BETA-07 implementation is active on `codex/authoritative-evidence-staging`, based on protected main `daba95a15a02fbbf20997cd584d8ec9613f91267`.
 
 Live production remains disabled. The BETA-06 live Vercel Preview disposition is `VENDOR_BLOCKED`; therefore this phase may reach `IMPLEMENTATION_COMPLETE` but may not claim `LIVE_ACCEPTANCE_COMPLETE`.
 
@@ -23,3 +23,14 @@ The implementation provides:
 - deterministic no-network provider fixtures for failure injection.
 
 No provider SDK, credential value, production alias, customer data, WordPress resource, or live deployment is used by the fixture implementation.
+
+## Authoritative evidence and restart durability
+
+The fixture controller may use the tenant-scoped SQLAlchemy deployment store
+for runtime-shaped execution. Intent state, approval identity, provider
+identity, verification references, rollback references, emergency-stop state,
+and revoked opaque credential references survive a controller restart.
+Transition evidence is stored as ordered append-only rows and protected by a
+database update/delete guard. If a restart finds an in-flight provider phase,
+the controller fails closed with `restart_recovery_required` and does not
+invoke the provider again; a terminal record is never duplicated.

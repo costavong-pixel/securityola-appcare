@@ -16,6 +16,13 @@ mutate customer content.
   health, incident transitions, and usage/cost evidence.
 - Production remains denied unless `BETA06_VERIFIED_LIVE_PREVIEW == PASS`.
 
+The runtime-shaped store is `SqlAlchemyMonitoringStore`, scoped to one
+tenant/application/environment. It persists only the sanitized event contract,
+replays it in sequence after restart, rejects cross-target writes, and uses a
+database guard to prevent event updates or deletes. `InMemoryMonitoringStore`
+remains a deterministic unit-test fixture rather than authoritative runtime
+evidence.
+
 ## Acceptance fixtures
 
 The branch must prove outage, dependency, backup, resolution, restart, report

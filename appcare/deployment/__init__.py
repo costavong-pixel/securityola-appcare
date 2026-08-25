@@ -16,9 +16,12 @@ from .contracts import (
     normalize_live_preview_status,
 )
 from .fixtures import FixtureProductionProvider
+from .persistence import SqlAlchemyDeploymentStore
 from .state_machine import (
     CredentialRevocationRegistry,
     DeploymentRecord,
+    DeploymentRecordStore,
+    InMemoryDeploymentStore,
     ProductionDeploymentController,
 )
 
@@ -28,12 +31,15 @@ __all__ = [
     "DeploymentEvidence",
     "DeploymentIntent",
     "DeploymentRecord",
+    "DeploymentRecordStore",
     "DeploymentStatus",
     "DuplicateDeploymentError",
     "FixtureProductionProvider",
     "LivePreviewStatus",
+    "InMemoryDeploymentStore",
     "ProductionControlError",
     "ProductionDeploymentController",
+    "SqlAlchemyDeploymentStore",
     "ProviderDeployment",
     "ProviderRollback",
     "ProviderVerification",

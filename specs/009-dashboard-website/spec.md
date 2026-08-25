@@ -28,3 +28,8 @@ Give an authenticated AppCare customer a usable, honest operating picture and gi
 - UI data is written through textContent rather than HTML interpolation.
 - Color choices use OKLCH tokens, with semantic status color differences paired with text labels.
 - No live deployment or production provider calls are part of BETA-09.
+
+Monitoring state is read from persisted `monitoring_events` records scoped to
+the authenticated tenant. The dashboard must show unknown when no persisted
+observation exists and attention for the latest failed or degraded evidence;
+it may not manufacture a healthy monitoring state.

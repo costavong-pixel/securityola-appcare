@@ -26,3 +26,12 @@ Fixture PASS is not live acceptance. Current repository evidence must still carr
 - Missing or failed drills produce a blocked decision.
 - Evidence digest and public decision output are deterministic and credential-free.
 - No provider, production, WordPress, or customer resource is accessed.
+
+Release evidence is accepted as authoritative only when it includes passed,
+sanitized receipts for every named release criterion: exact-head CI, tests,
+Codex Security, Graphify, Saveruflo, isolated staging rehearsal, tenant
+isolation, backup/restore, production rollback, operator stop, customer report
+accuracy, dependency scan, secret scan, pricing/margin review, and published
+limitations. Every receipt carries the same exact Git head as the release
+evidence; missing, failed, or stale receipts are release blockers even when
+the older boolean summary fields are green.

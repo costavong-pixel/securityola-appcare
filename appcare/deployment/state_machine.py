@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from collections.abc import Iterable
+from dataclasses import dataclass, field, replace
+from typing import Protocol
 
 from .contracts import (
     DeploymentApproval,
@@ -31,6 +33,13 @@ class DeploymentRecord:
     verification_passed: bool | None = None
     rollback_ref: str | None = None
     evidence: tuple[DeploymentEvidence, ...] = ()
+    approval: DeploymentApproval | None = None
+    provider_target_environment: str | None = None
+    provider_source_revision: str | None = None
+    provider_artifact_digest: str | None = None
+    verification_ref: str | None = None
+    rollback_succeeded: bool | None = None
+    rollback_failure_code: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "evidence", tuple(self.evidence))
@@ -44,13 +53,109 @@ class DeploymentRecord:
             value = getattr(self, name)
             if value is not None:
                 validate_opaque_reference(value, field_name=name)
+        for name in (
+            "provider_target_environment",
+            "provider_source_revision",
+            "provider_artifact_digest",
+            "verification_ref",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                validate_opaque_reference(value, field_name=name)
+        if self.rollback_failure_code is not None:
+            object.__setattr__(
+                self,
+                "rollback_failure_code",
+                validate_reason_code(
+                    self.rollback_failure_code,
+                    field_name="rollback_failure_code",
+                ),
+            )
+        for name in ("rollback_succeeded", "verification_passed"):
+            value = getattr(self, name)
+            if value is not None and not isinstance(value, bool):
+                raise ProductionControlError(f"{name} must be boolean when present")
+        if self.approval is not None and (
+            self.approval.intent_id != self.intent.intent_id
+            or self.approval.intent_digest != self.intent.intent_digest
+        ):
+            raise ProductionControlError("approval is not bound to the deployment intent")
+
+
+class DeploymentRecordStore(Protocol):
+    """Durable store contract for intent state and authoritative evidence."""
+
+    def get(self, intent_id: str) -> DeploymentRecord | None: ...
+
+    def get_by_idempotency(self, idempotency_key: str) -> DeploymentRecord | None: ...
+
+    def records(self) -> tuple[DeploymentRecord, ...]: ...
+
+    def save(self, record: DeploymentRecord) -> DeploymentRecord: ...
+
+    def emergency_stop(self, stop_ref: str) -> None: ...
+
+    def emergency_stop_active(self) -> bool: ...
+
+    def revoked_credentials(self) -> tuple[str, ...]: ...
+
+    def revoke_credential(self, credential_ref: str) -> None: ...
+
+
+@dataclass
+class InMemoryDeploymentStore:
+    """Explicit fixture store; production-shaped controllers should use the DB store."""
+
+    _records: dict[str, DeploymentRecord] = field(default_factory=dict)
+    _emergency_stop_ref: str | None = None
+    _revoked: set[str] = field(default_factory=set)
+
+    def get(self, intent_id: str) -> DeploymentRecord | None:
+        return self._records.get(intent_id)
+
+    def get_by_idempotency(self, idempotency_key: str) -> DeploymentRecord | None:
+        return next(
+            (
+                record
+                for record in self._records.values()
+                if record.intent.idempotency_key == idempotency_key
+            ),
+            None,
+        )
+
+    def records(self) -> tuple[DeploymentRecord, ...]:
+        return tuple(self._records.values())
+
+    def save(self, record: DeploymentRecord) -> DeploymentRecord:
+        existing = self._records.get(record.intent.intent_id)
+        if existing is not None:
+            if existing.intent.intent_digest != record.intent.intent_digest:
+                raise DuplicateDeploymentError("intent_id was reused for another intent")
+            if len(record.evidence) < len(existing.evidence) or tuple(
+                record.evidence[: len(existing.evidence)]
+            ) != existing.evidence:
+                raise ProductionControlError("deployment evidence is not append-only")
+        self._records[record.intent.intent_id] = record
+        return record
+
+    def emergency_stop(self, stop_ref: str) -> None:
+        self._emergency_stop_ref = stop_ref
+
+    def emergency_stop_active(self) -> bool:
+        return self._emergency_stop_ref is not None
+
+    def revoked_credentials(self) -> tuple[str, ...]:
+        return tuple(sorted(self._revoked))
+
+    def revoke_credential(self, credential_ref: str) -> None:
+        self._revoked.add(credential_ref)
 
 
 class CredentialRevocationRegistry:
     """Stores only opaque credential references, never credential material."""
 
-    def __init__(self) -> None:
-        self._revoked: set[str] = set()
+    def __init__(self, initial: Iterable[str] = ()) -> None:
+        self._revoked: set[str] = set(initial)
 
     def revoke(self, credential_ref: str) -> None:
         self._revoked.add(validate_opaque_reference(credential_ref, field_name="credential_ref"))
@@ -69,29 +174,34 @@ class ProductionDeploymentController:
         provider: ProductionProvider,
         *,
         revocations: CredentialRevocationRegistry | None = None,
+        store: DeploymentRecordStore | None = None,
     ) -> None:
         self._provider = provider
-        self._revocations = revocations or CredentialRevocationRegistry()
-        self._records: dict[str, DeploymentRecord] = {}
-        self._intent_by_key: dict[str, str] = {}
-        self._emergency_stopped = False
-        self._emergency_stop_ref: str | None = None
+        self._store = store or InMemoryDeploymentStore()
+        self._revocations = revocations or CredentialRevocationRegistry(
+            self._store.revoked_credentials()
+        )
+        self._records: dict[str, DeploymentRecord] = {
+            record.intent.intent_id: record for record in self._store.records()
+        }
+        self._emergency_stopped = self._store.emergency_stop_active()
 
     def submit(self, intent: DeploymentIntent, *, backup_verified: bool) -> DeploymentRecord:
         """Register an intent, denying unsafe requests before any provider call."""
 
         if not isinstance(backup_verified, bool):
             raise ProductionControlError("backup_verified must be boolean")
-        existing_id = self._intent_by_key.get(intent.idempotency_key)
-        if existing_id is not None:
-            existing = self._records[existing_id]
+        existing = self._store.get_by_idempotency(intent.idempotency_key)
+        if existing is not None:
             if existing.intent.intent_digest != intent.intent_digest:
                 raise DuplicateDeploymentError("idempotency key was reused for another intent")
+            self._records[existing.intent.intent_id] = existing
             return existing
-        if intent.intent_id in self._records:
-            existing = self._records[intent.intent_id]
+        existing = self._store.get(intent.intent_id)
+        if existing is not None:
             if existing.intent.intent_digest != intent.intent_digest:
                 raise DuplicateDeploymentError("intent_id was reused for another intent")
+            self._records[existing.intent.intent_id] = existing
             return existing
 
         record = DeploymentRecord(
@@ -99,8 +209,7 @@ class ProductionDeploymentController:
             backup_verified=backup_verified,
             status="approval_pending",
         )
-        self._intent_by_key[intent.idempotency_key] = intent.intent_id
-        self._records[intent.intent_id] = record
+        self._save(record)
 
         if self._emergency_stopped:
             return self._save(
@@ -147,18 +256,23 @@ class ProductionDeploymentController:
             return self._save(
                 self._transition(record, "denied", "approval_rejected", "approval_rejected")
             )
-        return self._save(self._transition(record, "approved", "approval_accepted"))
+        return self._save(
+            self._transition(replace(record, approval=approval), "approved", "approval_accepted")
+        )
 
     def emergency_stop(self, stop_ref: str) -> None:
         """Latch an emergency stop; there is no model or owner bypass."""
 
-        self._emergency_stopped = True
-        self._emergency_stop_ref = validate_opaque_reference(
+        normalized = validate_opaque_reference(
             stop_ref, field_name="emergency_stop_ref"
         )
+        self._store.emergency_stop(normalized)
+        self._emergency_stopped = True
 
     def revoke_credential(self, credential_ref: str) -> None:
-        self._revocations.revoke(credential_ref)
+        normalized = validate_opaque_reference(credential_ref, field_name="credential_ref")
+        self._store.revoke_credential(normalized)
+        self._revocations.revoke(normalized)
 
     def execute(self, intent_id: str) -> DeploymentRecord:
         """Deploy once, verify exact identity, and roll back on failed verification."""
@@ -173,6 +287,15 @@ class ProductionDeploymentController:
             "failed",
         }:
             return record
+        if record.status in {"deploying", "verifying", "rolling_back"}:
+            return self._save(
+                self._transition(
+                    record,
+                    "failed",
+                    "restart_recovery_required",
+                    "restart_recovery_required",
+                )
+            )
         if record.status != "approved":
             return self._save(
                 self._transition(record, "denied", "approval_required", "approval_required")
@@ -206,7 +329,15 @@ class ProductionDeploymentController:
                     record, "failed", "provider_deploy_failed", "provider_deploy_failed"
                 )
             )
-        record = self._save(replace(record, deployment_ref=deployment.deployment_ref))
+        record = self._save(
+            replace(
+                record,
+                deployment_ref=deployment.deployment_ref,
+                provider_target_environment=deployment.target_environment,
+                provider_source_revision=deployment.source_revision,
+                provider_artifact_digest=deployment.artifact_digest,
+            )
+        )
 
         identity_failure = self._identity_failure(record.intent, deployment)
         if identity_failure is not None:
@@ -217,6 +348,7 @@ class ProductionDeploymentController:
             verification = self._provider.verify(record.intent, deployment)
         except Exception:
             return self._rollback(record, deployment, "verification_provider_failed")
+        record = self._save(replace(record, verification_ref=verification.verification_ref))
         if verification.deployment_ref != deployment.deployment_ref:
             return self._rollback(record, deployment, "verification_identity_mismatch")
         if not verification.passed:
@@ -234,13 +366,17 @@ class ProductionDeploymentController:
         )
 
     def get(self, intent_id: str) -> DeploymentRecord:
+        record = self._store.get(intent_id)
+        if record is not None:
+            self._records[intent_id] = record
+            return record
         try:
             return self._records[intent_id]
         except KeyError as exc:
             raise ProductionControlError("deployment intent is unknown") from exc
 
     def records(self) -> tuple[DeploymentRecord, ...]:
-        return tuple(self._records.values())
+        return self._store.records()
 
     def audit_log(self, intent_id: str) -> tuple[DeploymentEvidence, ...]:
         return self.get(intent_id).evidence
@@ -266,7 +402,16 @@ class ProductionDeploymentController:
             rollback = self._provider.rollback(record.intent, deployment)
         except Exception:
             return self._save(
-                self._transition(record, "rollback_failed", "rollback_failed", "rollback_failed")
+                self._transition(
+                    replace(
+                        record,
+                        rollback_succeeded=False,
+                        rollback_failure_code="rollback_failed",
+                    ),
+                    "rollback_failed",
+                    "rollback_failed",
+                    "rollback_failed",
+                )
             )
         if (
             not rollback.succeeded
@@ -274,7 +419,14 @@ class ProductionDeploymentController:
         ):
             return self._save(
                 self._transition(
-                    record,
+                    replace(
+                        record,
+                        rollback_ref=rollback.rollback_ref,
+                        rollback_succeeded=False,
+                        rollback_failure_code=(
+                            rollback.failure_code or "rollback_identity_or_execution_failed"
+                        ),
+                    ),
                     "rollback_failed",
                     "rollback_identity_or_execution_failed",
                     "rollback_identity_or_execution_failed",
@@ -282,7 +434,12 @@ class ProductionDeploymentController:
             )
         return self._save(
             replace(
-                self._transition(record, "rolled_back", failure_code, failure_code),
+                self._transition(
+                    replace(record, rollback_succeeded=True, rollback_failure_code=None),
+                    "rolled_back",
+                    failure_code,
+                    failure_code,
+                ),
                 rollback_ref=rollback.rollback_ref,
                 verification_passed=False,
             )
@@ -310,12 +467,15 @@ class ProductionDeploymentController:
         )
 
     def _save(self, record: DeploymentRecord) -> DeploymentRecord:
-        self._records[record.intent.intent_id] = record
-        return record
+        saved = self._store.save(record)
+        self._records[saved.intent.intent_id] = saved
+        return saved
 
 
 __all__ = [
     "CredentialRevocationRegistry",
     "DeploymentRecord",
+    "DeploymentRecordStore",
+    "InMemoryDeploymentStore",
     "ProductionDeploymentController",
 ]

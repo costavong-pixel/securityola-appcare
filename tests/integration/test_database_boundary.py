@@ -16,4 +16,11 @@ def test_sqlite_database_bootstrap_installs_audit_triggers() -> None:
                 text("SELECT name FROM sqlite_master WHERE type = 'trigger'")
             )
         }
-    assert names == {"appcare_audit_no_update", "appcare_audit_no_delete"}
+    assert names == {
+        "appcare_audit_no_update",
+        "appcare_audit_no_delete",
+        "appcare_deployment_evidence_no_update",
+        "appcare_deployment_evidence_no_delete",
+        "appcare_monitoring_events_no_update",
+        "appcare_monitoring_events_no_delete",
+    }
