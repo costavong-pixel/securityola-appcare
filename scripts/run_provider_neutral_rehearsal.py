@@ -291,6 +291,10 @@ def _intent(
     )
 
 
+def _run_ref(prefix: str, rehearsal_id: str) -> str:
+    return f"{prefix}-{rehearsal_id}"
+
+
 def _approval(intent: DeploymentIntent) -> DeploymentApproval:
     return DeploymentApproval(
         intent_id=intent.intent_id,
@@ -351,8 +355,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         )
     )
     staging_intent = _intent(
-        intent_id="preproduction-staging-deploy",
-        idempotency_key="preproduction-staging-deploy",
+        intent_id=_run_ref("preproduction-staging-deploy", args.rehearsal_id),
+        idempotency_key=_run_ref("preproduction-staging-deploy", args.rehearsal_id),
         source_revision=args.source_revision,
         artifact_digest=args.artifact_digest,
         rollback_reference=BASELINE_REVISION,
@@ -411,8 +415,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         tenant_id=TENANT_ID,
     )
     good_intent = _intent(
-        intent_id="reference-production-good",
-        idempotency_key="reference-production-good",
+        intent_id=_run_ref("reference-production-good", args.rehearsal_id),
+        idempotency_key=_run_ref("reference-production-good", args.rehearsal_id),
         source_revision=args.source_revision,
         artifact_digest=args.artifact_digest,
         rollback_reference=BASELINE_REVISION,
@@ -452,8 +456,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         )
     )
     failure_intent = _intent(
-        intent_id="reference-production-health-failure",
-        idempotency_key="reference-production-health-failure",
+        intent_id=_run_ref("reference-production-health-failure", args.rehearsal_id),
+        idempotency_key=_run_ref("reference-production-health-failure", args.rehearsal_id),
         source_revision=args.source_revision,
         artifact_digest=args.artifact_digest,
         rollback_reference=args.source_revision,
@@ -663,6 +667,7 @@ def main() -> int:
     parser.add_argument("--backup-id", required=True)
     parser.add_argument("--backup-job-id", required=True)
     parser.add_argument("--restore-job-id", required=True)
+    parser.add_argument("--rehearsal-id", required=True)
     args = parser.parse_args()
     print(json.dumps(run(args), sort_keys=True, indent=2))
     return 0
