@@ -1,4 +1,4 @@
-"""BETA-07 production-control contracts and deterministic fixtures."""
+"""BETA-07 production control and provider-neutral preproduction evidence."""
 
 from .contracts import (
     DeploymentApproval,
@@ -6,17 +6,28 @@ from .contracts import (
     DeploymentIntent,
     DeploymentStatus,
     DuplicateDeploymentError,
-    LivePreviewStatus,
     ProductionControlError,
     ProviderDeployment,
     ProviderRollback,
     ProviderVerification,
     evidence_digest,
-    live_preview_is_passed,
-    normalize_live_preview_status,
 )
 from .fixtures import FixtureProductionProvider
 from .persistence import SqlAlchemyDeploymentStore
+from .preproduction import (
+    InMemoryPreproductionEvidenceStore,
+    PreproductionEvidence,
+    PreproductionEvidenceStore,
+    PreproductionStatus,
+    SqlAlchemyPreproductionEvidenceStore,
+)
+from .provider_status import (
+    VERCEL_CAPABILITIES,
+    CapabilityStatus,
+    ProviderCapabilityStatus,
+    provider_capabilities,
+)
+from .reference import FilesystemReferenceProvider, ReferenceDeploymentConfig
 from .state_machine import (
     CredentialRevocationRegistry,
     DeploymentRecord,
@@ -35,15 +46,23 @@ __all__ = [
     "DeploymentStatus",
     "DuplicateDeploymentError",
     "FixtureProductionProvider",
-    "LivePreviewStatus",
+    "InMemoryPreproductionEvidenceStore",
     "InMemoryDeploymentStore",
     "ProductionControlError",
     "ProductionDeploymentController",
     "SqlAlchemyDeploymentStore",
+    "PreproductionEvidence",
+    "PreproductionEvidenceStore",
+    "PreproductionStatus",
+    "SqlAlchemyPreproductionEvidenceStore",
+    "CapabilityStatus",
+    "ProviderCapabilityStatus",
+    "VERCEL_CAPABILITIES",
+    "provider_capabilities",
+    "FilesystemReferenceProvider",
+    "ReferenceDeploymentConfig",
     "ProviderDeployment",
     "ProviderRollback",
     "ProviderVerification",
     "evidence_digest",
-    "live_preview_is_passed",
-    "normalize_live_preview_status",
 ]

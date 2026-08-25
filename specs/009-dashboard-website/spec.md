@@ -10,7 +10,9 @@ Give an authenticated AppCare customer a usable, honest operating picture and gi
 - The response is tenant-scoped and declares state_source=backend.
 - Applications, findings, backups, connectors, deployments, and audit events are read from persisted AppCare records.
 - Missing evidence is represented as unknown, pending, or empty; the API and browser must not manufacture a successful placeholder.
-- Production actions remain disabled with reason BETA06_LIVE_PREVIEW_REQUIRED.
+- Production actions remain disabled with reason
+  VERIFIED_PREPRODUCTION_ENVIRONMENT_REQUIRED until authoritative persisted
+  preproduction evidence is resolved.
 
 ## Website contract
 

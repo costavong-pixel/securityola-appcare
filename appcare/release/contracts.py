@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-from ..deployment.contracts import LivePreviewStatus, normalize_live_preview_status
+from ..deployment.preproduction import PreproductionEvidence
 from ..services.security import contains_credential_like
 
 DrillStatus = Literal["passed", "failed", "blocked"]
@@ -114,17 +114,14 @@ class ReleaseEvidence:
     secret_scan: bool
     pricing_margin: bool
     known_limitations_published: bool
-    beta06_live_preview: LivePreviewStatus
+    preproduction_evidence: PreproductionEvidence
     drills: tuple[DrillEvidence, ...]
     authoritative_receipts: tuple[EvidenceReceipt, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "exact_head", _revision(self.exact_head))
-        object.__setattr__(
-            self,
-            "beta06_live_preview",
-            normalize_live_preview_status(self.beta06_live_preview),
-        )
+        if not isinstance(self.preproduction_evidence, PreproductionEvidence):
+            raise ReleaseEvidenceError("preproduction evidence is required")
         if (
             not isinstance(self.test_count, int)
             or isinstance(self.test_count, bool)
@@ -175,7 +172,12 @@ class ReleaseEvidence:
             "secret_scan": self.secret_scan,
             "pricing_margin": self.pricing_margin,
             "known_limitations_published": self.known_limitations_published,
-            "beta06_live_preview": self.beta06_live_preview,
+            "preproduction_evidence": self.preproduction_evidence.canonical_payload()
+            | {
+                "authoritative_evidence_digest": (
+                    self.preproduction_evidence.authoritative_evidence_digest
+                )
+            },
             "drills": [
                 drill.canonical() for drill in sorted(self.drills, key=lambda item: item.name)
             ],

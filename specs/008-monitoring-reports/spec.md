@@ -14,7 +14,9 @@ mutate customer content.
   window; resolved incidents are explicitly closed.
 - Monthly reports aggregate deterministic observations, findings, fixes, backup
   health, incident transitions, and usage/cost evidence.
-- Production remains denied unless `BETA06_VERIFIED_LIVE_PREVIEW == PASS`.
+- Production remains denied unless authoritative persisted
+  `VERIFIED_PREPRODUCTION_ENVIRONMENT == PASS` is resolved for the exact
+  tenant, application, source revision, and artifact digest.
 
 The runtime-shaped store is `SqlAlchemyMonitoringStore`, scoped to one
 tenant/application/environment. It persists only the sanitized event contract,

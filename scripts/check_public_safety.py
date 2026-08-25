@@ -14,11 +14,12 @@ _PRIVATE_IPV4 = (
     r"(?:169\.254|192\.168|172\.(?:1[6-9]|2\d|3[01]))(?:\.\d{1,3}){2}"
     r")(?![\d.])"
 )
+_PRIVATE_IPV4_PATTERN = re.compile(_PRIVATE_IPV4)
 MAX_SCAN_FILE_BYTES = 2 * 1024 * 1024
 
 
 FORBIDDEN_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("private IPv4 address", re.compile(_PRIVATE_IPV4)),
+    ("private IPv4 address", _PRIVATE_IPV4_PATTERN),
     ("private key block", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
     ("GitHub token", re.compile(r"\b(?:ghp|github_pat)_[A-Za-z0-9_]{20,}\b")),
     (
@@ -26,6 +27,13 @@ FORBIDDEN_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         re.compile(r"(?i)\b(?:password|secret|token|api[_-]?key)\s*[:=]\s*['\"][^'\"]{12,}['\"]"),
     ),
 )
+
+
+def _is_intentional_loopback_only(line: str, pattern: re.Pattern[str]) -> bool:
+    """Allow explicit loopback-only bindings without allowing private peers."""
+
+    matches = pattern.findall(line)
+    return bool(matches) and all(match.startswith("127.") for match in matches)
 
 
 def tracked_files(root: Path) -> list[Path]:
@@ -112,6 +120,10 @@ def scan(root: Path) -> list[str]:
         for line_number, line in enumerate(text.splitlines(), start=1):
             for label, pattern in FORBIDDEN_PATTERNS:
                 if pattern.search(line):
+                    if label == "private IPv4 address" and _is_intentional_loopback_only(
+                        line, pattern
+                    ):
+                        continue
                     findings.append(f"{relative}:{line_number}: {label}")
     return findings
 

@@ -2,7 +2,7 @@
 
 ## Goal
 
-Do not declare the AppCare private beta ready until deterministic evidence covers the required failure modes and the hard BETA-06 live Preview interlock passes.
+Do not declare the AppCare private beta ready until deterministic evidence covers the required failure modes and an authoritative provider-neutral preproduction environment passes.
 
 ## Release contract
 
@@ -10,19 +10,27 @@ Do not declare the AppCare private beta ready until deterministic evidence cover
 - Required evidence includes exact-head CI, tests, tenant isolation, backup/restore, production verification rollback, operator stop, customer report accuracy, dependency/secret scans, pricing/margin review, and published limitations.
 - All named adversarial drills must be present and passed.
 - Any Codex Security finding blocks readiness.
-- beta06_live_preview must be exactly pass; blocked and unverified are release blockers.
+- verified preproduction evidence must be exact-head-bound and exactly pass;
+  failed and unverified evidence are release blockers.
 - The decision always reports live_production_enabled=false.
 
 ## Controlled fixtures
 
 The initial BETA-10 fixture suite is provider-neutral and makes no network or production calls. It covers seeded secret exposure, vulnerable dependency, tenant isolation, failed/corrupted backups, isolated restore, worker crash, duplicate event, Preview failure, production verification rollback, revoked connector, alert storm deduplication, and unsafe AI patch rejection.
 
-Fixture PASS is not live acceptance. Current repository evidence must still carry the BETA-06 provider result, which is vendor-blocked.
+Fixture PASS is not live acceptance. The release decision must carry an
+authoritative persisted `VERIFIED_PREPRODUCTION_ENVIRONMENT=PASS` receipt.
+Vercel remains a provider-specific capability: its Preview result is recorded
+separately and does not replace or globally block a supported controlled
+preproduction adapter.
 
 ## Acceptance
 
-- A complete all-pass fixture evidence set becomes ready only when BETA-06 live Preview is pass.
-- The exact current BETA-06 evidence (blocked) produces status=blocked with BETA06_LIVE_PREVIEW_REQUIRED.
+- A complete all-pass fixture evidence set becomes ready only when the
+  persisted provider-neutral preproduction evidence is exact-head-bound and
+  pass.
+- Missing, stale, failed, or mismatched preproduction evidence produces
+  status=blocked with VERIFIED_PREPRODUCTION_ENVIRONMENT_REQUIRED.
 - Missing or failed drills produce a blocked decision.
 - Evidence digest and public decision output are deterministic and credential-free.
 - No provider, production, WordPress, or customer resource is accessed.

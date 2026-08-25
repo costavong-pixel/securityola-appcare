@@ -10,11 +10,11 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from ..deployment.contracts import live_preview_is_passed, normalize_live_preview_status
 from .contracts import (
     ActionAdapter,
     ActionResult,
     EvidenceItem,
+    PreproductionEvidenceResolver,
     RetryableWorkflowError,
     ScanAdapter,
     ScanResult,
@@ -71,6 +71,7 @@ class WorkflowRuntime:
     store: WorkflowStore
     action_adapter: ActionAdapter = field(default_factory=_NoopActionAdapter)
     scan_adapter: ScanAdapter = field(default_factory=_NoopScanAdapter)
+    preproduction_evidence_resolver: PreproductionEvidenceResolver | None = None
     max_action_attempts: int = 3
 
     def __post_init__(self) -> None:
@@ -85,7 +86,7 @@ def initial_state(
     application_id: str,
     job_id: str,
     target_environment: str = "staging",
-    beta06_verified_live_preview: str = "unverified",
+    preproduction_evidence_ref: str | None = None,
     risk_level: str = "low",
     backup_status: str = "required",
     retry_budget: int = 3,
@@ -102,7 +103,13 @@ def initial_state(
         "phase": "intake",
         "status": "running",
         "target_environment": target_environment,
-        "beta06_verified_live_preview": normalize_live_preview_status(beta06_verified_live_preview),
+        "preproduction_evidence_ref": (
+            None
+            if preproduction_evidence_ref is None
+            else validate_safe_id(
+                preproduction_evidence_ref, field_name="preproduction_evidence_ref"
+            )
+        ),
         "risk_level": risk_level,
         "backup_status": backup_status,
         "inventory_status": "pending",
@@ -155,6 +162,26 @@ def _update_refs(update: Mapping[str, object]) -> tuple[str, ...]:
     if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
         raise WorkflowConfigurationError("workflow action evidence references are invalid")
     return tuple(values)
+
+
+def _preproduction_verified(runtime: WorkflowRuntime, state: WorkflowState) -> bool:
+    """Resolve persisted evidence; a state flag or reference cannot authorize."""
+
+    if state.get("target_environment") != "production":
+        return True
+    resolver = runtime.preproduction_evidence_resolver
+    if resolver is None:
+        return False
+    evidence = resolver.resolve(dict(state))
+    if evidence is None or not evidence.passed:
+        return False
+    if (
+        evidence.tenant_id != state["tenant_id"]
+        or evidence.application_id != state["application_id"]
+    ):
+        return False
+    supplied_ref = state.get("preproduction_evidence_ref")
+    return supplied_ref is None or supplied_ref == evidence.authoritative_evidence_digest
 
 
 def _transition(
@@ -386,10 +413,8 @@ def build_workflow(runtime: WorkflowRuntime, checkpointer: Any) -> Any:
         return {"phase": "isolated_workspace", "approval_status": approval_status}
 
     def approval(state: WorkflowState) -> dict[str, object]:
-        if state.get("target_environment") == "production" and not live_preview_is_passed(
-            state.get("beta06_verified_live_preview")
-        ):
-            return _failure(runtime, state, "beta06_live_preview_required")
+        if not _preproduction_verified(runtime, state):
+            return _failure(runtime, state, "verified_preproduction_environment_required")
         if state.get("approval_status") != "required":
             _transition(
                 runtime,
@@ -448,10 +473,8 @@ def build_workflow(runtime: WorkflowRuntime, checkpointer: Any) -> Any:
         }
 
     def controlled_deploy(state: WorkflowState) -> dict[str, object]:
-        if state.get("target_environment") == "production" and not live_preview_is_passed(
-            state.get("beta06_verified_live_preview")
-        ):
-            return _failure(runtime, state, "beta06_live_preview_required")
+        if not _preproduction_verified(runtime, state):
+            return _failure(runtime, state, "verified_preproduction_environment_required")
         if state.get("approval_status") not in {"approved", "not_required"}:
             return _failure(runtime, state, "approval_required_before_deploy")
         try:

@@ -1,0 +1,29 @@
+[Unit]
+Description=SecurityOla AppCare controlled reference-production test target
+After=network.target
+
+[Service]
+Type=simple
+User=appcare-reference
+Group=appcare-reference
+WorkingDirectory=/opt/securityola/appcare-reference-production/current/source
+EnvironmentFile=/etc/securityola/appcare/reference-production.env
+Environment=PYTHONPATH=/opt/securityola/appcare-reference-production/current/source
+ExecStart=/opt/securityola/appcare-reference-production/venv/bin/uvicorn appcare.api:app --host 127.0.0.1 --port 18568 --no-access-log
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadOnlyPaths=/opt/securityola/appcare-reference-production/current/source /opt/securityola/appcare-reference-production/venv
+ReadWritePaths=/opt/securityola/appcare-reference-production/data /opt/securityola/appcare-reference-production/logs /opt/securityola/appcare-reference-production/tmp /var/lib/securityola/appcare/reference
+IPAddressDeny=0.0.0.0/0
+IPAddressDeny=::/0
+IPAddressAllow=127.0.0.0/8
+IPAddressAllow=::1
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

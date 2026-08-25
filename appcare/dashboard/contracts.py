@@ -56,7 +56,9 @@ class ProductionControl(BaseModel):
 
     enabled: Literal[False] = False
     label: str = "Production deploys locked"
-    reason_code: Literal["BETA06_LIVE_PREVIEW_REQUIRED"] = "BETA06_LIVE_PREVIEW_REQUIRED"
+    reason_code: Literal["VERIFIED_PREPRODUCTION_ENVIRONMENT_REQUIRED"] = (
+        "VERIFIED_PREPRODUCTION_ENVIRONMENT_REQUIRED"
+    )
 
 
 class DashboardSnapshot(BaseModel):

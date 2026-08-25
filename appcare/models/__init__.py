@@ -23,6 +23,7 @@ from .operations import (
     WorkflowEvidence,
     WorkflowTransition,
 )
+from .preproduction import PreproductionEvidenceRecord
 from .resources import Application, Asset, Finding
 
 __all__ = [
@@ -45,6 +46,7 @@ __all__ = [
     "InventoryRun",
     "Job",
     "MonitoringEventRecord",
+    "PreproductionEvidenceRecord",
     "Tenant",
     "TimestampMixin",
     "User",

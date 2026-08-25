@@ -15,9 +15,12 @@ from .contracts import (
     ProductionControlError,
     ProductionProvider,
     ProviderDeployment,
-    live_preview_is_passed,
     validate_opaque_reference,
     validate_reason_code,
+)
+from .preproduction import (
+    InMemoryPreproductionEvidenceStore,
+    PreproductionEvidenceStore,
 )
 
 
@@ -176,9 +179,11 @@ class ProductionDeploymentController:
         *,
         revocations: CredentialRevocationRegistry | None = None,
         store: DeploymentRecordStore | None = None,
+        preproduction_store: PreproductionEvidenceStore | None = None,
     ) -> None:
         self._provider = provider
         self._store = store or InMemoryDeploymentStore()
+        self._preproduction_store = preproduction_store or InMemoryPreproductionEvidenceStore()
         self._revocations = revocations or CredentialRevocationRegistry(
             self._store.revoked_credentials()
         )
@@ -218,18 +223,18 @@ class ProductionDeploymentController:
                     record, "emergency_stopped", "emergency_stop_active", "emergency_stop_active"
                 )
             )
-        if not live_preview_is_passed(intent.beta06_verified_live_preview):
+        if not backup_verified:
+            return self._save(
+                self._transition(record, "denied", "backup_gate_required", "backup_gate_required")
+            )
+        if not self._preproduction_is_authoritative(intent):
             return self._save(
                 self._transition(
                     record,
                     "denied",
-                    "beta06_live_preview_required",
-                    "beta06_live_preview_required",
+                    "verified_preproduction_environment_required",
+                    "verified_preproduction_environment_required",
                 )
-            )
-        if not backup_verified:
-            return self._save(
-                self._transition(record, "denied", "backup_gate_required", "backup_gate_required")
             )
         if self._revocations.is_revoked(intent.credential_ref):
             return self._save(
@@ -309,13 +314,13 @@ class ProductionDeploymentController:
             return self._save(
                 self._transition(record, "denied", "credential_revoked", "credential_revoked")
             )
-        if not live_preview_is_passed(record.intent.beta06_verified_live_preview):
+        if not self._preproduction_is_authoritative(record.intent):
             return self._save(
                 self._transition(
                     record,
                     "denied",
-                    "beta06_live_preview_required",
-                    "beta06_live_preview_required",
+                    "verified_preproduction_environment_required",
+                    "verified_preproduction_environment_required",
                 )
             )
 
@@ -389,6 +394,16 @@ class ProductionDeploymentController:
         if deployment.artifact_digest != intent.artifact_digest:
             return "provider_artifact_mismatch"
         return None
+
+    def _preproduction_is_authoritative(self, intent: DeploymentIntent) -> bool:
+        evidence = self._preproduction_store.resolve(
+            tenant_id=intent.tenant_id,
+            application_id=intent.application_id,
+            source_revision=intent.source_revision,
+            artifact_digest=intent.artifact_digest,
+            evidence_digest=intent.preproduction_evidence_digest,
+        )
+        return evidence is not None and evidence.passed
 
     def _rollback(
         self,

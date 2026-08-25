@@ -2,13 +2,20 @@
 
 ## Status
 
-BETA-07 implementation is active on `codex/authoritative-evidence-staging`, based on protected main `daba95a15a02fbbf20997cd584d8ec9613f91267`.
+BETA-07 implementation is provider-neutral and runs only against an explicitly
+controlled target environment.
 
-Live production remains disabled. The BETA-06 live Vercel Preview disposition is `VENDOR_BLOCKED`; therefore this phase may reach `IMPLEMENTATION_COMPLETE` but may not claim `LIVE_ACCEPTANCE_COMPLETE`.
+Live customer production remains disabled. Vercel Preview is a provider-specific
+capability and may be vendor-blocked without blocking a controlled AppCare
+preproduction environment.
 
 ## Hard interlock
 
-Every production intent carries `beta06_verified_live_preview`. A production request is denied before provider execution unless the value is exactly `pass`. Approval, owner action, model output, emergency paths, and hidden configuration cannot bypass this check.
+Every production intent carries an exact digest reference to persisted
+`PreproductionEvidence`. A production request is denied before provider
+execution unless the authoritative record matches tenant, application, source
+revision, artifact digest, and status `pass`. Approval, owner action, model
+output, emergency paths, and hidden configuration cannot bypass this check.
 
 ## Contract boundary
 

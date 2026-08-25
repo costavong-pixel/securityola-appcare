@@ -41,7 +41,7 @@ def _intent_payload(intent: DeploymentIntent) -> dict[str, object]:
         "requested_by": intent.requested_by,
         "backup_evidence_ref": intent.backup_evidence_ref,
         "credential_ref": intent.credential_ref,
-        "beta06_verified_live_preview": intent.beta06_verified_live_preview,
+        "preproduction_evidence_digest": intent.preproduction_evidence_digest,
         "target_environment": intent.target_environment,
     }
 
@@ -115,7 +115,7 @@ def _record_from_row(
         requested_by=_text(raw_intent, "requested_by"),
         backup_evidence_ref=_text(raw_intent, "backup_evidence_ref"),
         credential_ref=_text(raw_intent, "credential_ref"),
-        beta06_verified_live_preview=cast(Any, _text(raw_intent, "beta06_verified_live_preview")),
+        preproduction_evidence_digest=_text(raw_intent, "preproduction_evidence_digest"),
         target_environment=cast(Any, _text(raw_intent, "target_environment")),
     )
     if intent.intent_digest != row.intent_digest:

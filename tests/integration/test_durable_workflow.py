@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from langgraph.types import Command
 from sqlalchemy import func, select
 
 from appcare.db import Database
+from appcare.deployment.preproduction import PreproductionEvidence
 from appcare.models import AuditEvent, Tenant, WorkflowAction, WorkflowTransition
 from appcare.workflows import (
     ActionResult,
@@ -65,6 +67,29 @@ class FailingScan:
         return ScanResult(failure_code="scanner_unavailable", retryable=True)
 
 
+PREPRODUCTION = PreproductionEvidence.create(
+    tenant_id="tenant-1",
+    application_id="app-1",
+    provider="securityola-vps",
+    target_type="controlled-reference",
+    source_revision="c" * 40,
+    artifact_digest="a" * 64,
+    environment_identity="appcare-staging-18567",
+    deployment_reference="workflow-preproduction",
+    deployment_timestamp=datetime(2026, 8, 25, tzinfo=UTC),
+    smoke_test_receipt="workflow-smoke",
+    security_test_receipt="workflow-security",
+    rollback_reference_receipt="workflow-rollback",
+)
+
+
+class StaticPreproductionResolver:
+    def resolve(self, state: Mapping[str, object]) -> PreproductionEvidence | None:
+        if state.get("preproduction_evidence_ref") != PREPRODUCTION.authoritative_evidence_digest:
+            return None
+        return PREPRODUCTION
+
+
 def _database(tmp_path: Path) -> Database:
     database = Database(f"sqlite+pysqlite:///{(tmp_path / 'workflow.db').as_posix()}")
     database.initialize()
@@ -80,8 +105,10 @@ def _state(workflow_id: str, **overrides: str | int) -> WorkflowState:
         application_id="app-1",
         job_id="job-1",
         target_environment=str(overrides.get("target_environment", "staging")),
-        beta06_verified_live_preview=str(
-            overrides.get("beta06_verified_live_preview", "unverified")
+        preproduction_evidence_ref=(
+            None
+            if "preproduction_evidence_ref" not in overrides
+            else str(overrides["preproduction_evidence_ref"])
         ),
         risk_level=str(overrides.get("risk_level", "low")),
         backup_status=str(overrides.get("backup_status", "verified")),
@@ -134,7 +161,11 @@ def test_high_risk_approval_survives_graph_recreation(tmp_path: Path) -> None:
     action = RecordingAction()
     store = WorkflowStore(database)
     checkpointer = build_in_memory_checkpointer()
-    runtime = WorkflowRuntime(store, action_adapter=action)
+    runtime = WorkflowRuntime(
+        store,
+        action_adapter=action,
+        preproduction_evidence_resolver=StaticPreproductionResolver(),
+    )
     graph = build_workflow(runtime, checkpointer)
     config = {"configurable": {"thread_id": "workflow-approval"}}
     first = graph.invoke(
@@ -142,7 +173,7 @@ def test_high_risk_approval_survives_graph_recreation(tmp_path: Path) -> None:
             "workflow-approval",
             target_environment="production",
             risk_level="high",
-            beta06_verified_live_preview="pass",
+            preproduction_evidence_ref=PREPRODUCTION.authoritative_evidence_digest,
         ),
         config,
     )
@@ -253,7 +284,7 @@ def test_action_store_rejects_credential_like_state(tmp_path: Path) -> None:
         )
 
 
-def test_production_workflow_denies_without_beta06_live_preview(tmp_path: Path) -> None:
+def test_production_workflow_denies_without_authoritative_preproduction(tmp_path: Path) -> None:
     database = _database(tmp_path)
     action = RecordingAction()
     graph = build_workflow(
@@ -267,5 +298,5 @@ def test_production_workflow_denies_without_beta06_live_preview(tmp_path: Path) 
     )
 
     assert result["status"] == "escalated"
-    assert result["failure_code"] == "beta06_live_preview_required"
+    assert result["failure_code"] == "verified_preproduction_environment_required"
     assert not any(kind == "controlled_deploy" for _, kind in action.calls)
