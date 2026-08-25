@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -259,7 +260,14 @@ class FilesystemReferenceProvider:
             )
         except (OSError, subprocess.SubprocessError):
             return False
-        return result.returncode == 0
+        if result.returncode != 0:
+            return False
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if self._health_check()[0]:
+                return True
+            time.sleep(0.25)
+        return False
 
     def _set_release_owner(self, release: Path) -> None:
         if self.config.service_user is None or self.config.service_group is None:
