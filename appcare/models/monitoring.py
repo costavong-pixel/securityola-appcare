@@ -60,4 +60,3 @@ class MonitoringEventRecord(IdentityMixin, Base):
 
 
 __all__ = ["MonitoringEventRecord"]
-

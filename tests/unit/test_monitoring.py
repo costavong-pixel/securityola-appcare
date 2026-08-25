@@ -297,4 +297,3 @@ def test_database_monitoring_evidence_is_append_only(tmp_path: Path) -> None:
                 .values(summary="tampered")
             )
             session.commit()
-

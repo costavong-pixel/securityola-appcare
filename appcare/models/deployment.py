@@ -123,4 +123,3 @@ __all__ = [
     "DeploymentIntentRecord",
     "DeploymentRevokedCredential",
 ]
-
