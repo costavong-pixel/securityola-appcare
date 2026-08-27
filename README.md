@@ -73,3 +73,14 @@ execution, OAuth, or live customer transport path.
 The provider mappings are documented in
 `specs/002-read-only-connectors/contracts/api.md`. Live provider authorization,
 transport, and secret-vault custody remain later owner-controlled gates.
+
+## Shared SecurityOla commercial and security records
+
+SecurityOla AppCare and the SecurityOla WordPress Security product remain separate applications even when public brand/commercial infrastructure is shared.
+
+Permanent public-safe records for the current WordPress Security/Paddle work:
+
+- [Paddle approval record — 2026-08-27](docs/compliance/PADDLE-APPROVAL-2026-08-27.md)
+- [WordPress Security review backlog](docs/security/WORDPRESS-SECURITY-REVIEW-BACKLOG.md)
+
+Paddle/domain approval is a commercial/compliance gate and is not a security sign-off. Security review evidence must be tracked independently.
