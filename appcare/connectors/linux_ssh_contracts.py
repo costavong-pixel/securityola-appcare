@@ -1,0 +1,1075 @@
+"""Typed, secret-free contracts for the generic Linux/SSH connector.
+
+The module deliberately contains no free-form command or raw credential field.
+It is safe to import from readiness/evidence code without enabling execution.
+"""
+
+from __future__ import annotations
+
+import base64
+import binascii
+import hashlib
+import ipaddress
+import json
+import re
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from enum import StrEnum
+from pathlib import PurePosixPath
+from typing import Final, Protocol
+
+from ..readiness.contracts import (
+    CapabilityEvidence,
+    CapabilityStatus,
+    EvidenceClass,
+    ReadinessValidationError,
+    validate_evidence_reference,
+    validate_scope_segment,
+)
+from ..services.security import contains_credential_like, is_secret_key
+
+
+class LinuxSSHError(ValueError):
+    """Base error for a rejected or unsafe Linux/SSH operation."""
+
+
+class TargetValidationError(LinuxSSHError):
+    """A Linux target is outside the approved identity or path boundary."""
+
+
+class CredentialBoundaryError(LinuxSSHError):
+    """Credential custody or lifecycle validation failed."""
+
+
+class HostKeyVerificationError(LinuxSSHError):
+    """The pre-registered SSH host identity could not be verified."""
+
+
+class OperationRejected(LinuxSSHError):
+    """A typed operation or its inputs are not allowed."""
+
+
+class OperationStatus(StrEnum):
+    PASSED = "passed"
+    PARTIAL = "partial"
+    PERMISSION_DENIED = "permission_denied"
+    TIMED_OUT = "timed_out"
+    OUTPUT_LIMITED = "output_limited"
+    HOST_IDENTITY_FAILED = "host_identity_failed"
+    CREDENTIAL_DENIED = "credential_denied"
+    MALFORMED = "malformed"
+    DISCONNECTED = "disconnected"
+    FAILED = "failed"
+    REPLAYED = "replayed"
+
+
+class OperationKind(StrEnum):
+    CONNECTION_PROBE = "connection_probe"
+    HOST_INVENTORY = "host_inventory"
+    FILESYSTEM_METADATA_READ = "filesystem_metadata_read"
+    SAFE_FILE_READ = "safe_file_read"
+    SERVICE_METADATA_READ = "service_metadata_read"
+    WEB_SERVER_METADATA_READ = "web_server_metadata_read"
+    RUNTIME_METADATA_READ = "runtime_metadata_read"
+    NETWORK_BINDING_READ = "network_binding_read"
+    STORAGE_METADATA_READ = "storage_metadata_read"
+    APPLICATION_ROOT_VERIFICATION = "application_root_verification"
+
+
+class CapabilityClass(StrEnum):
+    INVENTORY_READ = "inventory_read"
+    FILESYSTEM_READ = "filesystem_read"
+    MONITORING_READ = "monitoring_read"
+    DATABASE_BACKUP = "database_backup"
+    STAGING_CONTROL = "staging_control"
+    DEPLOYMENT_CONTROL = "deployment_control"
+    PRODUCTION_WRITE = "production_write"
+
+
+class CredentialStatus(StrEnum):
+    ACTIVE = "active"
+    EXPIRED = "expired"
+    REVOKED = "revoked"
+    INVALID = "invalid"
+
+
+_SAFE_DNS_LABEL = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+_SAFE_USER = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+_SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_SAFE_OPERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_SAFE_METADATA_KEY = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
+_FINGERPRINT = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
+_FORBIDDEN_INPUT_CHARS = frozenset("\x00\n\r;|&$><*?{}[]()!") | {chr(96)}
+_SECRET_ASSIGNMENT = re.compile(
+    r"(?:password|passphrase|secret|token|api[_-]?key|authorization|"
+    r"private[_-]?key|credential)\s*=",
+    re.IGNORECASE,
+)
+_SECRET_PATH_PARTS = frozenset(
+    {
+        ".env",
+        ".env.local",
+        ".env.production",
+        "id_rsa",
+        "id_ed25519",
+        "authorized_keys",
+        "shadow",
+        "passwd",
+        "credentials",
+        "credential",
+        "secrets",
+        "private",
+    }
+)
+_ALLOWED_KEY_TYPES = frozenset(
+    {
+        "ssh-ed25519",
+        "ssh-rsa",
+        "ecdsa-sha2-nistp256",
+        "ecdsa-sha2-nistp384",
+        "ecdsa-sha2-nistp521",
+    }
+)
+SYSTEM_METADATA_PATHS: Final = frozenset({"/etc/os-release", "/etc/hostname"})
+READ_ONLY_CAPABILITY_CLASSES: Final = frozenset(
+    {
+        CapabilityClass.INVENTORY_READ,
+        CapabilityClass.FILESYSTEM_READ,
+        CapabilityClass.MONITORING_READ,
+    }
+)
+DENIED_CAPABILITY_CLASSES: Final = frozenset(
+    {
+        CapabilityClass.DATABASE_BACKUP,
+        CapabilityClass.STAGING_CONTROL,
+        CapabilityClass.DEPLOYMENT_CONTROL,
+        CapabilityClass.PRODUCTION_WRITE,
+    }
+)
+
+
+def validate_host(value: object, *, field_name: str = "host") -> str:
+    if not isinstance(value, str):
+        raise TargetValidationError(f"{field_name} is invalid")
+    candidate = value.strip().casefold()
+    if (
+        not candidate
+        or len(candidate) > 253
+        or any(
+            character in _FORBIDDEN_INPUT_CHARS or character.isspace() for character in candidate
+        )
+        or "/" in candidate
+        or "@" in candidate
+        or "://" in candidate
+        or ".." in candidate
+    ):
+        raise TargetValidationError(f"{field_name} is invalid")
+    try:
+        ipaddress.ip_address(candidate)
+        return candidate
+    except ValueError:
+        pass
+    labels = candidate.rstrip(".").split(".")
+    if not labels or any(_SAFE_DNS_LABEL.fullmatch(label) is None for label in labels):
+        raise TargetValidationError(f"{field_name} is invalid")
+    return ".".join(labels)
+
+
+def validate_hostname(value: object, *, field_name: str = "expected_hostname") -> str:
+    if not isinstance(value, str):
+        raise TargetValidationError(f"{field_name} is invalid")
+    candidate = value.strip().casefold().rstrip(".")
+    if not candidate or len(candidate) > 253:
+        raise TargetValidationError(f"{field_name} is invalid")
+    labels = candidate.split(".")
+    if any(_SAFE_DNS_LABEL.fullmatch(label) is None for label in labels):
+        raise TargetValidationError(f"{field_name} is invalid")
+    return ".".join(labels)
+
+
+def validate_port(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65_535:
+        raise TargetValidationError("ssh_port is invalid")
+    return value
+
+
+def validate_fingerprint(value: object) -> str:
+    if not isinstance(value, str):
+        raise HostKeyVerificationError("host key fingerprint is required")
+    candidate = value.strip()
+    if _FINGERPRINT.fullmatch(candidate) is None:
+        raise HostKeyVerificationError("host key fingerprint is malformed")
+    encoded = candidate.split(":", 1)[1]
+    try:
+        decoded = base64.b64decode(encoded + "=", validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HostKeyVerificationError("host key fingerprint is malformed") from exc
+    if len(decoded) != hashlib.sha256().digest_size:
+        raise HostKeyVerificationError("host key fingerprint is malformed")
+    return candidate
+
+
+def validate_credential_reference(value: object) -> str:
+    if not isinstance(value, str):
+        raise CredentialBoundaryError("credential reference is invalid")
+    candidate = value.strip()
+    if (
+        len(candidate) > 240
+        or ".." in candidate
+        or contains_credential_like(candidate)
+        or not re.fullmatch(
+            r"(?:vault|secret|appcare-secret)://[a-z0-9][a-z0-9._/-]{2,240}",
+            candidate,
+            re.I,
+        )
+    ):
+        raise CredentialBoundaryError("credential reference is invalid")
+    return candidate
+
+
+def validate_remote_user(value: object) -> str:
+    if not isinstance(value, str):
+        raise TargetValidationError("remote_user is invalid")
+    candidate = value.strip().casefold()
+    if candidate == "root" or _SAFE_USER.fullmatch(candidate) is None:
+        raise TargetValidationError("remote_user must be a non-root account")
+    return candidate
+
+
+def validate_identifier(value: object, *, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise TargetValidationError(f"{field_name} is invalid")
+    candidate = value.strip()
+    if (
+        _SAFE_IDENTIFIER.fullmatch(candidate) is None
+        or ".." in candidate
+        or any(
+            character in _FORBIDDEN_INPUT_CHARS or character.isspace() for character in candidate
+        )
+    ):
+        raise TargetValidationError(f"{field_name} is invalid")
+    return candidate
+
+
+def validate_operation_id(value: object) -> str:
+    if not isinstance(value, str) or _SAFE_OPERATION_ID.fullmatch(value.strip()) is None:
+        raise OperationRejected("operation_id is invalid")
+    return value.strip()
+
+
+def validate_absolute_root(value: object) -> str:
+    if not isinstance(value, str):
+        raise TargetValidationError("approved root is invalid")
+    candidate = value.strip()
+    if (
+        not candidate.startswith("/")
+        or candidate != str(PurePosixPath(candidate))
+        or candidate == "/"
+        or any(
+            character in _FORBIDDEN_INPUT_CHARS or character.isspace() or ord(character) < 32
+            for character in candidate
+        )
+        or "," in candidate
+    ):
+        raise TargetValidationError("approved root is invalid")
+    parts = PurePosixPath(candidate).parts
+    if any(part in {"", ".", ".."} for part in parts):
+        raise TargetValidationError("approved root is invalid")
+    if candidate in {"/root", "/home", "/var", "/etc", "/proc", "/sys"}:
+        raise TargetValidationError("approved root is too broad")
+    return candidate
+
+
+def validate_relative_path(value: object) -> str:
+    if not isinstance(value, str):
+        raise OperationRejected("relative path is invalid")
+    candidate = value.strip()
+    if (
+        not candidate
+        or candidate.startswith("/")
+        or "\\" in candidate
+        or "%" in candidate
+        or any(
+            character in _FORBIDDEN_INPUT_CHARS or character.isspace() or ord(character) < 32
+            for character in candidate
+        )
+    ):
+        raise OperationRejected("relative path is invalid")
+    parts = candidate.split("/")
+    if any(not part or part in {".", ".."} for part in parts):
+        raise OperationRejected("relative path is invalid")
+    if any(part.casefold() in _SECRET_PATH_PARTS for part in parts):
+        raise OperationRejected("secret-bearing path is denied")
+    return candidate
+
+
+def join_approved_path(root: str, relative_path: str) -> str:
+    approved_root = validate_absolute_root(root)
+    relative = validate_relative_path(relative_path)
+    joined = str(PurePosixPath(approved_root, relative))
+    if joined != approved_root and not joined.startswith(f"{approved_root}/"):
+        raise OperationRejected("path escapes approved root")
+    return joined
+
+
+def validate_system_metadata_path(value: object) -> str:
+    if not isinstance(value, str) or value.strip() not in SYSTEM_METADATA_PATHS:
+        raise OperationRejected("system metadata path is not approved")
+    return value.strip()
+
+
+def validate_string(value: object, *, field_name: str, maximum: int = 512) -> str:
+    if not isinstance(value, str):
+        raise LinuxSSHError(f"{field_name} is malformed")
+    candidate = value.strip()
+    if (
+        not candidate
+        or len(candidate) > maximum
+        or any(ord(character) < 32 for character in candidate)
+        or contains_credential_like(candidate)
+        or _SECRET_ASSIGNMENT.search(candidate) is not None
+    ):
+        raise LinuxSSHError(f"{field_name} is unsafe")
+    return candidate
+
+
+def _identifier_tuple(values: Sequence[str], *, field_name: str) -> tuple[str, ...]:
+    if not isinstance(values, (tuple, list)):
+        raise TargetValidationError(f"{field_name} is invalid")
+    normalized = tuple(validate_identifier(value, field_name=field_name) for value in values)
+    if len(normalized) != len(set(normalized)):
+        raise TargetValidationError(f"{field_name} contains duplicates")
+    return tuple(sorted(normalized))
+
+
+@dataclass(frozen=True, slots=True)
+class LinuxTarget:
+    tenant_id: str
+    application_id: str
+    environment: str
+    host: str
+    expected_hostname: str
+    ssh_port: int
+    expected_host_key_fingerprint: str
+    credential_reference: str
+    remote_user: str
+    approved_application_roots: tuple[str, ...]
+    approved_service_names: tuple[str, ...]
+    approved_database_identifiers: tuple[str, ...]
+    target_reference: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "tenant_id", validate_scope_segment(self.tenant_id, field_name="tenant_id")
+        )
+        object.__setattr__(
+            self,
+            "application_id",
+            validate_scope_segment(self.application_id, field_name="application_id"),
+        )
+        environment = validate_scope_segment(self.environment, field_name="environment").casefold()
+        if environment not in {"development", "staging", "production"}:
+            raise TargetValidationError("environment is invalid")
+        object.__setattr__(self, "environment", environment)
+        object.__setattr__(self, "host", validate_host(self.host))
+        object.__setattr__(self, "expected_hostname", validate_hostname(self.expected_hostname))
+        object.__setattr__(self, "ssh_port", validate_port(self.ssh_port))
+        object.__setattr__(
+            self,
+            "expected_host_key_fingerprint",
+            validate_fingerprint(self.expected_host_key_fingerprint),
+        )
+        object.__setattr__(
+            self,
+            "credential_reference",
+            validate_credential_reference(self.credential_reference),
+        )
+        object.__setattr__(self, "remote_user", validate_remote_user(self.remote_user))
+        roots = tuple(validate_absolute_root(item) for item in self.approved_application_roots)
+        if not roots or len(roots) != len(set(roots)):
+            raise TargetValidationError("at least one unique approved root is required")
+        for index, root in enumerate(roots):
+            if any(
+                other != root and (root.startswith(f"{other}/") or other.startswith(f"{root}/"))
+                for other in roots[:index]
+            ):
+                raise TargetValidationError("approved roots overlap")
+        object.__setattr__(self, "approved_application_roots", tuple(sorted(roots)))
+        object.__setattr__(
+            self,
+            "approved_service_names",
+            _identifier_tuple(
+                self.approved_service_names,
+                field_name="approved_service_name",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "approved_database_identifiers",
+            _identifier_tuple(
+                self.approved_database_identifiers,
+                field_name="approved_database_identifier",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "target_reference",
+            validate_scope_segment(self.target_reference, field_name="target_reference"),
+        )
+        if not _is_ip(self.host) and self.host != self.expected_hostname:
+            raise TargetValidationError("DNS host and expected hostname do not match")
+
+
+def _is_ip(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return True
+
+
+@dataclass(frozen=True, slots=True)
+class BoundedLimits:
+    connection_timeout_seconds: float = 8.0
+    command_timeout_seconds: float = 12.0
+    max_stdout_bytes: int = 65_536
+    max_stderr_bytes: int = 8_192
+    max_records: int = 128
+    max_file_bytes: int = 32_768
+    max_text_length: int = 2_048
+
+    def __post_init__(self) -> None:
+        if not 0.5 <= self.connection_timeout_seconds <= 60:
+            raise OperationRejected("connection timeout is outside bounds")
+        if not 0.5 <= self.command_timeout_seconds <= 120:
+            raise OperationRejected("command timeout is outside bounds")
+        for name in (
+            "max_stdout_bytes",
+            "max_stderr_bytes",
+            "max_records",
+            "max_file_bytes",
+            "max_text_length",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise OperationRejected(f"{name} is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedCredential:
+    """A private runtime handle; it is never included in result/evidence models."""
+
+    credential_reference: str
+    identity_file: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "credential_reference", validate_credential_reference(self.credential_reference)
+        )
+        if (
+            not isinstance(self.identity_file, str)
+            or not self.identity_file.startswith("/")
+            or ".." in PurePosixPath(self.identity_file).parts
+            or any(
+                character in _FORBIDDEN_INPUT_CHARS or character.isspace()
+                for character in self.identity_file
+            )
+        ):
+            raise CredentialBoundaryError("credential handle is invalid")
+
+
+class CredentialProvider(Protocol):
+    def resolve(self, target: LinuxTarget) -> ResolvedCredential:
+        """Resolve an opaque target reference at the private transport boundary."""
+
+
+@dataclass(frozen=True, slots=True)
+class LinuxCredentialMetadata:
+    credential_reference: str
+    tenant_id: str
+    application_id: str
+    version: int = 1
+    issued_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    expires_at: datetime | None = None
+    revoked_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "credential_reference",
+            validate_credential_reference(self.credential_reference),
+        )
+        object.__setattr__(
+            self, "tenant_id", validate_scope_segment(self.tenant_id, field_name="tenant_id")
+        )
+        object.__setattr__(
+            self,
+            "application_id",
+            validate_scope_segment(self.application_id, field_name="application_id"),
+        )
+        if isinstance(self.version, bool) or not isinstance(self.version, int) or self.version < 1:
+            raise CredentialBoundaryError("credential version is invalid")
+        if self.issued_at.tzinfo is None or (
+            self.expires_at is not None and self.expires_at.tzinfo is None
+        ):
+            raise CredentialBoundaryError("credential timestamps must be timezone-aware")
+        if self.expires_at is not None and self.expires_at <= self.issued_at:
+            raise CredentialBoundaryError("credential expiry is invalid")
+
+    def status(self, now: datetime | None = None) -> CredentialStatus:
+        current = now or datetime.now(UTC)
+        if self.revoked_at is not None:
+            return CredentialStatus.REVOKED
+        if self.expires_at is not None and self.expires_at <= current:
+            return CredentialStatus.EXPIRED
+        return CredentialStatus.ACTIVE
+
+
+class LinuxCredentialRegistry:
+    """Metadata-only lifecycle registry; raw credential material is impossible."""
+
+    def __init__(self) -> None:
+        self._records: dict[tuple[str, str, str], LinuxCredentialMetadata] = {}
+
+    def register(self, metadata: LinuxCredentialMetadata) -> LinuxCredentialMetadata:
+        key = (metadata.tenant_id, metadata.application_id, metadata.credential_reference)
+        if key in self._records:
+            raise CredentialBoundaryError("credential reference already exists")
+        self._records[key] = metadata
+        return metadata
+
+    def get(
+        self, *, tenant_id: str, application_id: str, credential_reference: str
+    ) -> LinuxCredentialMetadata:
+        try:
+            return self._records[
+                (
+                    validate_scope_segment(tenant_id, field_name="tenant_id"),
+                    validate_scope_segment(application_id, field_name="application_id"),
+                    validate_credential_reference(credential_reference),
+                )
+            ]
+        except KeyError as exc:
+            raise CredentialBoundaryError("credential reference is unavailable") from exc
+
+    def revoke(
+        self,
+        *,
+        tenant_id: str,
+        application_id: str,
+        credential_reference: str,
+        now: datetime | None = None,
+    ) -> LinuxCredentialMetadata:
+        current = self.get(
+            tenant_id=tenant_id,
+            application_id=application_id,
+            credential_reference=credential_reference,
+        )
+        revoked = LinuxCredentialMetadata(
+            credential_reference=current.credential_reference,
+            tenant_id=current.tenant_id,
+            application_id=current.application_id,
+            version=current.version,
+            issued_at=current.issued_at,
+            expires_at=current.expires_at,
+            revoked_at=now or datetime.now(UTC),
+        )
+        self._records[(current.tenant_id, current.application_id, current.credential_reference)] = (
+            revoked
+        )
+        return revoked
+
+    def rotate(
+        self,
+        *,
+        tenant_id: str,
+        application_id: str,
+        old_credential_reference: str,
+        replacement: LinuxCredentialMetadata,
+        now: datetime | None = None,
+    ) -> LinuxCredentialMetadata:
+        old = self.get(
+            tenant_id=tenant_id,
+            application_id=application_id,
+            credential_reference=old_credential_reference,
+        )
+        if (
+            replacement.tenant_id != old.tenant_id
+            or replacement.application_id != old.application_id
+            or replacement.version <= old.version
+            or replacement.credential_reference == old.credential_reference
+        ):
+            raise CredentialBoundaryError("credential rotation crosses scope or version")
+        self.revoke(
+            tenant_id=tenant_id,
+            application_id=application_id,
+            credential_reference=old_credential_reference,
+            now=now,
+        )
+        return self.register(replacement)
+
+
+class OperationLedger(Protocol):
+    def claim(self, *, target_reference: str, operation_id: str) -> bool:
+        """Atomically claim an operation identity once."""
+
+
+class InMemoryOperationLedger:
+    def __init__(self) -> None:
+        self._claimed: set[tuple[str, str]] = set()
+
+    def claim(self, *, target_reference: str, operation_id: str) -> bool:
+        key = (target_reference, validate_operation_id(operation_id))
+        if key in self._claimed:
+            return False
+        self._claimed.add(key)
+        return True
+
+
+@dataclass(frozen=True, slots=True)
+class ConnectionProbe:
+    operation_id: str
+    kind: OperationKind = field(init=False, default=OperationKind.CONNECTION_PROBE)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "operation_id", validate_operation_id(self.operation_id))
+
+
+@dataclass(frozen=True, slots=True)
+class HostInventory:
+    operation_id: str
+    kind: OperationKind = field(init=False, default=OperationKind.HOST_INVENTORY)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "operation_id", validate_operation_id(self.operation_id))
+
+
+@dataclass(frozen=True, slots=True)
+class FilesystemMetadataRead:
+    operation_id: str
+    approved_root: str
+    kind: OperationKind = field(init=False, default=OperationKind.FILESYSTEM_METADATA_READ)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "operation_id", validate_operation_id(self.operation_id))
+        object.__setattr__(self, "approved_root", validate_absolute_root(self.approved_root))
+
+
+@dataclass(frozen=True, slots=True)
+class SafeFileRead:
+    operation_id: str
+    approved_root: str
+    relative_path: str
+    kind: OperationKind = field(init=False, default=OperationKind.SAFE_FILE_READ)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "operation_id", validate_operation_id(self.operation_id))
+        object.__setattr__(self, "approved_root", validate_absolute_root(self.approved_root))
+        object.__setattr__(self, "relative_path", validate_relative_path(self.relative_path))
+
+
+@dataclass(frozen=True, slots=True)
+class ServiceMetadataRead:
+    operation_id: str
+    service_name: str
+    kind: OperationKind = field(init=False, default=OperationKind.SERVICE_METADATA_READ)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "operation_id", validate_operation_id(self.operation_id))
+        object.__setattr__(
+            self, "service_name", validate_identifier(self.service_name, field_name="service_name")
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class WebServerMetadataRead:
+    operation_id: str
+    kind: OperationKind = field(init=False, default=OperationKind.WEB_SERVER_METADATA_READ)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "operation_id", validate_operation_id(self.operation_id))
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeMetadataRead:
+    operation_id: str
+    kind: OperationKind = field(init=False, default=OperationKind.RUNTIME_METADATA_READ)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "operation_id", validate_operation_id(self.operation_id))
+
+
+@dataclass(frozen=True, slots=True)
+class NetworkBindingRead:
+    operation_id: str
+    kind: OperationKind = field(init=False, default=OperationKind.NETWORK_BINDING_READ)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "operation_id", validate_operation_id(self.operation_id))
+
+
+@dataclass(frozen=True, slots=True)
+class StorageMetadataRead:
+    operation_id: str
+    approved_root: str
+    kind: OperationKind = field(init=False, default=OperationKind.STORAGE_METADATA_READ)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "operation_id", validate_operation_id(self.operation_id))
+        object.__setattr__(self, "approved_root", validate_absolute_root(self.approved_root))
+
+
+@dataclass(frozen=True, slots=True)
+class ApplicationRootVerification:
+    operation_id: str
+    approved_root: str
+    kind: OperationKind = field(init=False, default=OperationKind.APPLICATION_ROOT_VERIFICATION)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "operation_id", validate_operation_id(self.operation_id))
+        object.__setattr__(self, "approved_root", validate_absolute_root(self.approved_root))
+
+
+type LinuxOperation = (
+    ConnectionProbe
+    | HostInventory
+    | FilesystemMetadataRead
+    | SafeFileRead
+    | ServiceMetadataRead
+    | WebServerMetadataRead
+    | RuntimeMetadataRead
+    | NetworkBindingRead
+    | StorageMetadataRead
+    | ApplicationRootVerification
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessResult:
+    returncode: int | None
+    stdout: bytes
+    stderr: bytes
+    timed_out: bool = False
+    output_limited: bool = False
+    disconnected: bool = False
+
+
+class ProcessRunner(Protocol):
+    def run(
+        self,
+        argv: tuple[str, ...],
+        *,
+        timeout_seconds: float,
+        stdout_limit: int,
+        stderr_limit: int,
+    ) -> ProcessResult:
+        """Run a coordinator-built executable argv without a shell."""
+
+
+class HostKeyScanner(Protocol):
+    def scan(self, target: LinuxTarget, *, limits: BoundedLimits) -> tuple[str, ...]:
+        """Return bounded public-key lines for the target address."""
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedHostKey:
+    key_type: str
+    key_data: str
+    fingerprint: str
+
+
+def parse_host_key_line(line: str) -> ParsedHostKey:
+    if not isinstance(line, str) or any(ord(character) < 32 for character in line):
+        raise HostKeyVerificationError("host key observation is malformed")
+    parts = line.strip().split()
+    if len(parts) < 3 or parts[1] not in _ALLOWED_KEY_TYPES:
+        raise HostKeyVerificationError("host key observation is malformed")
+    key_data = parts[2]
+    try:
+        key_blob = base64.b64decode(key_data, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HostKeyVerificationError("host key observation is malformed") from exc
+    if not key_blob:
+        raise HostKeyVerificationError("host key observation is malformed")
+    fingerprint = "SHA256:" + base64.b64encode(hashlib.sha256(key_blob).digest()).decode(
+        "ascii"
+    ).rstrip("=")
+    return ParsedHostKey(parts[1], key_data, fingerprint)
+
+
+@dataclass(frozen=True, slots=True)
+class InventoryRecord:
+    tenant_id: str
+    application_id: str
+    target_reference: str
+    record_type: str
+    identity: str
+    metadata: Mapping[str, object]
+    source_reference: str
+    evidence_class: EvidenceClass
+    observed_at: datetime
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "tenant_id", validate_scope_segment(self.tenant_id, field_name="tenant_id")
+        )
+        object.__setattr__(
+            self,
+            "application_id",
+            validate_scope_segment(self.application_id, field_name="application_id"),
+        )
+        object.__setattr__(
+            self,
+            "target_reference",
+            validate_scope_segment(self.target_reference, field_name="target_reference"),
+        )
+        object.__setattr__(
+            self, "record_type", validate_scope_segment(self.record_type, field_name="record_type")
+        )
+        object.__setattr__(
+            self, "identity", validate_string(self.identity, field_name="identity", maximum=256)
+        )
+        object.__setattr__(
+            self,
+            "source_reference",
+            validate_evidence_reference(self.source_reference, field_name="source_reference"),
+        )
+        if not isinstance(self.evidence_class, EvidenceClass):
+            try:
+                object.__setattr__(
+                    self,
+                    "evidence_class",
+                    EvidenceClass(str(self.evidence_class).strip().casefold()),
+                )
+            except ValueError as exc:
+                raise LinuxSSHError("evidence class is invalid") from exc
+        if self.observed_at.tzinfo is None or self.observed_at.utcoffset() is None:
+            raise LinuxSSHError("observation timestamp must be timezone-aware")
+        normalized: dict[str, object] = {}
+        if not isinstance(self.metadata, Mapping) or len(self.metadata) > 32:
+            raise LinuxSSHError("inventory metadata is malformed")
+        for key, value in self.metadata.items():
+            if not isinstance(key, str) or _SAFE_METADATA_KEY.fullmatch(key) is None:
+                raise LinuxSSHError("inventory metadata key is unsafe")
+            if is_secret_key(key) or contains_credential_like(value):
+                raise LinuxSSHError("inventory metadata contains credential-like data")
+            if value is not None and not isinstance(value, (str, int, float, bool)):
+                raise LinuxSSHError("inventory metadata value is unsupported")
+            if isinstance(value, str):
+                normalized[key] = validate_string(value, field_name=key, maximum=512)
+            else:
+                normalized[key] = value
+        object.__setattr__(self, "metadata", dict(sorted(normalized.items())))
+
+    def canonical_payload(self) -> dict[str, object]:
+        return {
+            "tenant_id": self.tenant_id,
+            "application_id": self.application_id,
+            "target_reference": self.target_reference,
+            "record_type": self.record_type,
+            "identity": self.identity,
+            "metadata": dict(self.metadata),
+            "source_reference": self.source_reference,
+            "evidence_class": self.evidence_class.value,
+            "observed_at": self.observed_at.astimezone(UTC).isoformat(),
+        }
+
+    @property
+    def evidence_digest(self) -> str:
+        encoded = json.dumps(
+            self.canonical_payload(), sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        )
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteExecutionResult:
+    operation_id: str
+    operation: OperationKind
+    tenant_id: str
+    application_id: str
+    target_reference: str
+    status: OperationStatus
+    reason_code: str
+    records: tuple[InventoryRecord, ...] = ()
+    stdout_bytes: int = 0
+    stderr_bytes: int = 0
+    evidence_class: EvidenceClass = EvidenceClass.FIXTURE
+    observed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "operation_id", validate_operation_id(self.operation_id))
+        object.__setattr__(
+            self, "tenant_id", validate_scope_segment(self.tenant_id, field_name="tenant_id")
+        )
+        object.__setattr__(
+            self,
+            "application_id",
+            validate_scope_segment(self.application_id, field_name="application_id"),
+        )
+        object.__setattr__(
+            self,
+            "target_reference",
+            validate_scope_segment(self.target_reference, field_name="target_reference"),
+        )
+        if not isinstance(self.operation, OperationKind):
+            object.__setattr__(
+                self,
+                "operation",
+                OperationKind(str(self.operation).strip().casefold()),
+            )
+        if not isinstance(self.status, OperationStatus):
+            object.__setattr__(
+                self,
+                "status",
+                OperationStatus(str(self.status).strip().casefold()),
+            )
+        object.__setattr__(
+            self, "reason_code", validate_scope_segment(self.reason_code, field_name="reason_code")
+        )
+        if not isinstance(self.evidence_class, EvidenceClass):
+            object.__setattr__(
+                self,
+                "evidence_class",
+                EvidenceClass(str(self.evidence_class).strip().casefold()),
+            )
+        if self.stdout_bytes < 0 or self.stderr_bytes < 0:
+            raise LinuxSSHError("output byte counts are invalid")
+        if len(self.records) > 128:
+            raise LinuxSSHError("too many inventory records")
+        if self.observed_at.tzinfo is None or self.observed_at.utcoffset() is None:
+            raise LinuxSSHError("observation timestamp must be timezone-aware")
+
+    @property
+    def passed(self) -> bool:
+        return self.status == OperationStatus.PASSED
+
+    @property
+    def evidence_digest(self) -> str:
+        payload = {
+            "operation_id": self.operation_id,
+            "operation": self.operation.value,
+            "tenant_id": self.tenant_id,
+            "application_id": self.application_id,
+            "target_reference": self.target_reference,
+            "status": self.status.value,
+            "reason_code": self.reason_code,
+            "records": [record.canonical_payload() for record in self.records],
+            "stdout_bytes": self.stdout_bytes,
+            "stderr_bytes": self.stderr_bytes,
+            "evidence_class": self.evidence_class.value,
+            "observed_at": self.observed_at.astimezone(UTC).isoformat(),
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class LinuxInventorySnapshot:
+    target: LinuxTarget
+    connection: RemoteExecutionResult
+    inventory: RemoteExecutionResult
+    records: tuple[InventoryRecord, ...]
+
+    def __post_init__(self) -> None:
+        if (
+            self.connection.tenant_id != self.target.tenant_id
+            or self.inventory.tenant_id != self.target.tenant_id
+            or self.connection.application_id != self.target.application_id
+            or self.inventory.application_id != self.target.application_id
+            or self.connection.target_reference != self.target.target_reference
+            or self.inventory.target_reference != self.target.target_reference
+        ):
+            raise ReadinessValidationError("Linux inventory crosses target scope")
+        if len(self.records) > 128:
+            raise LinuxSSHError("inventory record limit exceeded")
+
+    @property
+    def complete(self) -> bool:
+        return self.connection.passed and self.inventory.passed
+
+    @property
+    def evidence_class(self) -> EvidenceClass:
+        return self.inventory.evidence_class
+
+    def capability_evidence(self, *, stack_id: str) -> tuple[CapabilityEvidence, ...]:
+        stack = validate_scope_segment(stack_id, field_name="stack_id")
+        evidence: list[CapabilityEvidence] = []
+        for capability, result in (
+            ("connect", self.connection),
+            ("inventory", self.inventory),
+        ):
+            status = CapabilityStatus.SUPPORTED if result.passed else CapabilityStatus.UNSUPPORTED
+            evidence.append(
+                CapabilityEvidence(
+                    tenant_id=self.target.tenant_id,
+                    application_id=self.target.application_id,
+                    stack_id=stack,
+                    capability=capability,
+                    status=status,
+                    evidence_class=result.evidence_class,
+                    evidence_ref=(
+                        f"linux-ssh/{self.target.target_reference}/{result.operation_id}"
+                    ),
+                    observed_at=result.observed_at,
+                )
+            )
+        return tuple(evidence)
+
+
+__all__ = [
+    "ApplicationRootVerification",
+    "BoundedLimits",
+    "CapabilityClass",
+    "ConnectionProbe",
+    "CredentialBoundaryError",
+    "CredentialProvider",
+    "CredentialStatus",
+    "DENIED_CAPABILITY_CLASSES",
+    "EvidenceClass",
+    "FilesystemMetadataRead",
+    "HostInventory",
+    "HostKeyScanner",
+    "HostKeyVerificationError",
+    "InMemoryOperationLedger",
+    "InventoryRecord",
+    "LinuxCredentialMetadata",
+    "LinuxCredentialRegistry",
+    "LinuxInventorySnapshot",
+    "LinuxOperation",
+    "LinuxSSHError",
+    "LinuxTarget",
+    "NetworkBindingRead",
+    "OperationKind",
+    "OperationLedger",
+    "OperationRejected",
+    "OperationStatus",
+    "ParsedHostKey",
+    "ProcessResult",
+    "ProcessRunner",
+    "READ_ONLY_CAPABILITY_CLASSES",
+    "RemoteExecutionResult",
+    "ResolvedCredential",
+    "RuntimeMetadataRead",
+    "SafeFileRead",
+    "ServiceMetadataRead",
+    "StorageMetadataRead",
+    "SYSTEM_METADATA_PATHS",
+    "TargetValidationError",
+    "WebServerMetadataRead",
+    "join_approved_path",
+    "parse_host_key_line",
+    "validate_absolute_root",
+    "validate_credential_reference",
+    "validate_fingerprint",
+    "validate_host",
+    "validate_hostname",
+    "validate_identifier",
+    "validate_operation_id",
+    "validate_port",
+    "validate_relative_path",
+    "validate_remote_user",
+    "validate_system_metadata_path",
+]
+
