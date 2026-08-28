@@ -82,6 +82,15 @@ _EVIDENCE_RANK: dict[EvidenceClass, int] = {
 # output string is not an approval object and is never consulted by evaluators.
 LUNA_COORDINATOR_REF = "gpt-5.6-luna-max"
 REQUIRED_SECURITY_GATE_IDS = tuple(f"s{number:02d}" for number in range(1, 31))
+_REQUIRED_SECURITY_RECEIPT_FIELDS = (
+    "dependency_audit_ref",
+    "secret_scan_ref",
+    "graphify_ref",
+    "saveruflo_ref",
+    "exact_head_ci_ref",
+    "real_target_security_ref",
+    "known_limitations_ref",
+)
 
 
 class ReadinessValidationError(ValueError):
@@ -864,6 +873,8 @@ class SecurityGateDecision:
             not self.missing_gate_ids
             and not self.failed_gate_ids
             and self.security_findings_open == 0
+            and bool(self.codex_security_refs)
+            and all(getattr(self, field) is not None for field in _REQUIRED_SECURITY_RECEIPT_FIELDS)
             and self.coordinator_decision == CoordinatorDecision.APPROVE
         )
 
@@ -940,9 +951,12 @@ class LayeredReadinessDecision:
 
     @property
     def authoritative(self) -> bool:
+        required_levels = tuple(ReadinessTier)
         return (
             self.coordinator == LUNA_COORDINATOR_REF
             and self.coordinator_decision == CoordinatorDecision.APPROVE
+            and len(self.levels) == len(required_levels)
+            and {item.level for item in self.levels} == set(required_levels)
             and all(item.status == ReadinessStatus.READY for item in self.levels)
             and all(
                 item.coordinator_decision == CoordinatorDecision.APPROVE for item in self.levels

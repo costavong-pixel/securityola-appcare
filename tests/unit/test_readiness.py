@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 import pytest
 
 from appcare.readiness import (
+    LUNA_COORDINATOR_REF,
     REQUIRED_SECURITY_GATE_IDS,
     CapabilityEvidence,
     CapabilityStatus,
@@ -461,6 +462,23 @@ def test_security_gate_requires_all_thirty_gates_and_zero_findings() -> None:
     assert incomplete.missing_gate_ids == REQUIRED_SECURITY_GATE_IDS[-1:]
     findings = replace(gate, security_findings_open=1)
     assert findings.passed is False
+
+
+def test_security_gate_requires_authoritative_receipt_references() -> None:
+    missing_receipt = replace(_security_gate(), exact_head_ci_ref=None)
+    assert missing_receipt.passed is False
+    missing_codex = replace(_security_gate(), codex_security_refs=())
+    assert missing_codex.passed is False
+
+
+def test_incomplete_layer_set_cannot_claim_authority() -> None:
+    decision = LayeredReadinessDecision(
+        levels=(),
+        evidence_digest=ARTIFACT,
+        coordinator=LUNA_COORDINATOR_REF,
+        coordinator_decision=CoordinatorDecision.APPROVE,
+    )
+    assert decision.authoritative is False
 
 
 def test_coordinator_identity_is_narrow_and_approval_digest_is_bound() -> None:
