@@ -1,98 +1,119 @@
-# SecurityOla AppCare Private Beta Engineering Loop
+# SecurityOla AppCare Engineering and Beta Readiness Loop
 
-Master queue: GitHub issue #12.
+## Mandatory interpretation
+
+The historical BETA-00 through BETA-10 program proved the AppCare **core platform**. It must not be interpreted as proof that AppCare can onboard or operate a real customer application.
+
+Authoritative current governance:
+
+- `.specify/memory/constitution.md`
+- `docs/governance/PRODUCT_READINESS_AND_GAP_REGISTER.md`
+- `docs/security/PRE_BETA_SECURITY_GATE.md`
+- `specs/013-product-readiness/`
+
+The previous broad `PRIVATE_BETA_READY=YES` interpretation is revoked.
+
+Current readiness at adoption:
+
+```text
+CORE_PLATFORM_READY=YES
+STACK_GENERIC_LINUX_READY=NO
+STACK_WORDPRESS_READY=NO
+STACK_WOOCOMMERCE_READY=NO
+STACK_GITHUB_VERCEL_SUPABASE_READY=NO
+CUSTOMER_ONBOARDING_READY=NO
+PILOT_READY=NO
+PAID_SERVICE_READY=NO
+LIVE_CUSTOMER_PRODUCTION_ENABLED=NO
+```
 
 ## Server/runtime isolation gate
 
 AppCare is developed and deployed independently from the SecurityOla WordPress plugin/backend.
 
-Before BETA-01 starts, Codex must verify and record that AppCare has its own server/runtime path, service user, secrets, database, workers, logs, provider credentials, backup namespace, and environment boundaries. No WordPress production resource may be reused or modified.
+AppCare must retain its own runtime/service identity, repository/deployment path, secrets, database, workers, logs, provider credentials, backup namespace, and environment boundaries. No WordPress production resource may be reused or modified.
 
-Inside AppCare keep `development → staging → production` isolated; development must not receive production credentials.
+Inside AppCare keep `development -> staging -> production` isolated; development must not receive production credentials.
 
-## Ordered beta gates
+## Historical core-platform beta
 
-- [ ] BETA-00 — bootstrap Codex, Saveruflo, Spec Kit, Graphify, audited skills, CI, and AppCare/WordPress runtime isolation
-- [x] BETA-01 — control plane, tenancy, audit trail
-- [x] BETA-02 — read-only GitHub/Vercel/Supabase connectors (merged through protected main at `4eae0682f6e421b65f7ff75c521b331ccd164de1`)
-- [x] BETA-03 — security scanning and normalized evidence-backed findings (merged through protected main at `22196c9bface2cfeff1b049bb9e9890520ce38c6`)
-- [x] BETA-04 — B2 immutable backup, Glacier archive, restore rehearsal (merged through protected main at `574b90932b794d548d9e12f64ef91f01b96b5130`)
-- [x] BETA-05 — LangGraph durable scan-to-recovery workflow (merged through protected main at `06e97122a6b3a3b373928924cb6331cc1b36af79`)
-- [ ] BETA-06 — isolated remediation, tests, PR, preview deployment (active on `codex/beta-06-remediation`)
-- [ ] BETA-07 — controlled production deploy, verification, automatic rollback
-- [ ] BETA-08 — monitoring, backup health, alerts, reports, service-cost tracking
-- [ ] BETA-09 — dashboard + SecurityOla beta website + Impeccable QA
-- [ ] BETA-10 — adversarial drills, full security review, release decision
+BETA-00 through BETA-10 established the control plane, tenant/audit boundaries, connector contracts, scanning foundation, backup/recovery domain, durable workflow, remediation, production control, monitoring/reporting, dashboard foundation, adversarial release evidence, filesystem backup boundary, and provider-neutral preproduction evidence.
+
+Those results remain valid core-platform evidence and must not be deleted or rewritten.
+
+Historical fixture/reference acceptance is not live customer acceptance.
+
+## Current mandatory customer-readiness sequence
+
+The new sequence is:
+
+1. `013-product-readiness`
+2. `014-generic-linux-ssh`
+3. `015-database-adapters`
+4. `016-live-scanning`
+5. `017-brownfield-normalization`
+6. `018-customer-staging-deploy`
+7. `019-live-monitoring-scheduler`
+8. `020-wordpress-profile`
+9. `021-woocommerce-profile`
+10. `022-live-initial-stack-connectors`
+11. `023-real-target-private-beta-gate`
+
+The complete A-Z gap register and implementation waves are mandatory in `docs/governance/PRODUCT_READINESS_AND_GAP_REGISTER.md`.
 
 ## Engineering loop
 
-For the current open beta issue:
+For every current issue/PR:
 
 1. `/saveruflo` read-only preflight.
 2. `/graphify . --update` and query affected architecture/blast radius.
-3. Use `/speckit` to specify/plan the bounded work when needed.
-4. Codex implements the smallest safe task.
-5. Run deterministic unit/integration/static tests.
-6. Run security and failure/pressure tests appropriate to the change.
-7. Run independent Codex final review through the current agent/app/cloud session or GitHub Codex review; Codex CLI is optional.
-8. Fix failures and repeat steps 4–7 until green.
-9. Require exact-head CI.
-10. Save the Saveruflo checkpoint/evidence.
-11. Update Graphify and re-check impact.
-12. Close the issue only when every acceptance criterion passes.
-13. Pick the next open beta issue and repeat.
+3. Run the relevant Spec Kit constitution/specify/clarify/plan/checklist/tasks/analyze/converge workflow.
+4. GPT-5.6 Luna Max coordinator scopes the smallest safe task.
+5. A bounded worker implements; worker cannot self-approve.
+6. Luna reads the actual diff and security-critical functions.
+7. Run deterministic unit/integration/static tests.
+8. Run failure/negative/security tests appropriate to the change.
+9. Run dependency and secret/public-safety gates.
+10. Run Codex Security diff scan; use verify-fix for repaired attack paths where applicable.
+11. Fix failures/findings and repeat until green.
+12. Require exact-head GitHub CI.
+13. Save the Saveruflo checkpoint/evidence.
+14. Update Graphify and re-check impact.
+15. Protected merge only after coordinator approval.
+16. Update the capability/readiness matrix after merge.
 
-## Third-party skill loop
-
-`discover → inspect → sandbox → pressure-test → patch/debug → retest → pin → use`
-
-If a skill cannot be made safe and maintainable, drop it and replace it.
-
-## Current BETA-06 state
-
-BETA-04 is accepted through protected main at
-`574b90932b794d548d9e12f64ef91f01b96b5130`. Its one bounded live rehearsal
-used synthetic AppCare data and recorded B2 immutable readback/restore evidence,
-AWS S3 Deep Archive metadata, measured B2 retrieval RTO, and
-`SECRETS_EXPOSED=NO`/`WORDPRESS=UNTOUCHED`.
-
-The isolated AppCare workspace is implementing BETA-06 from protected main at
-`06e97122a6b3a3b373928924cb6331cc1b36af79`. The remediation boundary adds
-tenant/job-scoped disposable workspaces, deterministic patch/evidence contracts,
-fail-closed regression/security gates, sanitized rollback references, an
-AppCare-only fixture preview, a denied-unapproved Vercel adapter, and an
-internal approval record. No production access, live provider call, merge
-authority, or WordPress resource is in scope.
-
-BETA-06 implementation is committed at
-`0847c13c7114141075aa210cbcfe5a63f221f2d6` on PR #21 (draft). Exact-head CI
-run `32104247854` passed, local Codex Security recorded zero reportable
-findings, and the Saveruflo checkpoint is recorded. Issue #7 remains open
-because live Vercel preview authorization and a bounded project/credential
-boundary are not available; the live adapter remains fail-closed.
+Before beta launch, also run the complete repository security review required by `docs/security/PRE_BETA_SECURITY_GATE.md` against the exact release candidate.
 
 ## Production rule
 
 No customer production write without:
 
-`evidence → valid backup → staging/isolation → tests → approval/policy gate → deploy → production verification → rollback ready`
+`evidence -> valid backup -> isolated restore/reproduction -> tests -> security validation -> authoritative preproduction evidence -> exact application-scoped approval -> deploy -> production verification -> rollback ready -> monitoring`
+
+Global `LIVE_CUSTOMER_PRODUCTION_ENABLED` remains `NO`.
 
 ## Stop conditions
 
-Do not stop for ordinary implementation decisions, bugs, failed tests, dependency problems, skill bugs, or design questions that can be resolved from the product requirements.
+Do not stop for ordinary implementation decisions, bugs, failed tests, dependency problems, skill bugs, missing Git, missing health endpoints, legacy filesystem layouts, or missing adapters that can be engineered safely.
 
-Stop only for a genuine external blocker such as unavailable owner-controlled credentials/account verification, required domain/DNS authorization, or an unsafe/ambiguous production authorization boundary.
+Stop for genuine owner-controlled or high-risk boundaries such as new customer/account authorization, DNS changes, payment/billing account actions, legal decisions, the first real customer production authorization, or irreversible/high-risk production data migration.
 
-## Beta done
+If a production/data boundary is genuinely ambiguous, stop and ask the owner for clarification.
 
-Private beta is complete only when BETA-10 passes and records:
+## Customer beta done
 
-- exact release commit
-- exact test/CI evidence
-- tenant-isolation result
-- AppCare/WordPress runtime-isolation evidence
-- backup + restore evidence
-- production-failure rollback evidence
-- supported-stack/known-limitations document
-- emergency-stop/revocation drill
-- measured per-app operating cost
+Customer private-beta readiness is not achieved merely because Spec 013–023 code exists.
+
+At minimum:
+
+- generic required stack capability matrix passes
+- mandatory pre-beta security gate passes against exact head
+- one real target completes connect/inventory/revision/backup/remote-readback/restore/scan/remediation/test/staging/preproduction
+- exact owner authorization is obtained for the first production mutation
+- controlled production deployment and verification pass
+- safe rollback proof passes
+- live monitoring/alerting/reporting run
+- restart durability passes
+- real operating cost is measured
+
+Only then may the corresponding layered readiness states advance.
