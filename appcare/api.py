@@ -13,7 +13,17 @@ from sqlalchemy.exc import IntegrityError
 from .config import Settings
 from .connectors import ConnectorRegistry
 from .db import Database
-from .routes import audit, auth, connectors, dashboard, health, jobs, operations, resources
+from .routes import (
+    audit,
+    auth,
+    connectors,
+    dashboard,
+    health,
+    jobs,
+    operations,
+    readiness,
+    resources,
+)
 
 
 def create_app(
@@ -61,6 +71,7 @@ def create_app(
     app.include_router(jobs.router)
     app.include_router(audit.router)
     app.include_router(dashboard.router)
+    app.include_router(readiness.router)
 
     @app.exception_handler(IntegrityError)
     async def persistence_constraint_error(_request: Request, _exc: IntegrityError) -> JSONResponse:

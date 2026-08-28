@@ -67,6 +67,11 @@ def install_audit_immutability(engine: Engine) -> None:
                 ("deployment_evidence", "deployment evidence"),
                 ("monitoring_events", "monitoring events"),
                 ("preproduction_evidence", "preproduction evidence"),
+                ("capability_evidence", "capability evidence"),
+                ("supportability_decisions", "supportability decisions"),
+                ("readiness_levels", "readiness levels"),
+                ("readiness_downgrades", "readiness downgrades"),
+                ("security_gate_decisions", "security gate decisions"),
             ):
                 connection.execute(
                     text(
@@ -123,6 +128,11 @@ def install_audit_immutability(engine: Engine) -> None:
                 ("deployment_evidence", "appcare_deployment_evidence_immutable"),
                 ("monitoring_events", "appcare_monitoring_events_immutable"),
                 ("preproduction_evidence", "appcare_preproduction_evidence_immutable"),
+                ("capability_evidence", "appcare_capability_evidence_immutable"),
+                ("supportability_decisions", "appcare_supportability_decisions_immutable"),
+                ("readiness_levels", "appcare_readiness_levels_immutable"),
+                ("readiness_downgrades", "appcare_readiness_downgrades_immutable"),
+                ("security_gate_decisions", "appcare_security_gate_decisions_immutable"),
             ):
                 connection.execute(text(f"DROP TRIGGER IF EXISTS {trigger} ON {table}"))
                 connection.execute(
