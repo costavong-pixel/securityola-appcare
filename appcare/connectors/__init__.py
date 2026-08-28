@@ -158,4 +158,3 @@ __all__ = [
     "provider_profile",
     "validate_scopes",
 ]
-

@@ -141,4 +141,3 @@ def test_limits_reject_unbounded_values() -> None:
         BoundedLimits(max_stdout_bytes=0)
     with pytest.raises(OperationRejected):
         BoundedLimits(command_timeout_seconds=121)
-

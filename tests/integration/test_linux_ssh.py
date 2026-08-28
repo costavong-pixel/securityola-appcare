@@ -346,4 +346,3 @@ def test_credential_registry_revoke_and_expiry_fail_closed() -> None:
         ).status(now)
         == CredentialStatus.EXPIRED
     )
-

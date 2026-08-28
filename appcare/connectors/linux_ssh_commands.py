@@ -257,4 +257,3 @@ class CommandRegistry:
 
 
 __all__ = ["CommandRegistry", "RemoteCommand"]
-

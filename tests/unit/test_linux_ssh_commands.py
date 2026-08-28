@@ -65,4 +65,3 @@ def test_command_contract_rejects_shell_interpretation() -> None:
             CapabilityClass.INVENTORY_READ,
             ("true", "&&", "uname"),
         )
-
