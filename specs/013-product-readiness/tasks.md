@@ -1,0 +1,30 @@
+# Tasks: 013 Product Readiness
+
+- [ ] T001 Amend constitution with product-completeness/readiness/security invariants.
+- [ ] T002 Make the A-Z gap register binding governance.
+- [ ] T003 Make the pre-beta security gate a binding release blocker.
+- [ ] T004 Add layered readiness data model.
+- [ ] T005 Add mandatory application capability registry/matrix.
+- [ ] T006 Add evidence-class model for fixture/reference/controlled-live-provider/real-target evidence.
+- [ ] T007 Implement deterministic supportability evaluator.
+- [ ] T008 Implement readiness evaluator with fail-closed mandatory evidence handling.
+- [ ] T009 Implement automatic readiness downgrade evidence.
+- [ ] T010 Enforce coordinator-only authoritative supportability/readiness decisions.
+- [ ] T011 Integrate pre-beta security gate status into customer/pilot readiness evaluation.
+- [ ] T012 Expose sanitized layered readiness/supportability to operator surfaces.
+- [ ] T013 Add fixture-only false-ready negative tests.
+- [ ] T014 Add missing-capability blocking tests.
+- [ ] T015 Add cross-tenant/cross-application evidence tests.
+- [ ] T016 Add stale revision/artifact evidence tests.
+- [ ] T017 Add worker-self-approval bypass tests.
+- [ ] T018 Add readiness-downgrade tests.
+- [ ] T019 Add missing/failed security-gate blocker tests.
+- [ ] T020 Run full deterministic/static/security suite.
+- [ ] T021 Run dependency and secret/public-safety scans.
+- [ ] T022 Run Codex Security diff scan and resolve all reportable findings.
+- [ ] T023 Run Graphify final impact review.
+- [ ] T024 Record Saveruflo sanitized checkpoint.
+- [ ] T025 Require exact-head GitHub CI.
+- [ ] T026 Coordinator reviews actual diff and all security-critical functions.
+- [ ] T027 Protected merge only after all mandatory evidence passes.
+- [ ] T028 Update roadmap to begin Spec 014 only after Spec 013 protected merge.
