@@ -226,12 +226,8 @@ def test_keyscan_applies_record_limit_to_key_lines_after_comments() -> None:
             return ProcessResult(
                 0,
                 b"# banner\n"
-                b"192.0.2.10 ssh-ed25519 "
-                + KEY_DATA.encode()
-                + b"\n"
-                b"192.0.2.10 ssh-ed25519 "
-                + base64.b64encode(b"second-key")
-                + b"\n",
+                b"192.0.2.10 ssh-ed25519 " + KEY_DATA.encode() + b"\n"
+                b"192.0.2.10 ssh-ed25519 " + base64.b64encode(b"second-key") + b"\n",
                 b"",
             )
 
