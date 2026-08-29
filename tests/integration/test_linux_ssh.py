@@ -181,9 +181,10 @@ def test_keyscan_ignores_comment_banners_before_parsing() -> None:
             )
 
     scanner = OpenSshHostKeyScanner(BannerRunner())
-    assert scanner.scan(target(), limits=BoundedLimits(max_records=1)) == (
-        "192.0.2.10 ssh-ed25519 " + KEY_DATA,
-    )
+    assert scanner.scan(
+        target(),
+        limits=BoundedLimits(max_records=1),
+    ) == ("192.0.2.10 ssh-ed25519 " + KEY_DATA,)
 
 
 def test_keyscan_keeps_malformed_non_comment_lines_rejected(tmp_path: Path) -> None:
