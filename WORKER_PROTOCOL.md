@@ -1,121 +1,159 @@
-# Codex + OpenCode/DeepSeek Worker Protocol
+# AppCare Multi-Model Worker Protocol
+
+## Binding documents
+
+This protocol is subordinate to:
+
+- `APPCARE_PRODUCT_IMPLEMENTATION_BLUEPRINT.md`
+- `docs/governance/APPCARE_CURRENT_SCOPE.json`
+- `AGENTS.md`
+- `.specify/memory/constitution.md`
+- `docs/security/PRE_BETA_SECURITY_GATE.md`
 
 ## Roles
 
-### Codex
+### GPT-5.6 Luna Max
+
 Owns:
-- architecture and product decisions
-- security boundaries and threat-model decisions
-- task decomposition
-- acceptance criteria
-- dependency approval
-- third-party skill acceptance/rejection
-- production/deployment authorization logic
-- review of every DeepSeek diff
-- merge/release decisions
 
-### OpenCode + DeepSeek V4 Flash
-Used for cheap, bounded work such as:
-- scaffolding already specified by Codex
-- repetitive implementation
-- unit/integration test writing
-- documentation updates
-- mechanical refactors with existing tests
-- first-pass bug fixes after Codex identifies the root cause
-- local pressure-test harnesses that do not require production access
+- dependency and architecture plan;
+- task decomposition;
+- acceptance criteria;
+- scope and path allowlists;
+- integration decisions;
+- actual diff review;
+- trust-boundary function approval;
+- readiness and maturity decisions;
+- merge recommendation;
+- owner-facing report.
 
-DeepSeek does not make architecture, security, product, deployment, or release decisions.
+### GPT-5.3 Spark
 
-### Independent Codex final review
-Before an issue is closed or a change is merged/released, Codex independently reviews the complete diff and test evidence through the current Codex agent/app/cloud session or GitHub Codex review. Codex CLI may also be used when available, but its absence or lack of authentication is not a blocker. The review covers:
-- the GitHub issue acceptance criteria
-- `AGENTS.md`
-- `SECURITY.md`
-- `ARCHITECTURE.md`
-- `BETA_LOOP.md`
-- test evidence and exact-head CI
-- security implications, dependency changes, secret scanning, and Graphify impact
+Primary coder for Luna-approved packets:
 
-Security-sensitive changes also receive the applicable Codex Security scan/validation workflow.
+- implementation;
+- tests;
+- bounded debugging;
+- documentation attached to implementation;
+- review-finding fixes.
 
-## Delegation loop
+Spark does not approve itself, merge, authorize production, alter architecture independently, or promote readiness.
 
-1. Codex chooses the current BETA issue.
-2. Codex performs Saveruflo preflight and Graphify impact review.
-3. Codex creates a small task packet under `.codex/tasks/`.
-4. `scripts/deepseek-worker.sh` validates the packet for secrets/private data,
-   exact `TARGET=AppCare`, repository root, branch, HEAD, allowed paths,
-   forbidden capabilities, and WordPress exclusion. It requires the packet to
-   resolve to a regular file inside the checkout's own `.codex/tasks/` directory.
-5. The launcher requires a clean coordinator checkout, creates a disposable
-   Git worktree, generates a task-specific deny-by-default policy, and snapshots
-   the worktree before the worker runs. It never gives the worker the
-   coordinator's ignored files or credentials and discards the disposable
-   worktree after the run.
-6. Run `scripts/deepseek-worker.sh .codex/tasks/<task>.md`.
-7. On Linux, the worker runs non-root through the AppCare OS sandbox with
-   dropped capabilities, hidden home/runtime/deployment trees, the AppCare
-   provider `auth.json` mounted read-only, disposable OpenCode runtime data,
-   and a bounded timeout. A user-installed OpenCode binary
-   may be mounted only from the explicitly named `/home/<user>/appcare-tools`
-   root, read-only, at the sandbox's fixed tool path; arbitrary home paths are
-   rejected. Worker-produced files must pass the approved redacted secret scan
-   before promotion.
-8. The launcher verifies the post-run isolated worktree against the packet's
-   pre-run allowed paths and expected branch/HEAD before promoting permitted changes.
-9. DeepSeek may edit test files inside the AppCare worktree, but Codex owns
-   test execution and evaluates the resulting evidence independently.
-10. Codex inspects the diff. Never accept the worker summary as proof.
-11. If wrong: Codex narrows/corrects the task and sends another bounded worker pass.
-12. Maximum three DeepSeek repair passes on the same defect. After that Codex takes over the fix/root-cause analysis.
-13. Codex runs the full deterministic gate and security/failure tests.
-14. Codex performs the independent final review through the current agent/app/cloud session or GitHub Codex review; CLI is optional.
-15. Only after all gates pass may Codex commit/push/close the issue according to the repository workflow.
+### GPT-5.6 Terra
 
-## Worker task packet
+Independent architecture/security reviewer:
 
-Every task packet must contain:
+- privilege and credential design;
+- cross-tenant isolation;
+- command/path/SQL/scanner injection;
+- backup/restore correctness;
+- deployment and rollback data-loss risk;
+- scheduler and collector threats;
+- adversarial test requirements.
+
+Terra does not merge or self-approve fixes it authors.
+
+### Codex Security
+
+Independent scan/verification lane. Security-relevant PRs require the applicable scan; repaired vulnerabilities require verify-fix where appropriate.
+
+### OpenCode/DeepSeek/Qwen auxiliary workers
+
+Auxiliary workers remain cheap bounded implementation/test lanes. They never own architecture, credential handling, production access, deployment authority, readiness, or final review.
+
+The existing audited `scripts/deepseek-worker.sh` and deny-by-default OS sandbox remain available for qualified auxiliary tasks.
+
+## One-writer rule
+
+Only one writer may edit a given branch/worktree/file set at a time.
+
+Recommended flow:
 
 ```text
+Luna freezes task packet
+→ Spark or auxiliary worker receives write worktree
+→ Terra reviews read-only
+→ writer fixes findings
+→ Luna reviews final actual diff
+```
+
+Do not run competing implementations unless Luna explicitly defines an A/B experiment.
+
+## Mandatory task packet
+
+Every implementation packet must contain:
+
+```text
+Phase:
 Issue:
 Goal:
 TARGET=AppCare
-Repository root: .
-Branch: <current non-detached branch>
-HEAD: <current full Git SHA>
+Repository root:
+Branch:
+Expected base SHA:
 Allowed files/paths:
-Read-only files/paths:        # optional
+Read-only files/paths:
 Do not touch:
+Concrete build deliverables:
 Acceptance criteria:
 Required tests:
-Known context/evidence:
+Negative/adversarial tests:
+Security boundaries:
+Maturity before:
+Maximum maturity after:
 Forbidden commands/capabilities:
-Stop conditions:
+Owner-only stop conditions:
 ```
 
-Do not send the worker the full project history when a small task packet is sufficient. This is the main token-saving mechanism.
+Broad prompts such as “continue the roadmap” are invalid task packets.
+
+## Engineering and review loop
+
+1. Luna verifies current protected main and active PRs.
+2. Luna reads the blueprint, current scope, security gate, and relevant specs.
+3. Saveruflo and Graphify are used when available.
+4. Luna publishes the dependency-based task packet.
+5. Terra challenges the design before security-critical implementation.
+6. Spark or an auxiliary worker implements only the approved scope.
+7. Luna reads the actual diff.
+8. Terra reads the actual security-sensitive diff.
+9. Run deterministic, negative, adversarial, static, dependency, secret, and public-safety gates.
+10. Run Codex Security.
+11. Fix findings and rerun affected evidence.
+12. Require exact-head CI.
+13. Merge through protected main only after approvals.
+14. Update maturity and capability evidence.
+15. Continue only when the phase hard exit permits.
 
 ## Hard boundaries
 
-DeepSeek/OpenCode must not:
-- access the WordPress SecurityOla environment
-- access customer production
-- read `.env`/secret files
-- use SSH/SCP/rsync
-- run deployment or infrastructure commands
-- commit/push/merge
-- install or upgrade dependencies without explicit Codex approval
-- override failed tests
-- approve its own work
+Workers must not:
 
-## OpenCode pin
+- access WordPress or WooCommerce implementation;
+- access unrelated customer production;
+- read `.env` or arbitrary secret files;
+- expose credentials;
+- use arbitrary SSH/SCP/rsync;
+- create arbitrary root/sudo execution;
+- run arbitrary SQL;
+- run arbitrary scanners;
+- deploy;
+- commit/push/merge unless the coordinator-controlled GitHub path explicitly assigns that routine repository operation;
+- override failed tests;
+- approve their own work;
+- label reference evidence as live evidence.
 
-Audited bootstrap pin: **OpenCode 1.18.16**.
+## Current worker priority
 
-The launcher refuses another OpenCode version until Codex intentionally reviews and updates the pin.
+The current critical-path build begins with:
 
-## Model
+```text
+P01 Blueprint/enforcement
+→ P02 Credential custody and SSH onboarding
+```
 
-Low-cost worker: **DeepSeek V4 Flash** (`opencode/deepseek-v4-flash-free`), the exact model ID exposed by the audited OpenCode catalog.
+Spec 016 scanning may not displace the credential, baseline, backup, and recovery critical path.
 
-Credentials are configured on the machine through OpenCode `/connect`; never commit API keys to this repository.
+## Auxiliary DeepSeek sandbox
+
+The existing bounded DeepSeek launcher remains pinned to its audited OpenCode/model policy. Any pin or policy change requires separate review and exact-head CI. Auxiliary worker summaries are never proof; Luna must inspect the diff and tests.
