@@ -195,7 +195,11 @@ class OpenSshHostKeyScanner:
             decoded = result.stdout.decode("ascii")
         except UnicodeDecodeError as exc:
             raise HostKeyVerificationError("host key scan is malformed") from exc
-        lines = tuple(line.strip() for line in decoded.splitlines() if line.strip())
+        lines = tuple(
+            stripped
+            for stripped in (line.strip() for line in decoded.splitlines())
+            if stripped and not stripped.startswith("#")
+        )
         if not lines or len(lines) > limits.max_records:
             raise HostKeyVerificationError("host key scan is malformed")
         return lines

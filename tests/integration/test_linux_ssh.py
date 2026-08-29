@@ -34,6 +34,8 @@ from appcare.connectors.linux_ssh_transport import (
     HostKeyVerificationError,
     KnownHostsStore,
     LinuxSSHClient,
+    OpenSshHostKeyScanner,
+    verify_host_key,
 )
 from appcare.readiness import (
     ApplicationCapabilityRegistry,
@@ -156,6 +158,84 @@ def client(
         operation_ledger=InMemoryOperationLedger(),
     )
     return transport, fake_runner
+
+
+def test_keyscan_ignores_comment_banners_before_parsing() -> None:
+    class BannerRunner:
+        def run(
+            self,
+            argv: tuple[str, ...],
+            *,
+            timeout_seconds: float,
+            stdout_limit: int,
+            stderr_limit: int,
+        ) -> ProcessResult:
+            del argv, timeout_seconds, stdout_limit, stderr_limit
+            return ProcessResult(
+                0,
+                b"# 192.0.2.10:22 SSH-2.0-OpenSSH_9.9\n"
+                b"192.0.2.10 ssh-ed25519 " + KEY_DATA.encode() + b"\n",
+                b"",
+            )
+
+    scanner = OpenSshHostKeyScanner(BannerRunner())
+    assert scanner.scan(
+        target(),
+        limits=BoundedLimits(max_records=1),
+    ) == ("192.0.2.10 ssh-ed25519 " + KEY_DATA,)
+
+
+def test_keyscan_keeps_malformed_non_comment_lines_rejected(tmp_path: Path) -> None:
+    class MalformedRunner:
+        def run(
+            self,
+            argv: tuple[str, ...],
+            *,
+            timeout_seconds: float,
+            stdout_limit: int,
+            stderr_limit: int,
+        ) -> ProcessResult:
+            del argv, timeout_seconds, stdout_limit, stderr_limit
+            return ProcessResult(
+                0,
+                b"192.0.2.10:22 SSH-2.0-OpenSSH_9.9\n"
+                b"192.0.2.10 ssh-ed25519 " + KEY_DATA.encode() + b"\n",
+                b"",
+            )
+
+    with pytest.raises(HostKeyVerificationError):
+        verify_host_key(
+            target(),
+            scanner=OpenSshHostKeyScanner(MalformedRunner()),
+            store=KnownHostsStore(tmp_path / "known-hosts"),
+            limits=BoundedLimits(),
+        )
+
+
+def test_keyscan_applies_record_limit_to_key_lines_after_comments() -> None:
+    class TwoKeyRunner:
+        def run(
+            self,
+            argv: tuple[str, ...],
+            *,
+            timeout_seconds: float,
+            stdout_limit: int,
+            stderr_limit: int,
+        ) -> ProcessResult:
+            del argv, timeout_seconds, stdout_limit, stderr_limit
+            return ProcessResult(
+                0,
+                b"# banner\n"
+                b"192.0.2.10 ssh-ed25519 " + KEY_DATA.encode() + b"\n"
+                b"192.0.2.10 ssh-ed25519 " + base64.b64encode(b"second-key") + b"\n",
+                b"",
+            )
+
+    with pytest.raises(HostKeyVerificationError):
+        OpenSshHostKeyScanner(TwoKeyRunner()).scan(
+            target(),
+            limits=BoundedLimits(max_records=1),
+        )
 
 
 def test_connection_and_host_inventory_are_strict_and_scoped(tmp_path: Path) -> None:
