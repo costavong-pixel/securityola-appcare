@@ -1,5 +1,11 @@
 # Product Definition
 
+Owner-approved commercial, support, operations, authentication, retention, and implementation-accountability decisions are maintained in:
+
+- `docs/governance/SECURITYOLA_OWNER_DECISIONS.md`
+
+If this summary conflicts with that decision register, stop and resolve the discrepancy rather than silently changing product policy.
+
 ## $149/month Protection
 
 For one approved supported application:
