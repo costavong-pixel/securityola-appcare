@@ -1,0 +1,175 @@
+{
+  "schema_version": 1,
+  "status": "MANDATORY_CURRENT_SCOPE",
+  "owner_decision_date": "2026-08-29",
+  "target": "AppCare",
+  "first_supported_profile": {
+    "os_family": "linux",
+    "runtime": "php-8.x",
+    "web_servers": [
+      "nginx",
+      "apache"
+    ],
+    "primary_database": "mariadb-mysql",
+    "deployment_models": [
+      "direct-filesystem-after-normalization",
+      "git-based-after-exact-binding"
+    ]
+  },
+  "first_real_acceptance_target": {
+    "application": "video.slabfranchise.com",
+    "host": "64.44.115.21",
+    "expected_hostname": "slab-prompt-ola"
+  },
+  "future_branches": {
+    "wordpress": {
+      "current_implementation_authorized": false,
+      "owner_authorization_required": true
+    },
+    "woocommerce": {
+      "current_implementation_authorized": false,
+      "owner_authorization_required": true
+    }
+  },
+  "vercel": {
+    "current_critical_path": false,
+    "tracking_issue": 30
+  },
+  "maturity_levels": [
+    "DOCUMENTED",
+    "COMPONENT_IMPLEMENTED",
+    "RUNTIME_INTEGRATED",
+    "LIVE_VERIFIED",
+    "SERVICE_READY"
+  ],
+  "model_roles": {
+    "coordinator": "GPT-5.6 Luna Max",
+    "primary_coder": "GPT-5.3 Spark",
+    "security_architecture_challenger": "GPT-5.6 Terra",
+    "independent_security_scan": "Codex Security"
+  },
+  "backup_policy": {
+    "pre_change_backup_required": true,
+    "files_frequency": "daily",
+    "database_frequency": "daily",
+    "b2_operational_retention_days": 30,
+    "glacier_monthly_archive_months": 12,
+    "remote_readback_every_backup": true,
+    "isolated_restore_rehearsal": "monthly",
+    "large_site_processing": "streaming-or-chunked"
+  },
+  "private_beta_production_policy": {
+    "explicit_application_approval_required": true,
+    "deployment_without_reliable_rollback": "denied",
+    "deliberate_production_failure_drill": "prohibited",
+    "global_live_customer_production_enabled": false
+  },
+  "phases": [
+    {
+      "id": "P01",
+      "name": "Binding blueprint and enforcement",
+      "depends_on": [],
+      "hard_exit_gate": true
+    },
+    {
+      "id": "P02",
+      "name": "Credential custody and SSH onboarding",
+      "depends_on": [
+        "P01"
+      ],
+      "hard_exit_gate": true
+    },
+    {
+      "id": "P03",
+      "name": "Live CONNECT, INVENTORY, and immutable baseline",
+      "depends_on": [
+        "P02"
+      ],
+      "hard_exit_gate": true
+    },
+    {
+      "id": "P04",
+      "name": "Streaming filesystem backup and data classification",
+      "depends_on": [
+        "P03"
+      ],
+      "hard_exit_gate": true
+    },
+    {
+      "id": "P05",
+      "name": "Live MariaDB/MySQL transport and database restore",
+      "depends_on": [
+        "P03"
+      ],
+      "hard_exit_gate": true
+    },
+    {
+      "id": "P06",
+      "name": "B2, Glacier, and complete application restore",
+      "depends_on": [
+        "P04",
+        "P05"
+      ],
+      "hard_exit_gate": true
+    },
+    {
+      "id": "P07",
+      "name": "Live security scanning and test discovery",
+      "depends_on": [
+        "P06"
+      ],
+      "hard_exit_gate": true
+    },
+    {
+      "id": "P08",
+      "name": "Brownfield normalization, staging, and remediation",
+      "depends_on": [
+        "P07"
+      ],
+      "hard_exit_gate": true
+    },
+    {
+      "id": "P09",
+      "name": "Deployment, migration safety, verification, and rollback",
+      "depends_on": [
+        "P08"
+      ],
+      "hard_exit_gate": true
+    },
+    {
+      "id": "P10",
+      "name": "Monitoring, scheduler, alerting, reporting, and support tiers",
+      "depends_on": [
+        "P09"
+      ],
+      "hard_exit_gate": true
+    },
+    {
+      "id": "P11",
+      "name": "Operator productization, commercial lifecycle, and AppCare self-recovery",
+      "depends_on": [
+        "P10"
+      ],
+      "hard_exit_gate": true
+    },
+    {
+      "id": "P12",
+      "name": "Real-target acceptance, final security gate, and beta launch decision",
+      "depends_on": [
+        "P11"
+      ],
+      "hard_exit_gate": true
+    }
+  ],
+  "current_readiness": {
+    "CORE_PLATFORM_READY": true,
+    "STACK_GENERIC_LINUX_READY": false,
+    "STACK_WORDPRESS_READY": false,
+    "STACK_WOOCOMMERCE_READY": false,
+    "STACK_GITHUB_VERCEL_SUPABASE_READY": false,
+    "CUSTOMER_ONBOARDING_READY": false,
+    "PILOT_READY": false,
+    "PAID_SERVICE_READY": false,
+    "LIVE_CUSTOMER_PRODUCTION_ENABLED": false
+  }
+}
