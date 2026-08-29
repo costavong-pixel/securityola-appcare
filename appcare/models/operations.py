@@ -10,10 +10,12 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Index,
     Numeric,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -261,6 +263,68 @@ class WorkflowAction(IdentityMixin, TimestampMixin, Base):
     attempt_count: Mapped[int] = mapped_column(nullable=False, default=0)
     result_reference: Mapped[str | None] = mapped_column(String(500), nullable=True)
     failure_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+
+class DatabaseOperationRecord(IdentityMixin, TimestampMixin, Base):
+    """Durable idempotency record for bounded Spec 015 database operations."""
+
+    __tablename__ = "database_operations"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'running', 'succeeded', 'failed', 'recovery_required')",
+            name="ck_database_operation_status",
+        ),
+        UniqueConstraint("scope", "idempotency_key", name="uq_database_operation_idempotency"),
+        Index(
+            "uq_database_operation_active_scope",
+            "scope",
+            unique=True,
+            sqlite_where=text("status IN ('pending', 'running', 'recovery_required')"),
+            postgresql_where=text("status IN ('pending', 'running', 'recovery_required')"),
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    application_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    scope: Mapped[str] = mapped_column(String(500), nullable=False, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    operation_kind: Mapped[str] = mapped_column(String(80), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
+    outcome_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    result_reference: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    failure_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+
+class DatabaseRestoreTargetRecord(IdentityMixin, TimestampMixin, Base):
+    """Durable registration/quarantine state for isolated restore targets."""
+
+    __tablename__ = "database_restore_targets"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active', 'quarantined')",
+            name="ck_database_restore_target_status",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "application_id",
+            "stack_id",
+            "isolated_target_reference",
+            name="uq_database_restore_target_identity",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    application_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    stack_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    isolated_target_reference: Mapped[str] = mapped_column(String(500), nullable=False)
+    target_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_target_reference: Mapped[str] = mapped_column(String(500), nullable=False)
+    source_database_identifier: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_logical_database_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    quarantine_reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    cleanup_reference: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
 class WorkflowEvidence(IdentityMixin, TimestampMixin, Base):
