@@ -174,9 +174,7 @@ def test_keyscan_ignores_comment_banners_before_parsing() -> None:
             return ProcessResult(
                 0,
                 b"# 192.0.2.10:22 SSH-2.0-OpenSSH_9.9\n"
-                b"192.0.2.10 ssh-ed25519 "
-                + KEY_DATA.encode()
-                + b"\n",
+                b"192.0.2.10 ssh-ed25519 " + KEY_DATA.encode() + b"\n",
                 b"",
             )
 
@@ -201,9 +199,7 @@ def test_keyscan_keeps_malformed_non_comment_lines_rejected(tmp_path: Path) -> N
             return ProcessResult(
                 0,
                 b"192.0.2.10:22 SSH-2.0-OpenSSH_9.9\n"
-                b"192.0.2.10 ssh-ed25519 "
-                + KEY_DATA.encode()
-                + b"\n",
+                b"192.0.2.10 ssh-ed25519 " + KEY_DATA.encode() + b"\n",
                 b"",
             )
 
