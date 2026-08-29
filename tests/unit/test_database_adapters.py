@@ -3,7 +3,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import subprocess
 import threading
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -287,7 +289,7 @@ class CapturingPopenFactory:
         self.credential_snapshot = ""
 
     def __call__(self, argv: tuple[str, ...], **kwargs: object) -> FakeProcess:
-        self.argv = tuple(cast(tuple[str, ...], argv))
+        self.argv = tuple(argv)
         self.env = dict(cast(dict[str, str], kwargs["env"]))
         defaults_file = next(
             (
@@ -302,6 +304,10 @@ class CapturingPopenFactory:
         self.credential_path = Path(credential_location)
         self.credential_snapshot = self.credential_path.read_text(encoding="utf-8")
         return self.process
+
+
+def _typed_popen_factory(factory: CapturingPopenFactory) -> Callable[..., subprocess.Popen[bytes]]:
+    return cast(Callable[..., subprocess.Popen[bytes]], factory)
 
 
 class CapturingEvidenceSink:
@@ -524,7 +530,11 @@ def test_subprocess_broker_keeps_credential_material_out_of_argv_env_and_errors(
     target = _database_target(engine_family=engine_family, database_port=port)
     process = FakeProcess(stderr_bytes=b"password=redacted")
     factory = CapturingPopenFactory(process)
-    broker = SubprocessDatabaseBroker(provider, filesystem=filesystem, popen_factory=factory)
+    broker = SubprocessDatabaseBroker(
+        provider,
+        filesystem=filesystem,
+        popen_factory=_typed_popen_factory(factory),
+    )
 
     result = broker.run(DatabaseProbe("probe-auth-boundary"), target=target)
 
@@ -547,7 +557,11 @@ def test_subprocess_broker_cancels_probe_without_leaking_credentials(tmp_path: P
     provider = InMemoryDatabaseCredentialProvider({credential.reference: resolved})
     process = FakeProcess(running=True)
     factory = CapturingPopenFactory(process)
-    broker = SubprocessDatabaseBroker(provider, filesystem=filesystem, popen_factory=factory)
+    broker = SubprocessDatabaseBroker(
+        provider,
+        filesystem=filesystem,
+        popen_factory=_typed_popen_factory(factory),
+    )
     cancel_event = threading.Event()
     cancel_event.set()
 
@@ -571,7 +585,11 @@ def test_subprocess_broker_times_out_probe_and_kills_process(tmp_path: Path) -> 
     provider = InMemoryDatabaseCredentialProvider({credential.reference: resolved})
     process = FakeProcess(running=True)
     factory = CapturingPopenFactory(process)
-    broker = SubprocessDatabaseBroker(provider, filesystem=filesystem, popen_factory=factory)
+    broker = SubprocessDatabaseBroker(
+        provider,
+        filesystem=filesystem,
+        popen_factory=_typed_popen_factory(factory),
+    )
     target = _database_target(limits=DatabaseLimits(probe_timeout_seconds=0.5))
 
     result = broker.run(DatabaseProbe("probe-timeout"), target=target)
@@ -590,7 +608,11 @@ def test_subprocess_broker_enforces_bounded_stderr_output(tmp_path: Path) -> Non
     provider = InMemoryDatabaseCredentialProvider({credential.reference: resolved})
     process = FakeProcess(stderr_bytes=b"x" * 33, running=True)
     factory = CapturingPopenFactory(process)
-    broker = SubprocessDatabaseBroker(provider, filesystem=filesystem, popen_factory=factory)
+    broker = SubprocessDatabaseBroker(
+        provider,
+        filesystem=filesystem,
+        popen_factory=_typed_popen_factory(factory),
+    )
     target = _database_target(limits=DatabaseLimits(max_stderr_bytes=32))
 
     result = broker.run(DatabaseProbe("probe-output-limit"), target=target)
@@ -610,7 +632,11 @@ def test_subprocess_broker_classifies_credential_cleanup_failure(
     provider = InMemoryDatabaseCredentialProvider({credential.reference: resolved})
     process = FakeProcess()
     factory = CapturingPopenFactory(process)
-    broker = SubprocessDatabaseBroker(provider, filesystem=filesystem, popen_factory=factory)
+    broker = SubprocessDatabaseBroker(
+        provider,
+        filesystem=filesystem,
+        popen_factory=_typed_popen_factory(factory),
+    )
     original_remove = database_broker_module._safe_remove
 
     def fail_credential_dir_once(path: Path) -> bool:
