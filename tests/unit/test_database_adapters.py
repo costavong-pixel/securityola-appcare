@@ -397,7 +397,7 @@ def test_commands_are_closed_and_mariadb_dump_cannot_select_database_on_restore(
     target = _database_target()
     request = _dump_request(target)
     registry = DatabaseCommandRegistry()
-    output = Path("C:/appcare/staging/job-a/database.sql")
+    output = tmp_path / "database.sql"
     dump = registry.build_dump(request, output_path=output)
     assert "--databases" not in dump.argv
     assert dump.argv[-2] == "appdb"
