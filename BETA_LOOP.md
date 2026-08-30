@@ -2,10 +2,12 @@
 
 ## Mandatory interpretation
 
-The historical BETA-00 through BETA-10 program proved the AppCare **core platform**. It must not be interpreted as proof that AppCare can onboard or operate a real customer application.
+Historical BETA-00 through BETA-10 proved the AppCare **core platform**. It did not prove customer onboarding or a managed service.
 
 Authoritative current governance:
 
+- `APPCARE_PRODUCT_IMPLEMENTATION_BLUEPRINT.md`
+- `docs/governance/APPCARE_CURRENT_SCOPE.json`
 - `.specify/memory/constitution.md`
 - `docs/governance/PRODUCT_READINESS_AND_GAP_REGISTER.md`
 - `docs/security/PRE_BETA_SECURITY_GATE.md`
@@ -13,7 +15,7 @@ Authoritative current governance:
 
 The previous broad `PRIVATE_BETA_READY=YES` interpretation is revoked.
 
-Current readiness at adoption:
+Current readiness:
 
 ```text
 CORE_PLATFORM_READY=YES
@@ -27,93 +29,91 @@ PAID_SERVICE_READY=NO
 LIVE_CUSTOMER_PRODUCTION_ENABLED=NO
 ```
 
-## Server/runtime isolation gate
+## Current supported profile
 
-AppCare is developed and deployed independently from the SecurityOla WordPress plugin/backend.
+```text
+Linux + PHP 8.x + Nginx/Apache + MariaDB/MySQL
+```
 
-AppCare must retain its own runtime/service identity, repository/deployment path, secrets, database, workers, logs, provider credentials, backup namespace, and environment boundaries. No WordPress production resource may be reused or modified.
+First real acceptance target: `video.slabfranchise.com`.
 
-Inside AppCare keep `development -> staging -> production` isolated; development must not receive production credentials.
+WordPress and WooCommerce are future branches and current implementation is prohibited without separate owner authorization.
 
-## Historical core-platform beta
+## Current 12-phase dependency sequence
 
-BETA-00 through BETA-10 established the control plane, tenant/audit boundaries, connector contracts, scanning foundation, backup/recovery domain, durable workflow, remediation, production control, monitoring/reporting, dashboard foundation, adversarial release evidence, filesystem backup boundary, and provider-neutral preproduction evidence.
+1. `P01` binding blueprint and enforcement;
+2. `P02` credential custody and SSH onboarding;
+3. `P03` live CONNECT, INVENTORY, immutable baseline;
+4. `P04` streaming filesystem backup;
+5. `P05` live MariaDB backup and isolated DB restore;
+6. `P06` B2, Glacier, and complete application restore;
+7. `P07` live scanning and test discovery;
+8. `P08` brownfield normalization, staging, remediation;
+9. `P09` deployment, migration safety, verification, rollback;
+10. `P10` monitoring, scheduler, alerting, reporting;
+11. `P11` operator/commercial/offboarding/AppCare DR;
+12. `P12` real-target acceptance and exact-release S01-S30 security decision.
 
-Those results remain valid core-platform evidence and must not be deleted or rewritten.
+Independent later research may run in parallel, but no readiness level may bypass a failed phase dependency.
 
-Historical fixture/reference acceptance is not live customer acceptance.
+## Mandatory maturity labels
 
-## Current mandatory customer-readiness sequence
+```text
+DOCUMENTED
+COMPONENT_IMPLEMENTED
+RUNTIME_INTEGRATED
+LIVE_VERIFIED
+SERVICE_READY
+```
 
-The new sequence is:
-
-1. `013-product-readiness`
-2. `014-generic-linux-ssh`
-3. `015-database-adapters`
-4. `016-live-scanning`
-5. `017-brownfield-normalization`
-6. `018-customer-staging-deploy`
-7. `019-live-monitoring-scheduler`
-8. `020-wordpress-profile`
-9. `021-woocommerce-profile`
-10. `022-live-initial-stack-connectors`
-11. `023-real-target-private-beta-gate`
-
-The complete A-Z gap register and implementation waves are mandatory in `docs/governance/PRODUCT_READINESS_AND_GAP_REGISTER.md`.
+Do not use `IMPLEMENTED` alone.
 
 ## Engineering loop
 
-For every current issue/PR:
-
-1. `/saveruflo` read-only preflight.
-2. `/graphify . --update` and query affected architecture/blast radius.
-3. Run the relevant Spec Kit constitution/specify/clarify/plan/checklist/tasks/analyze/converge workflow.
-4. GPT-5.6 Luna Max coordinator scopes the smallest safe task.
-5. A bounded worker implements; worker cannot self-approve.
-6. Luna reads the actual diff and security-critical functions.
-7. Run deterministic unit/integration/static tests.
-8. Run failure/negative/security tests appropriate to the change.
-9. Run dependency and secret/public-safety gates.
-10. Run Codex Security diff scan; use verify-fix for repaired attack paths where applicable.
-11. Fix failures/findings and repeat until green.
-12. Require exact-head GitHub CI.
-13. Save the Saveruflo checkpoint/evidence.
-14. Update Graphify and re-check impact.
-15. Protected merge only after coordinator approval.
-16. Update the capability/readiness matrix after merge.
-
-Before beta launch, also run the complete repository security review required by `docs/security/PRE_BETA_SECURITY_GATE.md` against the exact release candidate.
+1. Verify protected main and open PRs.
+2. Run Saveruflo preflight when available.
+3. Update/query Graphify.
+4. Run the repository-native Spec Kit workflow.
+5. Luna publishes a dependency-based plan and bounded task packet.
+6. Terra challenges security/architecture.
+7. Spark or an approved bounded worker implements.
+8. Luna reads the actual diff.
+9. Terra reads security-sensitive actual diff.
+10. Run deterministic, negative, failure, and adversarial tests.
+11. Run dependency, secret, public-safety, and worker-policy gates.
+12. Run Codex Security and verify-fix when applicable.
+13. Require exact-head CI.
+14. Protected merge.
+15. Update evidence, capability, maturity, and phase status.
+16. Continue only if the hard exit gate permits.
 
 ## Production rule
 
 No customer production write without:
 
-`evidence -> valid backup -> isolated restore/reproduction -> tests -> security validation -> authoritative preproduction evidence -> exact application-scoped approval -> deploy -> production verification -> rollback ready -> monitoring`
+```text
+evidence
+→ mandatory pre-change backup
+→ B2 readback
+→ verified isolated restore
+→ staging
+→ tests/security
+→ exact preproduction receipt
+→ exact application approval
+→ deploy
+→ production verification
+→ rollback ready
+→ monitoring
+```
+
+Every private-beta production change requires explicit owner/customer approval.
 
 Global `LIVE_CUSTOMER_PRODUCTION_ENABLED` remains `NO`.
 
 ## Stop conditions
 
-Do not stop for ordinary implementation decisions, bugs, failed tests, dependency problems, skill bugs, missing Git, missing health endpoints, legacy filesystem layouts, or missing adapters that can be engineered safely.
+Do not stop for ordinary engineering work. Stop for new owner-controlled account/credential authorization, DNS, billing/payment account action, legal decision, irreversible/high-risk production data action, or first production deployment authorization.
 
-Stop for genuine owner-controlled or high-risk boundaries such as new customer/account authorization, DNS changes, payment/billing account actions, legal decisions, the first real customer production authorization, or irreversible/high-risk production data migration.
+## Beta completion
 
-If a production/data boundary is genuinely ambiguous, stop and ask the owner for clarification.
-
-## Customer beta done
-
-Customer private-beta readiness is not achieved merely because Spec 013–023 code exists.
-
-At minimum:
-
-- generic required stack capability matrix passes
-- mandatory pre-beta security gate passes against exact head
-- one real target completes connect/inventory/revision/backup/remote-readback/restore/scan/remediation/test/staging/preproduction
-- exact owner authorization is obtained for the first production mutation
-- controlled production deployment and verification pass
-- safe rollback proof passes
-- live monitoring/alerting/reporting run
-- restart durability passes
-- real operating cost is measured
-
-Only then may the corresponding layered readiness states advance.
+Customer beta readiness requires all applicable phase hard exits, one real internal application lifecycle, exact-release S01-S30 security approval, safe owner-authorized production, monitoring, alerts, reports, credential rotation, offboarding, restart durability, and real cost measurement.

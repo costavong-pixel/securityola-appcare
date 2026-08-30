@@ -1,14 +1,63 @@
 # SecurityOla AppCare
 
-SecurityOla AppCare is a managed security and recovery service for websites and web applications.
+SecurityOla AppCare is a managed security, backup, monitoring, remediation, deployment-safety, and recovery service for supported websites and web applications.
 
 ## Core promise
 
 **Scan -> Fix -> Backup -> Monitor -> Recover**
 
+## Binding current implementation blueprint
+
+Current implementation is governed by:
+
+- `APPCARE_PRODUCT_IMPLEMENTATION_BLUEPRINT.md`
+- `docs/governance/APPCARE_CURRENT_SCOPE.json`
+- `docs/governance/PRODUCT_READINESS_AND_GAP_REGISTER.md`
+- `docs/security/PRE_BETA_SECURITY_GATE.md`
+- `.specify/memory/constitution.md`
+- `specs/013-product-readiness/`
+
+The blueprint defines 12 dependency-ordered phases, hard exit gates, maturity labels, the first supported stack, the first real acceptance target, and current future-branch exclusions.
+
+No customer/private-beta readiness claim may bypass those documents.
+
+## Current supported profile
+
+The first supported beta profile is deliberately narrow:
+
+- Linux-hosted PHP 8.x;
+- Nginx or Apache;
+- MariaDB/MySQL;
+- direct-filesystem deployment after AppCare normalization;
+- Git-based deployment after exact revision/artifact binding.
+
+First real acceptance target:
+
+```text
+video.slabfranchise.com
+```
+
+WordPress and WooCommerce are documented future branches. Their current implementation is prohibited until separate owner authorization.
+
+Vercel Issue #30 remains separate and is not on the current Linux/PHP critical path.
+
+## Mandatory maturity reporting
+
+Every component must be reported as exactly one of:
+
+```text
+DOCUMENTED
+COMPONENT_IMPLEMENTED
+RUNTIME_INTEGRATED
+LIVE_VERIFIED
+SERVICE_READY
+```
+
+The word `IMPLEMENTED` must not be used alone as a readiness claim.
+
 ## Current readiness
 
-The AppCare core platform is mature, but customer onboarding is not yet beta-ready. Historical fixture/reference acceptance must not be interpreted as live customer support.
+The AppCare core platform is mature, but customer onboarding is not beta-ready. Historical fixture/reference acceptance must not be interpreted as live customer support.
 
 ```text
 CORE_PLATFORM_READY=YES
@@ -22,39 +71,34 @@ PAID_SERVICE_READY=NO
 LIVE_CUSTOMER_PRODUCTION_ENABLED=NO
 ```
 
-Mandatory governance:
+## Current critical path
 
-- `docs/governance/PRODUCT_READINESS_AND_GAP_REGISTER.md`
-- `docs/security/PRE_BETA_SECURITY_GATE.md`
-- `.specify/memory/constitution.md`
-- `specs/013-product-readiness/`
-
-No customer/private-beta readiness claim may bypass those documents.
-
-## Stack roadmap
-
-Initial/core focus included:
-
-- Lovable-style web apps
-- GitHub source repositories
-- Vercel deployments
-- Supabase database/auth/storage
-
-The customer-readiness phase also adds reusable generic Linux/SSH, filesystem, MariaDB/MySQL/PostgreSQL, brownfield normalization, staging/deployment/rollback, live monitoring/scheduling, WordPress, and WooCommerce profiles.
-
-A stack is considered supported only when its mandatory capability matrix passes. A connector contract or fixture does not equal live support.
+```text
+P01 Blueprint/enforcement
+→ P02 Credential custody/SSH onboarding
+→ P03 Live connect/inventory/immutable baseline
+→ P04 Streaming filesystem backup
+→ P05 Live MariaDB backup/restore
+→ P06 B2/Glacier/full application restore
+→ P07 Live scanning/test discovery
+→ P08 Brownfield normalization/staging/remediation
+→ P09 Deploy/verify/migration safety/rollback
+→ P10 Monitor/schedule/alert/report
+→ P11 Operator/commercial/offboarding/AppCare DR
+→ P12 Real-target/S01-S30/pilot decision
+```
 
 ## Control plane
 
-The control plane provides tenant-scoped records, authentication, durable jobs, append-only sanitized audit history, and truthful liveness/readiness checks. Provider credential values must not be stored in descriptive resource records.
+The control plane provides tenant-scoped records, authentication, durable jobs, append-only sanitized audit history, readiness evaluation, evidence binding, and dashboard state. Provider credential values must not be stored in descriptive resource records.
 
-Run the isolated acceptance suite from this checkout with:
+Run the isolated acceptance suite with:
 
 ```powershell
 pytest -q
 ```
 
-Use only an AppCare-owned development SQLite database or an explicitly isolated AppCare development PostgreSQL database. For PostgreSQL, configure the non-secret `APPCARE_DATABASE_ALLOWED_HOSTS` variable with exact allowed host names and use the environment-specific database name (`appcare_development`, `appcare_staging`, or `appcare_test`). The application rejects missing or unmatched host/name targets before engine/schema initialization. Never point the local API at shared, production, WordPress Security, or deployment resources.
+Use only an AppCare-owned development SQLite database or an explicitly isolated AppCare development PostgreSQL database. Never point a local API at shared, production, WordPress Security, or deployment resources.
 
 ## Commercial offer
 
@@ -71,17 +115,22 @@ Commercial pricing does not imply technical supportability. Paid service cannot 
 
 No production fix without:
 
-1. authoritative evidence,
-2. valid backup and verified restore path,
-3. staging or isolated reproduction,
-4. automated regression/security validation,
-5. authoritative verified preproduction evidence,
-6. exact application-scoped production authorization,
-7. production verification,
-8. rollback path,
-9. monitoring.
+1. authoritative evidence;
+2. valid backup and remote readback;
+3. verified isolated restore path;
+4. staging or isolated reproduction;
+5. automated regression/security validation;
+6. authoritative verified preproduction evidence;
+7. exact application-scoped production authorization;
+8. production verification;
+9. rollback readiness;
+10. monitoring.
 
 Global `LIVE_CUSTOMER_PRODUCTION_ENABLED` remains `NO`.
+
+## Shared-product boundary
+
+AppCare and the SecurityOla WordPress Security product may share physical infrastructure but remain separate products and runtimes. AppCare work must not touch WordPress product files, DBs, services, credentials, logs, or backup namespaces.
 
 ## Third-party skills
 
@@ -89,10 +138,4 @@ Third-party skills are never trusted by default.
 
 **Inspect -> sandbox -> pressure-test -> patch/debug -> retest -> pin -> use**
 
-If a skill cannot be made safe and maintainable, drop it.
-
-## Historical connector foundation
-
-The original connector slice added provider-neutral, fixture-backed read-only contracts for GitHub, Vercel, and Supabase. It established capability, ownership, tenant-isolation, and credential-metadata boundaries, but intentionally did not prove every live provider transport or customer deployment path.
-
-Live provider/customer support is now governed by the product-readiness capability matrix and real-target acceptance gate.
+Drop any skill that cannot be made safe, maintainable, and testable.

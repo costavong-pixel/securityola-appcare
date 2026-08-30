@@ -1,0 +1,351 @@
+{
+  "schema_version": 1,
+  "status": "MANDATORY_CURRENT_SCOPE",
+  "owner_decision_date": "2026-08-29",
+  "target": "AppCare",
+  "first_supported_profile": {
+    "os_family": "linux",
+    "runtime": "php-8.x",
+    "web_servers": [
+      "nginx",
+      "apache"
+    ],
+    "primary_database": "mariadb-mysql",
+    "deployment_models": [
+      "direct-filesystem-after-normalization",
+      "git-based-after-exact-binding"
+    ]
+  },
+  "first_real_acceptance_target": {
+    "application": "video.slabfranchise.com",
+    "host": "64.44.115.21",
+    "expected_hostname": "slab-prompt-ola"
+  },
+  "future_branches": {
+    "wordpress": {
+      "current_implementation_authorized": false,
+      "owner_authorization_required": true
+    },
+    "woocommerce": {
+      "current_implementation_authorized": false,
+      "owner_authorization_required": true
+    }
+  },
+  "vercel": {
+    "current_critical_path": false,
+    "tracking_issue": 30
+  },
+  "maturity_levels": [
+    "DOCUMENTED",
+    "COMPONENT_IMPLEMENTED",
+    "RUNTIME_INTEGRATED",
+    "LIVE_VERIFIED",
+    "SERVICE_READY"
+  ],
+  "model_roles": {
+    "coordinator": "GPT-5.6 Luna Max",
+    "primary_coder": "GPT-5.3 Spark",
+    "security_architecture_challenger": "GPT-5.6 Terra",
+    "independent_security_scan": "Codex Security"
+  },
+  "backup_policy": {
+    "pre_change_backup_required": true,
+    "files_frequency": "daily",
+    "database_frequency": "daily",
+    "b2_operational_retention_days": 30,
+    "glacier_monthly_archive_months": 12,
+    "remote_readback_every_backup": true,
+    "isolated_restore_rehearsal": "monthly",
+    "large_site_processing": "streaming-or-chunked"
+  },
+  "private_beta_production_policy": {
+    "explicit_application_approval_required": true,
+    "deployment_without_reliable_rollback": "denied",
+    "deliberate_production_failure_drill": "prohibited",
+    "global_live_customer_production_enabled": false
+  },
+  "enforcement_invariants": {
+    "evidence_classes": [
+      "fixture",
+      "reference",
+      "controlled_live_provider",
+      "real_target"
+    ],
+    "fixture_reference_cannot_promote_live": true,
+    "worker_self_approval": false,
+    "global_live_customer_production_enabled": false,
+    "production_requires_application_approval": true,
+    "production_requires_rollback": true,
+    "backup_requires_remote_readback": true,
+    "backup_requires_isolated_restore": true,
+    "governance_amendment_requires_protected_pr": true,
+    "only_real_target_can_promote_customer_readiness": true,
+    "controlled_live_provider_cannot_promote_real_target": true,
+    "readiness_evaluator_is_authoritative": true,
+    "production_authority_is_resolved_not_caller_boolean": true
+  },
+  "phases": [
+    {
+      "id": "P01",
+      "name": "Binding blueprint and enforcement",
+      "depends_on": [],
+      "hard_exit_gate": true,
+      "objective": "Bind the current AppCare scope and phase governance to protected enforcement.",
+      "components": ["blueprint", "current-scope-json", "governance-tests", "active-guidance-links"],
+      "runtime_wiring": "CI parses the scope contract and blueprint contract; no customer capability is enabled.",
+      "security_requirements": "Protected review, no credentials or customer data, fail-closed readiness, and no production mutation.",
+      "positive_tests": ["product-contract", "scope-schema", "phase-graph", "gate-contract", "readiness-floor"],
+      "negative_adversarial_tests": ["removed-phase", "weakened-gate", "dependency-bypass", "fixture-live-promotion", "authority-bypass"],
+      "live_reference_evidence": "None; this phase accepts governance evidence only.",
+      "hard_exit_requirements": ["P01_BLUEPRINT_MERGED=YES", "P01_SCOPE_MACHINE_READABLE=YES", "P01_TWELVE_PHASES=PASS", "P01_HARD_EXIT_GATES=PASS", "P01_CI_ENFORCEMENT=PASS", "P01_CROSS_DOCUMENT_CONSISTENCY=PASS", "P01_LUNA_APPROVAL=PASS", "P01_TERRA_APPROVAL=PASS", "P01_CODEX_SECURITY=PASS", "P01_EXACT_HEAD_CI=PASS", "P01_PROTECTED_MAIN_VERIFIED=PASS"],
+      "maturity_effect": "BLUEPRINT_GOVERNANCE_MATURITY may reach SERVICE_READY only for governance enforcement.",
+      "readiness_effect": "Promote no CONNECT, INVENTORY, customer, pilot, paid-service, or production capability.",
+      "predecessor_dependencies": ["NONE"],
+      "prohibited_actions": ["customer-access", "credential-mutation", "production-write", "WordPress/WooCommerce-work", "Vercel-retry", "readiness-bypass"],
+      "owner_only_gates": ["scope-amendment", "phase-amendment", "protected-merge"]
+    },
+    {
+      "id": "P02",
+      "name": "Credential custody and SSH onboarding",
+      "depends_on": [
+        "P01"
+      ],
+      "hard_exit_gate": true,
+      "objective": "Provide encrypted, scoped, revocable SSH credential custody and safe onboarding.",
+      "components": ["encrypted-vault", "Ed25519-key-service", "opaque-resolver", "manual-public-key-path", "restricted-bootstrap", "rotation", "revocation", "offboarding"],
+      "runtime_wiring": "Credential references resolve only at the Linux SSH boundary and bootstrap uses fixed typed operations with durable audit state.",
+      "security_requirements": "No plaintext secret persistence, non-root identity, tenant binding, strict ownership and modes, no arbitrary root shell, and fail-closed revocation.",
+      "positive_tests": ["create", "resolve", "rotate", "revoke", "manual-onboarding", "bootstrap", "offboarding"],
+      "negative_adversarial_tests": ["secret-leakage", "path-symlink", "key-substitution", "cross-tenant-reuse", "root-sudo", "injection", "replay", "partial-bootstrap"],
+      "live_reference_evidence": "Approved internal target may provide bounded onboarding evidence; no customer production write is implied.",
+      "hard_exit_requirements": ["P02_LOCAL_VAULT=RUNTIME_INTEGRATED", "P02_MANUAL_ONBOARDING=LIVE_VERIFIED", "P02_BOOTSTRAP_PATH=LIVE_VERIFIED_OR_BLOCKED_EXTERNAL_WITH_MANUAL_PATH_PASS", "P02_ROTATION=LIVE_VERIFIED", "P02_OFFBOARDING=LIVE_VERIFIED", "P02_SECRETS_EXPOSED=NO"],
+      "maturity_effect": "Custody and onboarding components advance only to the highest evidence-backed maturity level.",
+      "readiness_effect": "Credential rotation, offboarding, and stack readiness remain unpromoted until their evidence passes.",
+      "predecessor_dependencies": ["P01"],
+      "prohibited_actions": ["customer-production-mutation", "shared-identity-reuse", "unrestricted-sudo", "private-key-exposure"],
+      "owner_only_gates": ["external-credential-authorization", "account-bootstrap", "first-customer-production-bootstrap"]
+    },
+    {
+      "id": "P03",
+      "name": "Live CONNECT, INVENTORY, and immutable baseline",
+      "depends_on": [
+        "P02"
+      ],
+      "hard_exit_gate": true,
+      "objective": "Establish trusted live target identity, normalized inventory, and immutable application baseline.",
+      "components": ["target-registration", "host-key-binding", "typed-connect", "inventory-collectors", "revision-capture", "internal-source-mirror"],
+      "runtime_wiring": "Spec 014 transport and Spec 013 capability/evidence evaluators consume one tenant/application target identity.",
+      "security_requirements": "Strict host-key verification, non-root read-only access, path and output limits, no TOFU, and no automatic privilege escalation.",
+      "positive_tests": ["live-connect", "live-inventory", "normalized-observations", "baseline-digest"],
+      "negative_adversarial_tests": ["wrong-host-key", "target-substitution", "traversal", "symlink-escape", "secret-output", "timeout", "replay", "partial-inventory"],
+      "live_reference_evidence": "Qualifying real-target CONNECT, INVENTORY, and immutable revision evidence is required; fixtures remain non-live.",
+      "hard_exit_requirements": ["P03_HOST_IDENTITY=PASS", "P03_CONNECT=LIVE_VERIFIED", "P03_INVENTORY=LIVE_VERIFIED", "P03_IMMUTABLE_REVISION=LIVE_VERIFIED", "P03_INTERNAL_MIRROR=RUNTIME_INTEGRATED"],
+      "maturity_effect": "Linux transport and inventory advance only when live evidence is independently accepted.",
+      "readiness_effect": "Only exact-target CONNECT and INVENTORY may be promoted; downstream capabilities remain missing.",
+      "predecessor_dependencies": ["P02"],
+      "prohibited_actions": ["filesystem-write", "database-write", "service-change", "deployment", "backup", "remediation", "DNS/SSL/firewall-change", "WordPress-access"],
+      "owner_only_gates": ["live-target-scope", "trust-anchor", "production-mutation"]
+    },
+    {
+      "id": "P04",
+      "name": "Streaming filesystem backup and data classification",
+      "depends_on": [
+        "P03"
+      ],
+      "hard_exit_gate": true,
+      "objective": "Capture a real target filesystem through bounded streaming with explicit data classification.",
+      "components": ["filesystem-source", "classification-policy", "streaming-archive", "manifest", "checksum", "isolated-file-restore"],
+      "runtime_wiring": "The filesystem source feeds the existing AppCare backup manifest and restore pipeline without a second backup system.",
+      "security_requirements": "Tenant roots, symlink and special-file controls, secret exclusion, resource caps, immutable metadata, and no production overwrite.",
+      "positive_tests": ["streamed-capture", "manifest-seal", "checksum", "isolated-restore"],
+      "negative_adversarial_tests": ["traversal", "symlink-escape", "secret-file", "prohibited-file", "oversized-data", "truncation", "checksum-mismatch", "cross-tenant-path"],
+      "live_reference_evidence": "Real-target filesystem evidence is required for LIVE_VERIFIED; fixture/reference archives cannot promote readiness.",
+      "hard_exit_requirements": ["P04_FILESYSTEM_BACKUP=LIVE_VERIFIED", "P04_STREAMING_BOUNDED=PASS", "P04_MANIFEST=PASS", "P04_ISOLATED_FILE_RESTORE=PASS"],
+      "maturity_effect": "Filesystem backup advances only after bounded streaming, manifest, checksum, and isolated restore evidence pass.",
+      "readiness_effect": "No off-site or whole-application recovery claim until P06 remote readback and restore complete.",
+      "predecessor_dependencies": ["P03"],
+      "prohibited_actions": ["full-memory-archive", "production-cleanup", "secret-capture", "WordPress-backup", "alternate-backup-root"],
+      "owner_only_gates": ["customer-filesystem-scope", "destructive-cleanup"]
+    },
+    {
+      "id": "P05",
+      "name": "Live MariaDB/MySQL transport and isolated database restore",
+      "depends_on": [
+        "P03"
+      ],
+      "hard_exit_gate": true,
+      "objective": "Prove a bounded MariaDB/MySQL logical backup and isolated restore for the approved database.",
+      "components": ["database-credential-broker", "identity-check", "consistent-dump", "artifact-stream", "manifest-checksum", "restore-target", "verification"],
+      "runtime_wiring": "Spec 015 adapters feed the existing AppCare backup pipeline and Spec 013 evidence registry with exact target binding.",
+      "security_requirements": "Closed commands, no arbitrary SQL, no secret argv or logs, consistency limitations, timeout/cancel, tenant isolation, and non-production restore only.",
+      "positive_tests": ["logical-dump", "readback-checksum", "isolated-restore", "post-restore-verification"],
+      "negative_adversarial_tests": ["wrong-db-identity", "unsafe-definer", "injection", "partial-dump", "timeout", "credential-failure", "production-restore", "manifest-mismatch"],
+      "live_reference_evidence": "Qualifying real-target database evidence is required for LIVE_VERIFIED; fixtures and isolated references remain non-live.",
+      "hard_exit_requirements": ["P05_DATABASE_BACKUP=LIVE_VERIFIED", "P05_ISOLATED_DB_RESTORE=LIVE_VERIFIED", "P05_PRODUCTION_DB_WRITES=NO", "P05_CREDENTIAL_EXPOSURE=NO"],
+      "maturity_effect": "Database adapter maturity advances only after exact engine, scope, integrity, and restore evidence pass.",
+      "readiness_effect": "Database capability alone cannot promote whole-application backup, restore, or customer readiness.",
+      "predecessor_dependencies": ["P03"],
+      "prohibited_actions": ["production-restore", "production-write", "arbitrary-SQL", "WordPress-database-access", "credential-copying"],
+      "owner_only_gates": ["database-scope", "real-customer-database-access"]
+    },
+    {
+      "id": "P06",
+      "name": "B2, Glacier, and complete application restore",
+      "depends_on": [
+        "P04",
+        "P05"
+      ],
+      "hard_exit_gate": true,
+      "objective": "Join verified filesystem and database components into immutable off-site recovery and complete isolated restore evidence.",
+      "components": ["B2-vault", "Glacier-archive", "retention-readback", "backup-manifest", "restore-planner", "recovery-validation"],
+      "runtime_wiring": "The canonical AppCare backup boundary feeds approved provider wrappers and isolated restore only.",
+      "security_requirements": "Least-privilege provider scope, immutable retention, remote readback, checksum binding, secret-safe evidence, and no production restore.",
+      "positive_tests": ["upload", "remote-head", "remote-readback", "retention", "checksum", "isolated-file-db-restore", "application-validation"],
+      "negative_adversarial_tests": ["wrong-prefix", "missing-readback", "checksum-mismatch", "version-mismatch", "retention-loss", "cross-tenant-object", "local-only-restore", "restore-escape"],
+      "live_reference_evidence": "Provider-controlled or real-target off-site evidence must be independently proven; local snapshots are not authoritative.",
+      "hard_exit_requirements": ["P06_OFFSITE_BACKUP=LIVE_VERIFIED", "P06_REMOTE_READBACK=LIVE_VERIFIED", "P06_COMPLETE_ISOLATED_RESTORE=LIVE_VERIFIED", "P06_MONTHLY_RESTORE_SCHEDULE=RUNTIME_INTEGRATED"],
+      "maturity_effect": "Off-site and complete-restore components advance only after provider and isolated-recovery receipts pass.",
+      "readiness_effect": "No deploy or pilot readiness without a verified application recovery point and rehearsal.",
+      "predecessor_dependencies": ["P04", "P05"],
+      "prohibited_actions": ["alternate-backup-namespace", "unapproved-provider-credential", "customer-data-migration", "production-overwrite"],
+      "owner_only_gates": ["provider-account-authority", "customer-data-scope"]
+    },
+    {
+      "id": "P07",
+      "name": "Live security scanning and test discovery",
+      "depends_on": [
+        "P06"
+      ],
+      "hard_exit_gate": true,
+      "objective": "Execute allowlisted scanners and discover tests safely against the verified application scope.",
+      "components": ["sandboxed-scanner", "pinned-registry", "finding-normalization", "test-discovery", "evidence-receipts"],
+      "runtime_wiring": "Scanner and test-discovery results flow through AppCare workflow and evidence models and cannot authorize remediation or production.",
+      "security_requirements": "No arbitrary executable, config, network, or inherited secrets; bounded resources/output; tenant path scope; sanitized findings.",
+      "positive_tests": ["bounded-scan", "test-discovery", "finding-normalization", "scoped-evidence"],
+      "negative_adversarial_tests": ["executable-injection", "config-injection", "SSRF", "archive-bomb", "symlink-escape", "huge-output", "hang", "poisoned-finding", "secret-exfiltration"],
+      "live_reference_evidence": "Real-target scan and test-discovery evidence is required for LIVE_VERIFIED; reference scans remain non-live.",
+      "hard_exit_requirements": ["P07_SECURITY_SCAN=LIVE_VERIFIED", "P07_TEST_DISCOVERY=LIVE_VERIFIED", "P07_SCANNER_SANDBOX=PASS", "P07_FINDING_EVIDENCE=PASS"],
+      "maturity_effect": "Scanner and test-discovery components advance only with bounded live evidence and independent security review.",
+      "readiness_effect": "Findings do not imply a permitted fix or production action; staging and remediation remain P08 work.",
+      "predecessor_dependencies": ["P06"],
+      "prohibited_actions": ["arbitrary-scanner", "network-pivot", "customer-production-mutation", "model-controlled-remediation"],
+      "owner_only_gates": ["scope-expansion", "invasive-checks", "production-impacting-action"]
+    },
+    {
+      "id": "P08",
+      "name": "Brownfield normalization, staging, and remediation",
+      "depends_on": [
+        "P07"
+      ],
+      "hard_exit_gate": true,
+      "objective": "Normalize brownfield state and perform remediation only in an isolated staging workflow.",
+      "components": ["baseline-mirror", "persistent-data-separation", "release-layout", "staging-environment", "health-probe", "remediation", "regression-evidence"],
+      "runtime_wiring": "Normalized artifacts feed the existing staging and remediation workflow with exact source, data, and approval bindings.",
+      "security_requirements": "No production-first edits, tenant isolation, deterministic patches, secret-safe staging, backup-before-change, and rollback preparation.",
+      "positive_tests": ["brownfield-normalization", "exact-staging-artifact", "seeded-fix", "regression", "security-check"],
+      "negative_adversarial_tests": ["scope-drift", "secret-exposure", "missing-backup", "failed-health", "staging-production-crossover", "unreviewed-AI-patch"],
+      "live_reference_evidence": "Real-target normalization and verified preproduction evidence are required for LIVE_VERIFIED; synthetic staging is insufficient.",
+      "hard_exit_requirements": ["P08_BROWNFIELD_NORMALIZED=LIVE_VERIFIED", "P08_STAGING=LIVE_VERIFIED", "P08_REMEDIATION=LIVE_VERIFIED", "P08_PREPRODUCTION_RECEIPT=PASS"],
+      "maturity_effect": "Normalization, staging, and remediation advance independently to the highest accepted evidence level.",
+      "readiness_effect": "No deployment or customer-onboarding promotion without exact preproduction evidence and rollback-ready artifact.",
+      "predecessor_dependencies": ["P07"],
+      "prohibited_actions": ["direct-production-edit", "unbounded-AI-patch", "missing-backup", "shared-WordPress-staging"],
+      "owner_only_gates": ["remediation-scope", "production-write"]
+    },
+    {
+      "id": "P09",
+      "name": "Deployment, migration safety, verification, and rollback",
+      "depends_on": [
+        "P08"
+      ],
+      "hard_exit_gate": true,
+      "objective": "Execute exact-artifact deployment with migration safety, verification, and automatic rollback.",
+      "components": ["deployment-adapter", "migration-planner", "verification-profile", "deployment-record", "rollback-controller", "stop-latch"],
+      "runtime_wiring": "Deployment is reachable only through the durable AppCare workflow using the approved artifact, verification, and automatic rollback after authoritative preproduction and application-scoped approval.",
+      "security_requirements": "Immutable intent, exact revision and digest binding, explicit approval, no arbitrary commands, data-loss analysis, rollback reference, duplicate prevention, and fail-closed verification.",
+      "positive_tests": ["exact-deploy", "health-verification", "critical-flow", "rollback", "persisted-receipts"],
+      "negative_adversarial_tests": ["missing-evidence", "wrong-artifact", "migration-risk", "duplicate-deploy", "failed-health", "operator-stop", "rollback-mismatch"],
+      "live_reference_evidence": "Qualifying controlled or real-target deployment and rollback evidence is required; fixtures cannot certify customer service.",
+      "hard_exit_requirements": ["P09_DEPLOY=LIVE_VERIFIED", "P09_PRODUCTION_VERIFY=LIVE_VERIFIED", "P09_DATABASE_MIGRATION_SAFETY=LIVE_VERIFIED", "P09_ROLLBACK=LIVE_VERIFIED"],
+      "maturity_effect": "Deployment and rollback advance only together with exact identity and verification evidence.",
+      "readiness_effect": "No pilot readiness from staging success alone and no production promotion without rollback; global live production remains disabled.",
+      "predecessor_dependencies": ["P08"],
+      "prohibited_actions": ["unapproved-production-deploy", "deliberate-production-failure", "arbitrary-shell-or-SQL", "rollbackless-mutation"],
+      "owner_only_gates": ["application-scoped-production-approval", "emergency-stop"]
+    },
+    {
+      "id": "P10",
+      "name": "Monitoring, scheduler, alerting, reporting, and support tiers",
+      "depends_on": [
+        "P09"
+      ],
+      "hard_exit_gate": true,
+      "objective": "Provide durable monitoring, scheduling, alerting, reporting, and support operations.",
+      "components": ["persistent-scheduler", "collectors", "alert-delivery", "reports", "support-tiers", "usage-cost-records", "restart-recovery"],
+      "runtime_wiring": "Monitoring state persists in the PostgreSQL-backed AppCare database and is consumed by dashboard and reporting surfaces after restart.",
+      "security_requirements": "Tenant-scoped collectors, bounded polling and resource quotas, alert deduplication, no secret leakage, worker leases, and durable replay safety.",
+      "positive_tests": ["scheduled-check", "persisted-observation", "alert", "report", "restart-replay", "dashboard-state"],
+      "negative_adversarial_tests": ["stale-state", "duplicate-event", "alert-storm", "cross-tenant-observation", "collector-compromise", "output-exhaustion", "lost-checkpoint"],
+      "live_reference_evidence": "Sustained controlled or real-target monitoring and alert/report delivery are required for LIVE_VERIFIED.",
+      "hard_exit_requirements": ["P10_MONITORING=LIVE_VERIFIED", "P10_SCHEDULER=LIVE_VERIFIED", "P10_ALERTING=LIVE_VERIFIED", "P10_REPORTING=LIVE_VERIFIED", "P10_RESTART_DURABILITY=PASS"],
+      "maturity_effect": "Monitoring and operations advance only after persisted restart-safe evidence, not in-memory observations.",
+      "readiness_effect": "No paid-service readiness without sustained operations, support workflow, and cost evidence.",
+      "predecessor_dependencies": ["P09"],
+      "prohibited_actions": ["in-memory-only-acceptance", "unbounded-polling", "customer-data-leakage", "monitoring-production-mutation", "WordPress/WooCommerce-future-branch"],
+      "owner_only_gates": ["support-tier-change", "production-incident-action"]
+    },
+    {
+      "id": "P11",
+      "name": "Operator productization, commercial lifecycle, offboarding, and AppCare DR",
+      "depends_on": [
+        "P10"
+      ],
+      "hard_exit_gate": true,
+      "objective": "Operator productization, commercial lifecycle, offboarding, and AppCare DR/self-recovery.",
+      "components": ["operator dashboard", "customer auth/approval", "billing/cancellation and billing/offboarding", "external secret custody", "offboarding", "AppCare DR", "support procedures"],
+      "runtime_wiring": "Operator and customer state, support tiers, approvals, billing, credentials, offboarding, reports, and DR evidence are persisted and auditable.",
+      "security_requirements": "Least privilege, tenant isolation, external secret custody (secret-manager custody), approval separation, recovery/offboarding proof, restart durability, and no global production switch.",
+      "positive_tests": ["onboarding", "approval", "billing-lifecycle/cancellation", "rotation-offboarding", "dashboard-report-access", "AppCare-restore", "DR-recovery"],
+      "negative_adversarial_tests": ["unauthorized-action", "stale-approval", "revoked-credential", "tenant-crossover", "incomplete-offboarding", "unsafe-data-retention", "missing-DR", "billing-mismatch"],
+      "live_reference_evidence": "External-beta service readiness requires qualifying real operational, service-ready evidence; reference product flows remain insufficient.",
+      "hard_exit_requirements": ["P11_OPERATOR_DASHBOARD=LIVE_VERIFIED", "P11_AUTH_APPROVAL=LIVE_VERIFIED", "P11_BILLING_OFFBOARDING=LIVE_VERIFIED", "P11_EXTERNAL_SECRET_MANAGER=LIVE_VERIFIED", "P11_APPCARE_DR=LIVE_VERIFIED"],
+      "maturity_effect": "Complete operations and operator/commercial components advance only after durable live workflow and recovery evidence.",
+      "readiness_effect": "Paid-service and customer onboarding readiness remains blocked until all dependencies and external secret custody pass.",
+      "predecessor_dependencies": ["P10"],
+      "prohibited_actions": ["plaintext-secret-custody", "global-production-enable", "broad-autonomous-onboarding", "unapproved-billing-mutation", "WordPress/WooCommerce-future-branch"],
+      "owner_only_gates": ["commercial-decision", "legal-decision", "billing/account-decision", "external-secret-manager-authorization", "first-customer-production-authorization"]
+    },
+    {
+      "id": "P12",
+      "name": "Real-target acceptance, exact-release security review, and beta decision",
+      "depends_on": [
+        "P11"
+      ],
+      "hard_exit_gate": true,
+      "objective": "Complete the real-target lifecycle, real cost measurement, exact-release S01-S30 review, and evidence-backed beta decision.",
+      "components": ["end-to-end/full-lifecycle-runner", "release-evidence-manifest", "adversarial-suite", "S01-S30 security suite", "cost-measurement", "release evaluator", "owner-decision-record"],
+      "runtime_wiring": "The evaluator consumes all predecessor and exact-head/exact-scope persisted evidence for the decision and cannot be enabled by a caller boolean, worker claim, or stale receipt.",
+      "security_requirements": "All mandatory S01-S30 gates, real-target cost, rotation/offboarding, restart durability, reporting, rollback, and production-disable invariants must pass fail-closed.",
+      "positive_tests": ["full lifecycle real-internal-application", "receipt-digest-head-check", "adversarial-drills", "final release-readiness evaluator"],
+      "negative_adversarial_tests": ["fixture-only", "stale-head", "artifact-mismatch", "missing-receipt", "wrong-tenant", "revoked-credential", "failed-rollback", "stale-monitoring", "security-failure", "operator-stop", "production-bypass"],
+      "live_reference_evidence": "One real internal application must complete the applicable lifecycle; synthetic/reference evidence remains insufficient, and external beta requires owner-authorized exact real-target evidence.",
+      "hard_exit_requirements": ["P12_REAL_TARGET_FULL_LIFECYCLE=PASS", "P12_S01_S30=PASS", "P12_INTERNAL_PILOT=PASS", "P12_REAL_COST_MEASURED=YES", "P12_OPEN_CRITICAL_FINDINGS=0"],
+      "maturity_effect": "Only exact evidence-backed layers may advance; documentation and fixtures cannot become SERVICE_READY.",
+      "readiness_effect": "Decide PRIVATE_BETA customer, pilot, and paid readiness only after predecessor gates and owner-authorized production evidence; global production stays disabled with LIVE_CUSTOMER_PRODUCTION_ENABLED=NO.",
+      "predecessor_dependencies": ["P11"],
+      "prohibited_actions": ["evaluator-override", "evidence-relabeling", "readiness-bypass", "broad-production-enable", "Vercel-retry", "deliberate-customer-failure", "customer-production-mutation", "unapproved-production-mutation"],
+      "owner_only_gates": ["final-beta-decision", "first-private-beta-decision", "first-external-production-authorization", "owner-approval-required"]
+    }
+  ],
+  "current_readiness": {
+    "CORE_PLATFORM_READY": true,
+    "STACK_GENERIC_LINUX_READY": false,
+    "STACK_WORDPRESS_READY": false,
+    "STACK_WOOCOMMERCE_READY": false,
+    "STACK_GITHUB_VERCEL_SUPABASE_READY": false,
+    "CUSTOMER_ONBOARDING_READY": false,
+    "PILOT_READY": false,
+    "PAID_SERVICE_READY": false,
+    "LIVE_CUSTOMER_PRODUCTION_ENABLED": false
+  }
+}

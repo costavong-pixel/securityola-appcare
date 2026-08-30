@@ -1,127 +1,158 @@
 # SecurityOla AppCare Agent Instructions
 
+## Binding authority
+
+Before any AppCare implementation work, read:
+
+1. `APPCARE_PRODUCT_IMPLEMENTATION_BLUEPRINT.md`
+2. `docs/governance/APPCARE_CURRENT_SCOPE.json`
+3. `.specify/memory/constitution.md`
+4. `docs/governance/PRODUCT_READINESS_AND_GAP_REGISTER.md`
+5. `docs/security/PRE_BETA_SECURITY_GATE.md`
+6. `BETA_LOOP.md`
+7. the relevant Spec Kit package
+
+The blueprint is the authoritative current-branch dependency plan. Older roadmaps remain historical or broad backlog where they conflict.
+
 ## Product boundary
 
-SecurityOla AppCare: **Scan → Fix → Backup → Monitor → Recover** for supported AI-built web applications.
+AppCare provides **Scan -> Fix -> Backup -> Monitor -> Recover** for supported websites and applications.
 
-Initial supported stack: GitHub + Vercel + Supabase + Lovable-generated/similar apps.
+Current supported-profile build target:
+
+- Linux-hosted PHP 8.x;
+- Nginx or Apache;
+- MariaDB/MySQL;
+- direct-filesystem or Git-based deployment after normalization and exact binding.
+
+First real acceptance target: `video.slabfranchise.com`.
+
+Current implementation exclusions:
+
+```text
+WORDPRESS=FUTURE_BRANCH
+WOOCOMMERCE=FUTURE_BRANCH
+```
+
+Do not implement, test, or promote WordPress/WooCommerce capability without separate owner authorization.
+
+## Mandatory maturity labels
+
+Every component report must use exactly one:
+
+- `DOCUMENTED`
+- `COMPONENT_IMPLEMENTED`
+- `RUNTIME_INTEGRATED`
+- `LIVE_VERIFIED`
+- `SERVICE_READY`
+
+Do not use `IMPLEMENTED` alone.
 
 ## Shared physical server, isolated applications
 
-SecurityOla AppCare and the SecurityOla WordPress plugin/backend share the same physical SecurityOla server, but they are separate applications and must remain isolated at the application/runtime level.
+For every server, DNS, deployment, database, worker, backup, or service action, explicitly state:
 
-For every server, DNS, deployment, database, worker, backup, or service action, explicitly state the target application before acting:
-- `TARGET=AppCare`, or
-- `TARGET=WordPress Security`
+```text
+TARGET=AppCare
+```
 
-For AppCare work, do not reuse or modify the WordPress product's:
-- application/repository directory
-- database/schema/user
-- `.env` or secrets
-- queues/workers/services
-- writable volumes
-- deploy credentials
-- service accounts
-- production API routes
-- backup credentials/namespaces
-- logs or staging paths
+For AppCare work, do not reuse or modify the WordPress Security product's repository, DB/schema/user, secrets, queues, services, writable volumes, deploy credentials, service accounts, API routes, backup namespace, logs, or staging paths.
 
-AppCare must have its own application path, runtime/service identity, deployment path, database, workers, secrets, logs, provider credentials, backup namespace, and staging/development paths on the shared server.
+AppCare must keep its own application path, runtime identity, deployment path, DB, workers, secrets, logs, provider credentials, backup namespace, and environment boundaries.
 
-Inside AppCare, keep `development → staging → production` isolated. Development jobs must never receive production credentials.
+No customer production write is authorized by ordinary engineering work.
 
-Do not touch the WordPress repositories or runtime unless a future explicit integration specification authorizes it.
+## Multi-model engineering roles
 
-## Public product routing
+### GPT-5.6 Luna Max — coordinator
 
-SecurityOla remains one brand with two products. Marketing does not require separate product subdomains.
+Luna owns dependency planning, architecture integration, task packets, acceptance criteria, actual-diff review, trust-boundary approvals, readiness decisions, and final owner-facing reports.
 
-Preferred public structure:
-- `securityola.com` — SecurityOla homepage presenting both products
-- `securityola.com/appcare` — AppCare marketing/product page
-- `securityola.com/wordpress` — WordPress Security marketing/product page
-- `app.securityola.com` — AppCare customer dashboard/login when needed
-- `api.securityola.com` — API entrypoint; AppCare and WordPress API routes/services must remain technically isolated behind it
+Luna must produce a dependency-based plan before delegation.
 
-Do not create additional product subdomains unless there is a concrete technical or product requirement.
+### GPT-5.3 Spark — primary coder
 
-## Cost-aware engineering roles
+Spark implements bounded Luna-approved work packets and tests. Spark cannot set architecture, approve its own work, promote readiness, merge, or authorize production.
 
-Use `WORKER_PROTOCOL.md` as the delegation contract.
+### GPT-5.6 Terra — independent architecture/security challenger
 
-### Codex owns
-- architecture and product decisions
-- security boundaries and threat-model decisions
-- task decomposition and acceptance criteria
-- dependency and third-party skill approval
-- production/deployment logic
-- review of every worker diff
-- final merge/release decisions
+Terra reviews designs and security-sensitive diffs for cross-tenant access, credential exposure, injection, data loss, recovery gaps, privilege, and unsafe rollback. Terra does not merge or self-approve authored fixes.
 
-### OpenCode + DeepSeek V4 Flash is the bounded cheap worker
-Delegate clearly specified, reversible repository work when it reduces Codex token usage, including scaffolding, repetitive implementation, tests, docs, mechanical refactors, and first-pass fixes after Codex identifies the problem.
+### Codex Security
 
-Do **not** delegate architecture, security-policy decisions, production access, deployment authorization, credential handling, third-party skill acceptance, or final review.
+Security-relevant PRs require the applicable Codex Security review. Repaired attack paths require verify-fix where applicable.
 
-For a delegated task, Codex creates a minimal packet under `.codex/tasks/` and runs `scripts/deepseek-worker.sh <task-file>`. Inspect the resulting diff and test evidence directly; never trust the worker summary as proof.
+### Auxiliary OpenCode/DeepSeek/Qwen workers
 
-Maximum three DeepSeek repair passes for the same defect. After three failed passes, Codex takes over root-cause/fix work.
+Use `WORKER_PROTOCOL.md`. Auxiliary workers are optional and bounded. They cannot replace Luna review, Terra challenge, or Codex Security.
 
-### Independent Codex final review
-Before closing a beta issue or merging/releasing its changes, Codex must independently review the complete diff and deterministic test evidence through the current Codex agent/app/cloud session or GitHub Codex review. Codex CLI may also be used when available, but its absence or lack of authentication is not a blocker. Security-sensitive changes also require the applicable Codex Security review/validation workflow.
+## Current 12-phase queue
 
-## Closed-loop beta execution
+1. Blueprint and enforcement
+2. Credential custody and SSH onboarding
+3. Live connect, inventory, immutable baseline
+4. Streaming filesystem backup
+5. Live MariaDB backup/restore
+6. B2, Glacier, complete application restore
+7. Live scanning and test discovery
+8. Brownfield normalization, staging, remediation
+9. Deployment, migration safety, verification, rollback
+10. Monitoring, scheduler, alerting, reporting
+11. Operator/commercial/offboarding/AppCare DR
+12. Real-target acceptance and S01-S30 launch decision
 
-Primary work queue: GitHub issue **#12 `[BETA-MASTER]`** and its ordered BETA-00 through BETA-10 issues.
+No readiness state may bypass a failed predecessor.
 
-For every issue, repeat this loop until its acceptance criteria pass:
+## Required engineering loop
 
-`/saveruflo preflight → /graphify . --update/query → /speckit task/spec as needed → Codex scopes work → OpenCode/DeepSeek executes bounded cheap tasks where safe → Codex implements sensitive/remaining work → deterministic tests → security/failure pressure tests → independent Codex final review → exact-head CI → Saveruflo checkpoint → Graphify update/impact review → close issue → next open beta issue`
+```text
+Saveruflo preflight when available
+→ Graphify query/update
+→ repository-native Spec Kit workflow
+→ Luna dependency plan
+→ Terra design challenge
+→ Spark or bounded worker implementation
+→ Luna actual-diff review
+→ Terra security review
+→ deterministic/negative/adversarial tests
+→ dependency and secret/public-safety scans
+→ Codex Security
+→ exact-head CI
+→ protected merge
+→ evidence and maturity update
+```
 
-If validation fails, remain on the same issue, diagnose, patch, and retest. Do not skip ahead.
-
-Only stop for a genuine external blocker that cannot be resolved from repository/server context, such as missing owner-controlled credentials/KYC/domain authorization or an unsafe ambiguous production authorization boundary. Normal bugs, failed tests, dependency problems, skill bugs, and implementation choices are not stop conditions.
-
-Private beta is complete only when BETA-10 passes and the exact release commit/test evidence is recorded.
-
-## Required development workflow
-
-- Use `/saveruflo` as a bounded read-only preflight before implementation work and save a checkpoint after each bounded task/phase.
-- Use `/speckit` for feature specification, clarification, planning, tasks, consistency analysis, and implementation.
-- Install/use Graphify with Codex to maintain a persistent code graph; query it for architecture/impact and update it after meaningful structural changes.
-- Use LangGraph only where durable/resumable workflow orchestration is justified: scan → backup gate → findings → remediation → approval → deploy → verify/rollback → monitor/report.
-- Use `/impeccable` after functional flows work for website/portal UX and visual QA.
+If a tool is unavailable, record `UNAVAILABLE`; do not fabricate `PASS`.
 
 ## Production safety
 
-Never perform a production write unless the workflow has:
+Never perform a production write without:
 
-1. preserved evidence,
-2. created a valid backup/snapshot,
-3. reproduced/tested in staging or isolation,
-4. passed relevant automated validation,
-5. a defined rollback path,
-6. production verification after deployment.
+1. authoritative evidence;
+2. mandatory pre-change backup;
+3. B2 remote readback;
+4. verified isolated restore;
+5. staging/reproduction;
+6. regression/security validation;
+7. exact artifact/revision binding;
+8. exact application-scoped approval;
+9. production verification;
+10. rollback readiness;
+11. monitoring.
 
-No unrestricted model-controlled root SSH. No arbitrary model-generated shell execution in production.
+No unrestricted model-controlled root SSH. No arbitrary model-generated shell, SQL, scanner, or deployment execution.
 
-## Third-party skills
+## Stop conditions
 
-Do not trust third-party skills by default.
+Do not stop for ordinary implementation decisions, bugs, failed tests, missing adapters, dependency issues, skill defects, legacy layouts, missing Git, or missing health endpoints that can be engineered safely.
 
-**Inspect → sandbox → pressure-test → patch/debug → retest → pin → use.**
-
-Drop any skill that cannot be made safe, maintainable, and testable.
+Stop for genuine owner-only boundaries: new account/credential authorization not covered by existing approval, DNS, payment/billing account action, legal decision, irreversible/high-risk production data action, or first real production deployment authorization.
 
 ## Repository safety
 
 - Never commit credentials or customer data.
-- Keep customer-specific vulnerability evidence out of this public repository.
-- Prefer small, reviewable changes with exact test evidence.
-- Do not expand product scope or add new product names without an explicit product decision.
-
-<!-- SPECKIT START -->
-For additional context about technologies to be used, project structure,
-shell commands, and other important information, read the current plan
-[BETA-06 safe remediation workspace plan](specs/006-remediation/plan.md).
-<!-- SPECKIT END -->
+- Keep customer vulnerability evidence out of this public repository.
+- Prefer small reviewable PRs.
+- Do not widen current stack scope.
+- Do not touch WordPress/WooCommerce current implementation.
+- Do not report fixture/reference evidence as live support.
