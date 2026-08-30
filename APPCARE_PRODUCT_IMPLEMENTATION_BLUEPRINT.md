@@ -206,6 +206,9 @@ A phase is incomplete when its control-plane record exists but its execution-pla
 18. Later independent research may proceed in parallel, but no readiness state may bypass a failed dependency.
 19. Exact-head CI and security evidence are required for protected merge.
 20. The final beta candidate must pass the complete S01-S30 security gate.
+21. Only qualifying `real_target` evidence may promote customer-onboarding, pilot, or paid-service readiness; fixture, reference, and controlled-provider evidence must fail closed at those layers.
+22. The Spec 013 readiness evaluator is the sole authority for capability and readiness promotion; a caller-supplied boolean or worker claim is never sufficient.
+23. Production authority is resolved from persisted, scope-bound approval and recovery evidence, never from an input flag supplied by a worker or caller.
 
 ---
 
@@ -265,6 +268,22 @@ Luna dependency plan
 
 Make this blueprint, the current scope, maturity model, future-branch exclusions, and phase gates impossible to silently remove or bypass.
 
+## Enforceable phase contract
+
+- objective: Bind the current AppCare product scope and dependency gates to protected governance.
+- components: blueprint, machine-readable scope, active-guidance links, and deterministic governance tests.
+- runtime_wiring: CI parses the scope contract and the blueprint contract; no customer capability is enabled by this phase.
+- security_requirements: protected review, no credentials or customer data, fail-closed readiness, and no production mutation.
+- positive_tests: validate the product contract, exact profile and target, phase graph, gate requirements, exclusions, and readiness floor.
+- negative_adversarial_tests: removing or weakening a phase, gate, dependency, exclusion, authority boundary, or evidence rule must fail CI.
+- live_reference_evidence: none; this phase accepts governance evidence only and cannot substitute fixture or reference evidence for live proof.
+- hard_exit_requirements: P01_BLUEPRINT_MERGED=YES; P01_SCOPE_MACHINE_READABLE=YES; P01_TWELVE_PHASES=PASS; P01_HARD_EXIT_GATES=PASS; P01_CI_ENFORCEMENT=PASS; P01_CROSS_DOCUMENT_CONSISTENCY=PASS; P01_LUNA_APPROVAL=PASS; P01_TERRA_APPROVAL=PASS; P01_CODEX_SECURITY=PASS; P01_EXACT_HEAD_CI=PASS; P01_PROTECTED_MAIN_VERIFIED=PASS.
+- maturity_effect: BLUEPRINT_GOVERNANCE_MATURITY may reach SERVICE_READY only for governance enforcement itself.
+- readiness_effect: promote no CONNECT, INVENTORY, customer, pilot, paid-service, or production capability.
+- predecessor_dependencies: none.
+- prohibited_actions: no customer access, credentials, production writes, WordPress/WooCommerce work, Vercel retry, or readiness bypass.
+- owner_only_gates: owner-approved scope/amendment decisions and protected merge remain required for governance changes.
+
 ## Build deliverables
 
 - `APPCARE_PRODUCT_IMPLEMENTATION_BLUEPRINT.md`;
@@ -303,7 +322,15 @@ Make this blueprint, the current scope, maturity model, future-branch exclusions
 ```text
 P01_BLUEPRINT_MERGED=YES
 P01_SCOPE_MACHINE_READABLE=YES
+P01_TWELVE_PHASES=PASS
+P01_HARD_EXIT_GATES=PASS
 P01_CI_ENFORCEMENT=PASS
+P01_CROSS_DOCUMENT_CONSISTENCY=PASS
+P01_LUNA_APPROVAL=PASS
+P01_TERRA_APPROVAL=PASS
+P01_CODEX_SECURITY=PASS
+P01_EXACT_HEAD_CI=PASS
+P01_PROTECTED_MAIN_VERIFIED=PASS
 ```
 
 ## Readiness effect
@@ -317,6 +344,22 @@ No customer capability is promoted. This phase only makes the remaining work man
 ## Objective
 
 Build the actual secure harness that converts an opaque credential reference into a usable, scoped, revocable SSH identity without exposing private key material.
+
+## Enforceable phase contract
+
+- objective: Provide encrypted, scoped, revocable SSH credential custody and safe onboarding primitives.
+- components: encrypted vault, Ed25519 key service, opaque resolver, manual public-key path, restricted bootstrap, rotation, revocation, and offboarding.
+- runtime_wiring: credential references resolve only at the Linux SSH boundary and bootstrap uses fixed typed operations with durable audit state.
+- security_requirements: no plaintext secret persistence, non-root identity, tenant binding, strict ownership/modes, no arbitrary root shell, and fail-closed revocation.
+- positive_tests: create, resolve, rotate, revoke, manually onboard, bootstrap, verify, and offboard an isolated reference identity.
+- negative_adversarial_tests: reject secret leakage, path/symlink attacks, key substitution, cross-tenant reuse, root/sudo, injection, replay, stale keys, and partial bootstrap.
+- live_reference_evidence: approved internal target may provide bounded read-only or onboarding evidence; no customer production write is implied.
+- hard_exit_requirements: P02_LOCAL_VAULT=RUNTIME_INTEGRATED; P02_MANUAL_ONBOARDING=LIVE_VERIFIED; P02_BOOTSTRAP_PATH=LIVE_VERIFIED_OR_BLOCKED_EXTERNAL_WITH_MANUAL_PATH_PASS; P02_ROTATION=LIVE_VERIFIED; P02_OFFBOARDING=LIVE_VERIFIED; P02_SECRETS_EXPOSED=NO.
+- maturity_effect: custody and onboarding components advance only to the highest evidence-backed maturity level.
+- readiness_effect: credential rotation/offboarding and stack readiness remain unpromoted until the whole lifecycle and external-vault requirements pass.
+- predecessor_dependencies: P01.
+- prohibited_actions: no customer production mutation, shared WordPress/plugin identity reuse, unrestricted sudo, or private-key exposure.
+- owner_only_gates: external credential/account authorization and any first customer production bootstrap require explicit owner approval.
 
 ## Build deliverables
 
@@ -423,6 +466,22 @@ Credential rotation/offboarding remain unpromoted until the whole lifecycle and 
 
 Use AppCare itself to establish trusted read-only access, collect normalized inventory, and assign an immutable identity to a brownfield application that has no Git revision.
 
+## Enforceable phase contract
+
+- objective: Establish a trusted live target identity, normalized inventory, and immutable application baseline.
+- components: target registration, host-key binding, typed connect/inventory collectors, revision capture, and internal source mirror.
+- runtime_wiring: Spec 014 transport and Spec 013 capability/evidence evaluators consume the same tenant/application target identity.
+- security_requirements: strict host-key verification, non-root read-only access, path/output limits, no TOFU, and no automatic privilege escalation.
+- positive_tests: connect and inventory the authorized internal target, normalize observations, and seal the baseline digest.
+- negative_adversarial_tests: reject wrong host keys, target substitution, traversal, symlink escape, secret output, timeouts, replay, and partial inventory masquerading as complete.
+- live_reference_evidence: qualifying real-target CONNECT, INVENTORY, and immutable revision evidence is required; fixtures/reference runs remain non-live.
+- hard_exit_requirements: P03_HOST_IDENTITY=PASS; P03_CONNECT=LIVE_VERIFIED; P03_INVENTORY=LIVE_VERIFIED; P03_IMMUTABLE_REVISION=LIVE_VERIFIED; P03_INTERNAL_MIRROR=RUNTIME_INTEGRATED.
+- maturity_effect: Linux transport and inventory advance only when live evidence is independently accepted.
+- readiness_effect: CONNECT/INVENTORY may be promoted for the exact target; backup, scan, staging, deploy, rollback, and monitoring remain missing.
+- predecessor_dependencies: P02.
+- prohibited_actions: no filesystem/database writes, service changes, deployment, backup, remediation, DNS, SSL, firewall, or WordPress access.
+- owner_only_gates: live target scope, trust anchor, and any production mutation remain owner-authorized boundaries.
+
 ## Build deliverables
 
 ### Live target registration
@@ -512,6 +571,22 @@ P03_INTERNAL_MIRROR=RUNTIME_INTEGRATED
 
 Capture the real application filesystem safely and efficiently without loading the full site into memory or backing up unnecessary regenerable media.
 
+## Enforceable phase contract
+
+- objective: Capture a real target filesystem through bounded streaming with explicit data classification.
+- components: allowlisted source, classification policy, streaming archive, manifest, checksum, and isolated file restore.
+- runtime_wiring: the filesystem source feeds the existing AppCare backup manifest and restore pipeline without a second backup system.
+- security_requirements: tenant roots, symlink/special-file controls, secret exclusion, byte/resource caps, immutable metadata, and no production overwrite.
+- positive_tests: stream bounded synthetic and approved reference data, seal checksums/manifests, and restore into the canonical isolated boundary.
+- negative_adversarial_tests: reject traversal, symlink escape, secret/prohibited files, oversized data, truncation, checksum mismatch, and cross-tenant paths.
+- live_reference_evidence: real-target filesystem evidence is required for LIVE_VERIFIED; fixture/reference archives cannot promote customer readiness.
+- hard_exit_requirements: P04_FILESYSTEM_BACKUP=LIVE_VERIFIED; P04_STREAMING_BOUNDED=PASS; P04_MANIFEST=PASS; P04_ISOLATED_FILE_RESTORE=PASS.
+- maturity_effect: filesystem backup advances only after bounded streaming, manifest, checksum, and isolated restore evidence pass.
+- readiness_effect: no off-site or whole-application recovery claim until P06 completes remote readback and restore.
+- predecessor_dependencies: P03.
+- prohibited_actions: no full-memory archive, production cleanup, secret capture, WordPress/plugin backup, or alternate backup root.
+- owner_only_gates: customer filesystem scope and any destructive cleanup require explicit application approval.
+
 ## Build deliverables
 
 - `LinuxFilesystemBackupSource`;
@@ -570,11 +645,27 @@ P04_ISOLATED_FILE_RESTORE=PASS
 
 ---
 
-# PHASE 05 — Live MariaDB/MySQL transport and database restore
+# PHASE 05 — Live MariaDB/MySQL transport and isolated database restore
 
 ## Objective
 
 Connect the Spec 015 safety contracts to a real customer database path and prove a consistent backup and isolated restore without modifying production.
+
+## Enforceable phase contract
+
+- objective: Prove a bounded MariaDB/MySQL logical backup and isolated restore for the approved application database.
+- components: database credential broker, identity/version check, consistent dump, artifact streaming, manifest/checksum, restore target, and verification.
+- runtime_wiring: Spec 015 adapters feed the existing AppCare backup pipeline and Spec 013 evidence registry with exact target binding.
+- security_requirements: closed commands, no arbitrary SQL, no secret argv/logs, consistency limitations, timeout/cancel, tenant isolation, and non-production restore only.
+- positive_tests: run a real/reference logical dump, readback/checksum, isolated restore, and post-restore verification with limitations recorded.
+- negative_adversarial_tests: reject wrong DB identity, unsafe definers, injection, partial/truncated dump, timeout, credential failure, production restore, and mismatched manifest.
+- live_reference_evidence: qualifying real-target database evidence is required for LIVE_VERIFIED; fixtures and isolated reference databases remain non-live.
+- hard_exit_requirements: P05_DATABASE_BACKUP=LIVE_VERIFIED; P05_ISOLATED_DB_RESTORE=LIVE_VERIFIED; P05_PRODUCTION_DB_WRITES=NO; P05_CREDENTIAL_EXPOSURE=NO.
+- maturity_effect: database adapter maturity advances only after the exact engine, scope, integrity, and restore evidence pass.
+- readiness_effect: database capability alone cannot promote whole-application backup, restore, or customer readiness.
+- predecessor_dependencies: P03.
+- prohibited_actions: no production restore/write, arbitrary SQL, WordPress/plugin database access, or credential copying.
+- owner_only_gates: database scope and any real customer database access require explicit owner/application authorization.
 
 ## Build deliverables
 
@@ -632,6 +723,22 @@ P05_CREDENTIAL_EXPOSURE=NO
 ## Objective
 
 Turn separate file/DB artifacts into an authoritative off-site recovery point and reconstruct the application in an isolated environment.
+
+## Enforceable phase contract
+
+- objective: Join verified filesystem and database components into immutable off-site recovery and complete isolated restore evidence.
+- components: B2 vault, Glacier archive, retention/readback verification, backup manifest, restore planner, and recovery validation.
+- runtime_wiring: existing canonical AppCare backup boundary feeds approved provider wrappers and isolated restore only.
+- security_requirements: least-privilege provider scope, immutable retention, remote readback on every backup, checksum binding, no secret evidence, and no production restore.
+- positive_tests: upload synthetic/approved data, HEAD/read back exact objects, compare checksums, verify retention, restore files and DB in isolation, and validate application state.
+- negative_adversarial_tests: reject wrong prefix, missing readback, checksum/version mismatch, retention loss, cross-tenant object, local-only restore, and restore escape.
+- live_reference_evidence: provider-controlled or real-target off-site evidence must be independently proven; local snapshots are not authoritative.
+- hard_exit_requirements: P06_OFFSITE_BACKUP=LIVE_VERIFIED; P06_REMOTE_READBACK=LIVE_VERIFIED; P06_COMPLETE_ISOLATED_RESTORE=LIVE_VERIFIED; P06_MONTHLY_RESTORE_SCHEDULE=RUNTIME_INTEGRATED.
+- maturity_effect: off-site and complete-restore components advance only after provider and isolated-recovery receipts pass.
+- readiness_effect: no deploy or pilot readiness without a verified application recovery point and rehearsal.
+- predecessor_dependencies: P04 and P05.
+- prohibited_actions: no alternate backup namespace, unapproved provider credential, customer-data migration, or production overwrite.
+- owner_only_gates: provider/account authority and any customer data scope beyond the approved target require explicit approval.
 
 ## Build deliverables
 
@@ -718,6 +825,22 @@ P06_MONTHLY_RESTORE_SCHEDULE=RUNTIME_INTEGRATED
 
 Run real bounded scanners and discover executable application tests without allowing customer content or model output to control the scanner runtime.
 
+## Enforceable phase contract
+
+- objective: Execute allowlisted scanners and discover tests safely against the verified application scope.
+- components: sandboxed scanner runtime, pinned scanner registry, finding normalization, test discovery, and evidence receipts.
+- runtime_wiring: scanner and test-discovery results flow through the existing AppCare workflow/evidence model and cannot directly authorize remediation or production.
+- security_requirements: no arbitrary executable/config/network, bounded resources/output, symlink/path scope, sanitized findings, and no inherited secrets.
+- positive_tests: scan the approved target/reference fixture, discover bounded tests, normalize findings, and persist evidence with exact scope.
+- negative_adversarial_tests: reject executable/config injection, SSRF, archive bombs, symlink escape, huge output, hangs, poisoned findings, secret exfiltration, and cross-tenant paths.
+- live_reference_evidence: real-target scan/test-discovery evidence is required for LIVE_VERIFIED; reference scans remain non-live.
+- hard_exit_requirements: P07_SECURITY_SCAN=LIVE_VERIFIED; P07_TEST_DISCOVERY=LIVE_VERIFIED; P07_SCANNER_SANDBOX=PASS; P07_FINDING_EVIDENCE=PASS.
+- maturity_effect: scanner and test-discovery components advance only with bounded live evidence and independent security review.
+- readiness_effect: findings do not imply a permitted fix or production action; staging and remediation remain governed by P08.
+- predecessor_dependencies: P06.
+- prohibited_actions: no arbitrary scanner, network pivot, customer production mutation, or model-controlled remediation.
+- owner_only_gates: scope expansion, invasive checks, and production-impacting actions require explicit owner approval.
+
 ## Build deliverables
 
 ### Sandboxed scanner runtime
@@ -794,6 +917,22 @@ P07_FINDING_EVIDENCE=PASS
 
 Convert a direct-filesystem application into an AppCare-manageable, versioned, testable deployment without editing production first.
 
+## Enforceable phase contract
+
+- objective: Normalize brownfield state and perform remediation only in an isolated staging workflow.
+- components: baseline/mirror, persistent-data separation, release layout, staging environment, health probe, remediation and regression evidence.
+- runtime_wiring: normalized artifacts feed the existing staging/remediation workflow and preserve exact source, data, and approval bindings.
+- security_requirements: no production-first edits, tenant isolation, deterministic patches, secret-safe staging, backup-before-change, and rollback preparation.
+- positive_tests: normalize the approved reference target, stage the exact artifact, apply a bounded seeded fix, and pass regression/security checks.
+- negative_adversarial_tests: reject unsafe patch, scope drift, secret exposure, missing backup, failed health, staging-to-production crossover, and unreviewed AI output.
+- live_reference_evidence: real-target normalization and verified preproduction evidence are required for LIVE_VERIFIED; synthetic staging alone is insufficient.
+- hard_exit_requirements: P08_BROWNFIELD_NORMALIZED=LIVE_VERIFIED; P08_STAGING=LIVE_VERIFIED; P08_REMEDIATION=LIVE_VERIFIED; P08_PREPRODUCTION_RECEIPT=PASS.
+- maturity_effect: normalization, staging, and remediation advance independently to the highest accepted evidence level.
+- readiness_effect: no deployment or customer onboarding promotion without exact preproduction evidence and rollback-ready artifact.
+- predecessor_dependencies: P07.
+- prohibited_actions: no direct production edit, unbounded AI patch, missing backup, or shared WordPress/plugin staging.
+- owner_only_gates: remediation scope and any production write remain explicitly application-approved.
+
 ## Build deliverables
 
 ### Brownfield normalization
@@ -865,6 +1004,22 @@ P08_PREPRODUCTION_RECEIPT=PASS
 ## Objective
 
 Deploy only the exact approved artifact through a target-specific controlled path and recover safely when verification fails.
+
+## Enforceable phase contract
+
+- objective: Execute exact-artifact deployment with migration safety, verification, and automatic rollback.
+- components: deployment adapter, migration planner, verification profile, immutable deployment record, rollback controller, and stop latch.
+- runtime_wiring: deployment is reachable only through the durable AppCare workflow using the approved artifact, verification, and automatic rollback after authoritative preproduction and application-scoped approval.
+- security_requirements: immutable intent, exact revision/digest binding, explicit approval, no arbitrary commands, transaction/data-loss analysis, rollback reference, duplicate prevention, and fail-closed verification.
+- positive_tests: deploy a verified artifact to the controlled target, verify health/critical flow, exercise safe rollback, and persist all receipts.
+- negative_adversarial_tests: reject missing evidence, wrong artifact, migration risk, duplicate deploy, failed health, operator stop, provider mutation after stop, and rollback mismatch.
+- live_reference_evidence: qualifying controlled/real-target deployment and rollback evidence is required; fixture providers cannot certify customer service.
+- hard_exit_requirements: P09_DEPLOY=LIVE_VERIFIED; P09_PRODUCTION_VERIFY=LIVE_VERIFIED; P09_DATABASE_MIGRATION_SAFETY=LIVE_VERIFIED; P09_ROLLBACK=LIVE_VERIFIED.
+- maturity_effect: deployment and rollback advance only together with exact identity and verification evidence.
+- readiness_effect: no pilot readiness from staging success alone and no production promotion without rollback; global live production remains disabled.
+- predecessor_dependencies: P08.
+- prohibited_actions: no unapproved production deploy, deliberate production failure, arbitrary shell/SQL, or rollbackless mutation.
+- owner_only_gates: every real customer production write requires explicit application-scoped owner/customer approval.
 
 ## Build deliverables
 
@@ -943,6 +1098,22 @@ P09_ROLLBACK=LIVE_VERIFIED
 ## Objective
 
 Operate the Protection service continuously rather than only on demand.
+
+## Enforceable phase contract
+
+- objective: Provide durable monitoring, scheduling, alerting, reporting, and support operations.
+- components: persistent scheduler, collectors, alert delivery, reports, support tiers, usage/cost records, and restart recovery.
+- runtime_wiring: monitoring state persists in the PostgreSQL-backed AppCare database and is consumed by dashboard/reporting surfaces after restart.
+- security_requirements: tenant-scoped collectors, bounded polling and resource quotas, alert deduplication, no secret/raw customer leakage, worker leases, and durable replay safety.
+- positive_tests: run scheduled checks, persist observations/alerts/reports, restart services, replay state, and verify customer/operator views.
+- negative_adversarial_tests: reject stale state, duplicate events, alert storms, cross-tenant observations, collector compromise, output exhaustion, and lost checkpoints.
+- live_reference_evidence: sustained controlled/real-target monitoring and alert/report delivery are required for LIVE_VERIFIED.
+- hard_exit_requirements: P10_MONITORING=LIVE_VERIFIED; P10_SCHEDULER=LIVE_VERIFIED; P10_ALERTING=LIVE_VERIFIED; P10_REPORTING=LIVE_VERIFIED; P10_RESTART_DURABILITY=PASS.
+- maturity_effect: monitoring and operations advance only after persisted restart-safe evidence, not in-memory observations.
+- readiness_effect: no paid-service readiness without sustained operations, support workflow, and cost evidence.
+- predecessor_dependencies: P09.
+- prohibited_actions: no in-memory-only acceptance, unbounded polling, customer-data leakage, production mutation through monitoring, or WordPress/WooCommerce work before the future branch.
+- owner_only_gates: support-tier changes and production incident actions remain application-scoped and approved.
 
 ## Build deliverables
 
@@ -1032,11 +1203,27 @@ P10_RESTART_DURABILITY=PASS
 
 ---
 
-# PHASE 11 — Operator productization, commercial lifecycle, and AppCare self-recovery
+# PHASE 11 — Operator productization, commercial lifecycle, offboarding, and AppCare DR
 
 ## Objective
 
 Complete the operational features required before external or paid customers.
+
+## Enforceable phase contract
+
+- objective: Operator productization, commercial lifecycle, offboarding, and AppCare DR/self-recovery.
+- components: operator dashboard, customer auth/approval, billing/cancellation and billing/offboarding, external secret custody, offboarding, AppCare DR, and support procedures.
+- runtime_wiring: operator/customer state, support tiers, approvals, billing status, credentials, offboarding, reports, and DR evidence are persisted and auditable.
+- security_requirements: least privilege, tenant isolation, external secret custody (secret-manager custody), approval separation, recovery/offboarding proof, restart durability, and no global production switch.
+- positive_tests: rehearse onboarding, approval, billing lifecycle/cancellation, rotation/offboarding, dashboard/report access, AppCare restore, and DR recovery.
+- negative_adversarial_tests: reject unauthorized operator action, stale approval, revoked credential, tenant crossover, incomplete offboarding, unsafe data retention, missing DR, and billing-state mismatch.
+- live_reference_evidence: external-beta service readiness requires qualifying real operational, service-ready evidence; reference product flows remain insufficient.
+- hard_exit_requirements: P11_OPERATOR_DASHBOARD=LIVE_VERIFIED; P11_AUTH_APPROVAL=LIVE_VERIFIED; P11_BILLING_OFFBOARDING=LIVE_VERIFIED; P11_EXTERNAL_SECRET_MANAGER=LIVE_VERIFIED; P11_APPCARE_DR=LIVE_VERIFIED.
+- maturity_effect: complete operations and operator/commercial components advance only after durable live workflow and recovery evidence.
+- readiness_effect: paid-service and customer onboarding readiness remains blocked until all dependencies and the external secret-custody requirement pass.
+- predecessor_dependencies: P10.
+- prohibited_actions: no plaintext secret custody, global production enablement, broad autonomous onboarding, unapproved billing mutation, or WordPress/WooCommerce work before the future branch.
+- owner_only_gates: commercial/legal decisions, billing/account decisions, external secret-manager authorization, and first customer production authorization remain owner-only.
 
 ## Build deliverables
 
@@ -1121,11 +1308,27 @@ P11_APPCARE_DR=LIVE_VERIFIED
 
 ---
 
-# PHASE 12 — Real-target acceptance, final security gate, and beta launch decision
+# PHASE 12 — Real-target acceptance, exact-release security review, and beta decision
 
 ## Objective
 
 Prove the product promise on the real internal target, perform the exact-release security review, and make the internal-pilot/external-beta decision.
+
+## Enforceable phase contract
+
+- objective: Complete the real-target lifecycle, real cost measurement, exact-release S01-S30 review, and evidence-backed beta decision.
+- components: end-to-end/full lifecycle runner, release evidence manifest, adversarial suite, S01-S30 security suite, cost measurement, release evaluator, and owner decision record.
+- runtime_wiring: the evaluator consumes all predecessor and exact-head/exact-scope persisted evidence for the decision and cannot be enabled by a caller boolean, worker claim, or stale receipt.
+- security_requirements: all mandatory S01-S30 gates, real-target cost, rotation/offboarding, restart durability, reporting, rollback, and production-disable invariants must pass fail-closed.
+- positive_tests: complete the full lifecycle for the real internal application, verify every receipt/digest/head, run adversarial drills, and execute the final release-readiness evaluator.
+- negative_adversarial_tests: reject fixture-only evidence, stale/mismatched head/artifact, missing receipt, wrong tenant, revoked credential, failed rollback, stale monitoring, security failure, operator stop bypass, and any production bypass.
+- live_reference_evidence: one real internal application must complete the applicable lifecycle; synthetic/reference evidence remains insufficient, and external private-beta requires the owner-authorized gate and exact real-target evidence.
+- hard_exit_requirements: P12_REAL_TARGET_FULL_LIFECYCLE=PASS; P12_S01_S30=PASS; P12_INTERNAL_PILOT=PASS; P12_REAL_COST_MEASURED=YES; P12_OPEN_CRITICAL_FINDINGS=0.
+- maturity_effect: only the exact evidence-backed layers may advance; no phase documentation or fixture result can become SERVICE_READY.
+- readiness_effect: decide PRIVATE_BETA customer/pilot/paid readiness only after all predecessor gates and owner-authorized production evidence; keep global production disabled with LIVE_CUSTOMER_PRODUCTION_ENABLED=NO.
+- predecessor_dependencies: P11.
+- prohibited_actions: no evaluator override, evidence relabeling, readiness bypass, broad production enable, Vercel retry, deliberate customer failure, customer production mutation, or unapproved production mutation.
+- owner_only_gates: final beta decision, first private-beta decision, and first external/customer production authorization require explicit owner approval; no worker can substitute for that approval.
 
 ## Preproduction real-target sequence
 
