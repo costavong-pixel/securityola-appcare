@@ -156,3 +156,45 @@ Stop for genuine owner-only boundaries: new account/credential authorization not
 - Do not widen current stack scope.
 - Do not touch WordPress/WooCommerce current implementation.
 - Do not report fixture/reference evidence as live support.
+
+## Permanent Hermes/Codex operating model
+
+This section supplements the existing AppCare blueprint and governance; it
+does not replace or weaken them.
+
+- Hermes using GPT-5.6 Luna is the project/product coordinator.
+- GPT-5.3 Codex Spark is the bounded implementation worker.
+- The current Hermes GitHub task issue supplies the bounded changing scope.
+- The AppCare blueprint, current scope, constitution, security gates, phase
+  dependencies, and exact five-level maturity vocabulary above remain
+  authoritative.
+- Spark cannot promote maturity or readiness, skip phase dependencies, approve
+  its own work, merge, or authorize production/customer activity.
+
+The task issue should contain only:
+
+```text
+FEATURE_ID
+USER_GOAL
+CURRENT_EVIDENCE
+CURRENT_GAP
+SCOPE
+OUT_OF_SCOPE
+ENGINE_REQUIREMENTS
+UI_REQUIREMENTS
+INTEGRATION_REQUIREMENTS
+ACCEPTANCE_CRITERIA
+TEST_REQUIREMENTS
+ALLOWED_AREAS
+KNOWN_BLOCKERS
+```
+
+Before reading that issue, the worker must read this file and every
+repository-authoritative document referenced above. If the issue conflicts
+with binding AppCare governance, mark the task `BLOCKED` and return the exact
+conflict to Hermes/Luna. Do not silently choose which instruction to ignore.
+Work on `codex/*` branches, never push directly to `main`, never force-push,
+and return a Draft PR for coordinator/owner review. No AppCare capability is
+DONE based on backend code alone; the applicable engine, UI, integration,
+persistence/state, success, failure, discoverability, test, runtime-evidence,
+and maturity gates must pass.
