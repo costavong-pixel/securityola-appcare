@@ -6,13 +6,15 @@ Before any AppCare implementation work, read:
 
 1. `APPCARE_PRODUCT_IMPLEMENTATION_BLUEPRINT.md`
 2. `docs/governance/APPCARE_CURRENT_SCOPE.json`
-3. `.specify/memory/constitution.md`
-4. `docs/governance/PRODUCT_READINESS_AND_GAP_REGISTER.md`
-5. `docs/security/PRE_BETA_SECURITY_GATE.md`
-6. `BETA_LOOP.md`
-7. the relevant Spec Kit package
+3. `docs/governance/APPCARE_MODEL_EXECUTION_ROUTING.md`
+4. `docs/governance/APPCARE_MODEL_EXECUTION_ROUTING.json`
+5. `.specify/memory/constitution.md`
+6. `docs/governance/PRODUCT_READINESS_AND_GAP_REGISTER.md`
+7. `docs/security/PRE_BETA_SECURITY_GATE.md`
+8. `BETA_LOOP.md`
+9. the relevant Spec Kit package
 
-The blueprint is the authoritative current-branch dependency plan. Older roadmaps remain historical or broad backlog where they conflict.
+The blueprint is the authoritative current-branch dependency plan. The model-execution routing policy controls coder-lane selection. Older roadmaps remain historical or broad backlog where they conflict.
 
 ## Product boundary
 
@@ -48,7 +50,7 @@ Every component report must use exactly one:
 
 Do not use `IMPLEMENTED` alone.
 
-## Shared physical server, isolated applications
+## Shared physical server and worker-host isolation
 
 For every server, DNS, deployment, database, worker, backup, or service action, explicitly state:
 
@@ -60,19 +62,47 @@ For AppCare work, do not reuse or modify the WordPress Security product's reposi
 
 AppCare must keep its own application path, runtime identity, deployment path, DB, workers, secrets, logs, provider credentials, backup namespace, and environment boundaries.
 
+The Prompt Ola VPS may host an isolated direct DeepSeek worker. It is not permission to read or modify Prompt Ola application files, databases, services, credentials, logs, deployment paths, or production directories. Direct DeepSeek work must use a dedicated AppCare checkout/worktree and AppCare-only worker state.
+
 No customer production write is authorized by ordinary engineering work.
 
-## Multi-model engineering roles
+## Multi-model engineering roles and routing
 
 ### GPT-5.6 Luna Max — coordinator
 
-Luna owns dependency planning, architecture integration, task packets, acceptance criteria, actual-diff review, trust-boundary approvals, readiness decisions, and final owner-facing reports.
+Luna owns dependency planning, architecture integration, task packets, coder-lane routing, acceptance criteria, actual-diff review, trust-boundary approvals, readiness decisions, and final owner-facing reports.
 
 Luna must produce a dependency-based plan before delegation.
 
-### GPT-5.3 Spark — primary coder
+### GPT-5.3 Spark — preferred coding lane
 
-Spark implements bounded Luna-approved work packets and tests. Spark cannot set architecture, approve its own work, promote readiness, merge, or authorize production.
+Spark implements bounded Luna-approved work packets and tests when its included Codex quota is available and the task is suitable.
+
+Spark cannot set architecture, approve its own work, promote readiness, merge, or authorize production.
+
+### Direct DeepSeek worker — mandatory Spark-quota fallback after qualification
+
+When Spark quota is limited, exhausted, or unavailable, Luna routes the bounded coding packet through:
+
+```text
+Prompt Ola VPS
+→ direct DeepSeek worker
+→ owner's DeepSeek API
+```
+
+For this direct route:
+
+```text
+CODEX_SPARK_QUOTA_INVOLVED=NO
+OPENAI_API_INVOLVED=NO
+DEEPSEEK_API_INVOLVED=YES
+```
+
+The DeepSeek API credential remains in protected server-side custody and must never enter chat, Git, GitHub, task packets, normal logs, CI artifacts, evidence, or reports.
+
+DeepSeek is a coder only. It cannot set architecture, approve itself, promote readiness, merge, authorize production, or widen scope.
+
+The current `scripts/deepseek-worker.sh` uses `opencode/deepseek-v4-flash-free` and must not be claimed as the owner-approved direct DeepSeek API route until a direct launcher/provider path is built or safely adapted, security-reviewed, tested, and exact-head qualified.
 
 ### GPT-5.6 Terra — independent architecture/security challenger
 
@@ -82,7 +112,7 @@ Terra reviews designs and security-sensitive diffs for cross-tenant access, cred
 
 Security-relevant PRs require the applicable Codex Security review. Repaired attack paths require verify-fix where applicable.
 
-### Auxiliary OpenCode/DeepSeek/Qwen workers
+### Auxiliary OpenCode/Qwen workers
 
 Use `WORKER_PROTOCOL.md`. Auxiliary workers are optional and bounded. They cannot replace Luna review, Terra challenge, or Codex Security.
 
@@ -109,9 +139,10 @@ No readiness state may bypass a failed predecessor.
 Saveruflo preflight when available
 → Graphify query/update
 → repository-native Spec Kit workflow
-→ Luna dependency plan
+→ Luna dependency plan and coder-lane selection
 → Terra design challenge
-→ Spark or bounded worker implementation
+→ Spark or qualified direct DeepSeek implementation
+→ deterministic scope and secret verification
 → Luna actual-diff review
 → Terra security review
 → deterministic/negative/adversarial tests
@@ -122,7 +153,9 @@ Saveruflo preflight when available
 → evidence and maturity update
 ```
 
-If a tool is unavailable, record `UNAVAILABLE`; do not fabricate `PASS`.
+Do not run Spark and DeepSeek concurrently against the same files or branch.
+
+If a tool or coder lane is unavailable, record the exact blocker. Do not fabricate `PASS`, do not pretend a worker ran, and do not silently substitute the OpenAI API for the direct DeepSeek route.
 
 ## Production safety
 
@@ -156,3 +189,4 @@ Stop for genuine owner-only boundaries: new account/credential authorization not
 - Do not widen current stack scope.
 - Do not touch WordPress/WooCommerce current implementation.
 - Do not report fixture/reference evidence as live support.
+- Do not report the OpenCode-routed DeepSeek launcher as direct DeepSeek API integration.
