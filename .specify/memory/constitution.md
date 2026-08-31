@@ -25,14 +25,29 @@ WordPress and WooCommerce are future branches under the current owner-approved s
 ### VII. Third-party skills are untrusted
 A candidate skill is discoverable material until its upstream source, revision, dependencies, permissions, secret handling, sandbox behavior, failure behavior, and regression tests are reviewed. Unsafe or unmaintainable candidates are dropped in favor of AppCare-owned wrappers.
 
-### VIII. Coordinator and reviewer roles are independent
-GPT-5.6 Luna Max is the primary coordinator and owns dependency planning, architecture integration, task packets, acceptance criteria, actual-diff review, trust-boundary approvals, readiness decisions, and final owner-facing reports.
+### VIII. Coordinator, coder routing, and reviewer roles are independent
+GPT-5.6 Luna Max is the primary coordinator and owns dependency planning, architecture integration, task packets, coder-lane routing, acceptance criteria, actual-diff review, trust-boundary approvals, readiness decisions, and final owner-facing reports.
 
-GPT-5.3 Spark is the primary coder for bounded Luna-approved tasks. Spark cannot approve its own work, set readiness, merge, or authorize production.
+GPT-5.3 Spark is the preferred coder for bounded Luna-approved tasks while included Spark quota is available. Spark cannot approve its own work, set readiness, merge, or authorize production.
+
+When Spark quota is limited, exhausted, or unavailable, the owner-approved fallback is:
+
+```text
+GPT-5.6 Luna Max coordinator
+→ Prompt Ola VPS
+→ direct DeepSeek worker
+→ owner's DeepSeek API
+```
+
+For the direct DeepSeek route, Codex Spark quota is not involved and the OpenAI API is not involved. The DeepSeek API credential remains in protected server-side custody and must never enter prompts, task packets, Git, GitHub, normal logs, CI artifacts, evidence, or reports. DeepSeek cannot approve itself, set architecture/readiness, merge, authorize production, or widen scope.
+
+The Prompt Ola VPS is only a worker host for this route. AppCare work must use a dedicated isolated AppCare checkout/worktree and state directory and must not read or modify Prompt Ola production files, databases, services, credentials, logs, or deployment paths.
+
+The existing `scripts/deepseek-worker.sh` uses an OpenCode-routed model and is not automatically evidence of the direct DeepSeek API route. The direct launcher/provider must be independently built or safely adapted, tested, reviewed, and exact-head qualified before it can be reported as runtime-integrated.
 
 GPT-5.6 Terra is the independent architecture/security challenger. Terra does not merge or self-approve a fix it authored.
 
-Codex Security remains an independent scan and verification lane. Auxiliary OpenCode/DeepSeek/Qwen workers may perform bounded delegated work but cannot replace Luna, Terra, or Codex Security.
+Codex Security remains an independent scan and verification lane. Auxiliary OpenCode/Qwen workers may perform bounded delegated work but cannot replace Luna, Terra, or Codex Security.
 
 ### IX. Exact review and CI evidence is required
 Every engineering issue closes only after the complete diff, dependency changes, Graphify impact, deterministic tests, security/failure tests, secret scan, independent Luna/Terra/Codex review as applicable, exact-head GitHub Actions result, and sanitized Saveruflo checkpoint when available are recorded. Unavailable tooling is reported as `UNAVAILABLE`, never fabricated as `PASS`.
@@ -63,7 +78,7 @@ The following rules are binding:
 19. The unqualified word `IMPLEMENTED` is not a valid readiness report.
 20. Every implementation phase has a hard exit gate, and no readiness state may bypass a failed dependency.
 
-The authoritative current implementation dependency plan is `APPCARE_PRODUCT_IMPLEMENTATION_BLUEPRINT.md`, with machine-readable scope in `docs/governance/APPCARE_CURRENT_SCOPE.json`. The broad gap backlog remains `docs/governance/PRODUCT_READINESS_AND_GAP_REGISTER.md`.
+The authoritative current implementation dependency plan is `APPCARE_PRODUCT_IMPLEMENTATION_BLUEPRINT.md`, with machine-readable scope in `docs/governance/APPCARE_CURRENT_SCOPE.json`. Model/coder lane selection is governed by `docs/governance/APPCARE_MODEL_EXECUTION_ROUTING.md` and `docs/governance/APPCARE_MODEL_EXECUTION_ROUTING.json`. The broad gap backlog remains `docs/governance/PRODUCT_READINESS_AND_GAP_REGISTER.md`.
 
 ### XI. Mandatory pre-beta security review
 No customer private beta or external beta launch is permitted until `docs/security/PRE_BETA_SECURITY_GATE.md` passes against the exact release candidate.
@@ -84,14 +99,14 @@ The current customer-readiness work follows the 12 phases in `APPCARE_PRODUCT_IM
 
 Every issue follows:
 
-`Saveruflo preflight when available -> Graphify query/update -> constitution/specify/clarify/plan/checklist/tasks/analyze/converge as needed -> Luna dependency plan -> Terra design challenge -> bounded implementation -> Luna actual-diff review -> Terra security review -> deterministic/security/failure tests -> Codex Security -> exact-head CI -> checkpoint -> Graphify impact review -> protected merge`.
+`Saveruflo preflight when available -> Graphify query/update -> constitution/specify/clarify/plan/checklist/tasks/analyze/converge as needed -> Luna dependency plan and coder-lane routing -> Terra design challenge -> bounded implementation -> Luna actual-diff review -> Terra security review -> deterministic/security/failure tests -> Codex Security -> exact-head CI -> checkpoint -> Graphify impact review -> protected merge`.
 
 ## Governance
 
-This constitution, `APPCARE_PRODUCT_IMPLEMENTATION_BLUEPRINT.md`, `docs/governance/APPCARE_CURRENT_SCOPE.json`, `AGENTS.md`, `SECURITY.md`, `ARCHITECTURE.md`, `WORKER_PROTOCOL.md`, `docs/governance/PRODUCT_READINESS_AND_GAP_REGISTER.md`, `docs/security/PRE_BETA_SECURITY_GATE.md`, the current Spec Kit feature, and the current GitHub issue are jointly binding.
+This constitution, `APPCARE_PRODUCT_IMPLEMENTATION_BLUEPRINT.md`, `docs/governance/APPCARE_CURRENT_SCOPE.json`, `docs/governance/APPCARE_MODEL_EXECUTION_ROUTING.md`, `docs/governance/APPCARE_MODEL_EXECUTION_ROUTING.json`, `AGENTS.md`, `SECURITY.md`, `ARCHITECTURE.md`, `WORKER_PROTOCOL.md`, `docs/governance/PRODUCT_READINESS_AND_GAP_REGISTER.md`, `docs/security/PRE_BETA_SECURITY_GATE.md`, the current Spec Kit feature, and the current GitHub issue are jointly binding.
 
-Conflicts are resolved in favor of the explicit owner decision, the stricter security boundary, the current-scope blueprint, and the product-completeness invariant.
+Conflicts are resolved in favor of the explicit owner decision, the stricter security boundary, the current-scope blueprint, the model-execution routing policy, and the product-completeness invariant.
 
 Any amendment records the reason, affected workflow/readiness gates, security impact, tests, and new version before implementation relies on it.
 
-**Version**: 1.2.0 | **Ratified**: 2026-08-12 | **Last Amended**: 2026-08-29
+**Version**: 1.3.0 | **Ratified**: 2026-08-12 | **Last Amended**: 2026-08-30
