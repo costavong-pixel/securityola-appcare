@@ -50,7 +50,7 @@ class _FaultingProvider(VaultCredentialProvider):
         super().release(credential)
 
 
-def _target() -> LinuxTarget:
+def _target(credential_reference: str) -> LinuxTarget:
     return LinuxTarget(
         tenant_id="tenant-a",
         application_id="application-a",
@@ -59,7 +59,7 @@ def _target() -> LinuxTarget:
         expected_hostname="app-a.internal",
         ssh_port=22,
         expected_host_key_fingerprint=FINGERPRINT,
-        credential_reference="vault://appcare/linux-a",
+        credential_reference=credential_reference,
         remote_user="appcare",
         approved_application_roots=("/srv/app",),
         approved_service_names=("app.service",),
@@ -117,7 +117,7 @@ def test_release_failure_abandons_claim_for_same_operation_retry(tmp_path: Path)
     credential_vault_module._fsync_directory = fsync_with_post_unlink_failure
     try:
         client = LinuxSSHClient(
-            _target(),
+            _target(record.credential_reference),
             credential_provider=cast(Any, provider),
             runner=runner,
             known_hosts=KnownHostsStore(tmp_path / "known-hosts"),
