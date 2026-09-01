@@ -9,4 +9,4 @@ exec /usr/bin/env -i \
     LANG=C \
     LC_ALL=C \
     "SSH_ORIGINAL_COMMAND=${SSH_ORIGINAL_COMMAND-}" \
-    /usr/bin/python3 -B -I -E -s /usr/local/libexec/securityola-appcare-release-guard "$@"
+    /usr/bin/python3 -B -I -E -S -s /usr/local/libexec/securityola-appcare-release-guard "$@"

@@ -56,12 +56,15 @@ def test_installed_wrapper_scrubs_python_import_environment() -> None:
     assert "/usr/bin/env -i" in text
     assert '"SSH_ORIGINAL_COMMAND=${SSH_ORIGINAL_COMMAND-}"' in text
     assert (
-        "/usr/bin/python3 -B -I -E -s /usr/local/libexec/securityola-appcare-release-guard" in text
+        "/usr/bin/python3 -B -I -E -S -s /usr/local/libexec/securityola-appcare-release-guard"
+        in text
     )
     assert "-m appcare.connectors" not in text
     guard_source = guard.read_text(encoding="utf-8")
     assert "importlib.metadata" in guard_source
     assert "importlib.import_module" in guard_source
+    assert "sysconfig.get_path" in guard_source
+    assert "-S" in text
     assert "package_tree_sha256" in guard_source
     assert "appcare.connectors" in guard_source
     guard_tree = ast.parse(guard_source)
@@ -152,7 +155,7 @@ def test_release_artifact_installs_wrapper_in_libexec() -> None:
     installer = project / "ops" / "ssh" / "install-securityola-appcare-release"
     installer_text = installer.read_text(encoding="utf-8")
     assert (
-        "/usr/bin/python3 -B -I -E -s /usr/local/libexec/securityola-appcare-release-guard"
+        "/usr/bin/python3 -B -I -E -S -s /usr/local/libexec/securityola-appcare-release-guard"
         in installer_text
     )
     assert '--install-release "$@"' in installer_text

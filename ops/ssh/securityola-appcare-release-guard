@@ -11,6 +11,7 @@ import os
 import re
 import stat
 import sys
+import sysconfig
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -41,6 +42,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if os.name != "posix":
             raise ReleaseGuardError("release guard requires POSIX")
+        _add_system_package_paths()
         if arguments[:1] == ("--install-release",):
             return _install(arguments[1:])
         if "--install-release" in arguments:
@@ -151,6 +153,16 @@ def _candidate() -> dict[str, object]:
             package_tree_sha256=package_tree_sha256,
         ),
     }
+
+
+def _add_system_package_paths() -> None:
+    for scheme in ("purelib", "platlib"):
+        location = sysconfig.get_path(scheme)
+        if not location:
+            continue
+        path = Path(location)
+        if path.is_absolute() and path.as_posix() not in sys.path:
+            sys.path.insert(0, path.as_posix())
 
 
 def _manifest(raw: bytes) -> dict[str, str | int]:
