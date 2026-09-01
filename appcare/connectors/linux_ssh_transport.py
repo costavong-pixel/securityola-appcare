@@ -8,10 +8,11 @@ import stat
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, cast
 
 from .linux_ssh_commands import CommandRegistry, RemoteCommand
 from .linux_ssh_contracts import (
@@ -38,6 +39,7 @@ from .linux_ssh_contracts import (
     ProcessResult,
     ProcessRunner,
     RemoteExecutionResult,
+    ResolvedCredential,
     RuntimeMetadataRead,
     ServiceMetadataRead,
     StorageMetadataRead,
@@ -403,6 +405,14 @@ class LinuxSSHClient:
                 "operation_replayed",
             )
         credential = self._credential_provider.resolve(self.target)
+        try:
+            return self._execute_with_credential(operation, credential)
+        finally:
+            self._release_credential(credential)
+
+    def _execute_with_credential(
+        self, operation: LinuxOperation, credential: ResolvedCredential
+    ) -> RemoteExecutionResult:
         if credential.credential_reference != self.target.credential_reference:
             raise CredentialBoundaryError("resolved credential reference mismatches target")
         self._validate_credential_handle(credential.identity_file)
@@ -412,11 +422,7 @@ class LinuxSSHClient:
             store=self._known_hosts,
             limits=self._limits,
         )
-        commands = self._commands.commands_for(
-            operation,
-            target=self.target,
-            limits=self._limits,
-        )
+        commands = self._commands.commands_for(operation, target=self.target, limits=self._limits)
         records: list[InventoryRecord] = []
         failures: list[RemoteExecutionResult] = []
         for command in commands:
@@ -460,6 +466,11 @@ class LinuxSSHClient:
                 stderr_bytes=sum(item.stderr_bytes for item in failures),
             )
         return self._result(operation, OperationStatus.PASSED, "ok", records=tuple(records))
+
+    def _release_credential(self, credential: ResolvedCredential) -> None:
+        release = getattr(self._credential_provider, "release", None)
+        if release is not None:
+            cast(Callable[[ResolvedCredential], None], release)(credential)
 
     def collect_inventory(self, operation_id: str) -> LinuxInventorySnapshot:
         base = validate_operation_id(operation_id)
