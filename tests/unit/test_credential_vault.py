@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -48,7 +49,7 @@ def _target(record: VaultCredentialRecord, **changes: object) -> LinuxTarget:
         "expected_host_key_fingerprint": "SHA256:"
         + base64.b64encode(hashlib.sha256(b"host-key").digest()).decode().rstrip("="),
         "credential_reference": record.credential_reference,
-        "remote_user": "appcare",
+        "remote_user": record.remote_user,
         "approved_application_roots": ("/srv/app",),
         "approved_service_names": ("app.service",),
         "approved_database_identifiers": ("mysql",),
@@ -85,6 +86,7 @@ def test_generated_private_key_is_encrypted_and_metadata_is_public_safe(tmp_path
     assert record.status() == VaultCredentialStatus.ACTIVE
 
 
+@pytest.mark.skipif(os.name != "posix", reason="SSH runtime identity paths are POSIX-only")
 def test_runtime_resolution_is_scoped_and_release_removes_ephemeral_identity(
     tmp_path: Path,
 ) -> None:
@@ -107,8 +109,11 @@ def test_runtime_resolution_is_scoped_and_release_removes_ephemeral_identity(
         provider.resolve(_target(record, target_reference="other-target"))
     with pytest.raises(CredentialVaultError, match="scope"):
         provider.resolve(_target(record, tenant_id="tenant-b"))
+    with pytest.raises(CredentialVaultError, match="scope"):
+        provider.resolve(_target(record, remote_user="other-user"))
 
 
+@pytest.mark.skipif(os.name != "posix", reason="SSH runtime identity paths are POSIX-only")
 def test_rotation_revocation_and_offboarding_fail_closed(tmp_path: Path) -> None:
     vault, keys = _vault(tmp_path)
     first = keys.generate(
@@ -127,16 +132,55 @@ def test_rotation_revocation_and_offboarding_fail_closed(tmp_path: Path) -> None
     with pytest.raises(CredentialVaultError, match="not active"):
         provider.resolve(_target(first))
 
-    resolved = provider.resolve(_target(replacement))
-    provider.release(resolved)
-    receipt = vault.offboard(replacement.credential_reference)
+    stale_runtime_identity = Path(provider.resolve(_target(replacement)).identity_file)
+    receipt = vault.offboard(
+        replacement.credential_reference,
+        now=datetime.now(UTC) + timedelta(minutes=2),
+    )
     assert receipt.revoked
     assert receipt.encrypted_blob_removed
-    assert not receipt.old_key_usable
+    assert receipt.runtime_files_removed
+    assert receipt.local_private_material_removed
+    assert receipt.old_key_usable
+    assert not receipt.remote_authorization_revoked
     assert receipt.audit_recorded
+    assert not stale_runtime_identity.exists()
     assert vault.get(replacement.credential_reference).status() == VaultCredentialStatus.DESTROYED
     with pytest.raises(CredentialVaultError, match="not active"):
         provider.resolve(_target(replacement))
+
+
+def test_rotation_journal_recovers_after_interruption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault, keys = _vault(tmp_path)
+    first = keys.generate(
+        tenant_id="tenant-a",
+        application_id="application-a",
+        target_reference="target-a",
+    )
+    persist = vault._persist_record_unlocked
+
+    def fail_for_replacement(record: VaultCredentialRecord) -> None:
+        if record.version == 2:
+            raise RuntimeError("simulated interruption")
+        persist(record)
+
+    monkeypatch.setattr(vault, "_persist_record_unlocked", fail_for_replacement)
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        vault.rotate(
+            first.credential_reference,
+            private_key=_private_key(),
+            now=datetime.now(UTC) + timedelta(minutes=1),
+        )
+    journal = json.loads(next((vault.root / "rotations").glob("*.json")).read_text())
+    replacement_reference = journal["replacement_record"]["credential_reference"]
+    monkeypatch.undo()
+
+    assert vault.get(first.credential_reference).status() == VaultCredentialStatus.REVOKED
+    assert vault.get(replacement_reference).status() == VaultCredentialStatus.ACTIVE
+    assert not any((vault.root / "rotations").iterdir())
 
 
 def test_tampered_blob_and_non_ed25519_key_are_rejected(tmp_path: Path) -> None:
@@ -183,9 +227,12 @@ def test_manual_onboarding_and_bootstrap_are_public_only(tmp_path: Path) -> None
         BootstrapStep.CLEANUP_AUTHORIZATION,
     ):
         plan = plan.advance(step)
-    assert plan.complete
+    assert not plan.complete
+    assert plan.ready_for_external_verification
     assert "private" not in repr(plan.to_public_dict()).casefold()
 
+    with pytest.raises(CredentialVaultError, match="remote user"):
+        keys.manual_onboarding(record.credential_reference, remote_user="other-user")
     with pytest.raises(ValueError, match="non-root"):
         keys.manual_onboarding(record.credential_reference, remote_user="root")
 

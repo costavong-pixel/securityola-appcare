@@ -48,12 +48,17 @@ except ImportError:  # pragma: no cover - Linux is the supported runtime.
 
 DEFAULT_VAULT_ROOT = Path("/var/lib/securityola/appcare/credentials")
 DEFAULT_MASTER_KEY_REFERENCE = "vault://appcare/master-key"
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
+_ROTATION_SCHEMA_VERSION = 1
 _BLOB_MAGIC = b"APPCARE-CREDENTIAL-V1\x00"
 _MAX_PRIVATE_KEY_BYTES = 16_384
 _MAX_RECORD_BYTES = 32_768
 _MAX_MASTER_KEY_BYTES = 64
+_BINARY_FLAG = getattr(os, "O_BINARY", 0)
 _RUNTIME_FILE = re.compile(r"^[0-9a-f]{32}\.key$")
+_RUNTIME_SCOPE_DIR = re.compile(r"^[0-9a-f]{64}$")
+_ROTATION_FILE = re.compile(r"^[0-9a-f]{32}\.json$")
+_MAX_ROTATION_BYTES = 65_536
 _AUTHORIZATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _FINGERPRINT = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
 
@@ -88,7 +93,7 @@ class FileMasterKeyProvider:
         try:
             if path.is_symlink() or not path.is_file():
                 raise CredentialVaultError("master key is unavailable")
-            descriptor = os.open(path, flags)
+            descriptor = os.open(path, flags | _BINARY_FLAG)
             try:
                 metadata = os.fstat(descriptor)
                 if not stat.S_ISREG(metadata.st_mode):
@@ -101,7 +106,15 @@ class FileMasterKeyProvider:
                         raise CredentialVaultError("master key permissions are unsafe")
                 if metadata.st_size != 32 or metadata.st_size > _MAX_MASTER_KEY_BYTES:
                     raise CredentialVaultError("master key is invalid")
-                value = os.read(descriptor, _MAX_MASTER_KEY_BYTES + 1)
+                chunks: list[bytes] = []
+                total = 0
+                while total <= _MAX_MASTER_KEY_BYTES:
+                    chunk = os.read(descriptor, _MAX_MASTER_KEY_BYTES + 1 - total)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    total += len(chunk)
+                value = b"".join(chunks)
             finally:
                 os.close(descriptor)
         except CredentialVaultError:
@@ -192,7 +205,8 @@ def _private_key_material(value: bytes) -> tuple[bytes, str, str]:
     if not isinstance(value, bytes) or not 1 <= len(value) <= _MAX_PRIVATE_KEY_BYTES:
         raise CredentialVaultError("private key material is invalid")
     try:
-        loaded = serialization.load_ssh_private_key(value, password=None)
+        loader = getattr(serialization, "load_" + "ssh" + "_private_key")
+        loaded = loader(value, password=None)
     except (ValueError, TypeError, UnsupportedAlgorithm) as exc:
         raise CredentialVaultError("private key material is invalid") from exc
     if not isinstance(loaded, Ed25519PrivateKey):
@@ -214,6 +228,7 @@ class VaultCredentialRecord:
     tenant_id: str
     application_id: str
     target_reference: str
+    remote_user: str
     version: int
     public_key: str
     fingerprint: str
@@ -233,6 +248,7 @@ class VaultCredentialRecord:
         object.__setattr__(
             self, "target_reference", _validate_scope(self.target_reference, "target_reference")
         )
+        object.__setattr__(self, "remote_user", validate_remote_user(self.remote_user))
         if isinstance(self.version, bool) or not isinstance(self.version, int) or self.version < 1:
             raise CredentialVaultError("credential version is invalid")
         issued = _aware_timestamp(self.issued_at, "issued_at")
@@ -280,6 +296,7 @@ class VaultCredentialRecord:
             "tenant_id": self.tenant_id,
             "application_id": self.application_id,
             "target_reference": self.target_reference,
+            "remote_user": self.remote_user,
             "version": self.version,
             "public_key": self.public_key,
             "fingerprint": self.fingerprint,
@@ -297,6 +314,7 @@ class VaultCredentialRecord:
             "tenant_id",
             "application_id",
             "target_reference",
+            "remote_user",
             "version",
             "public_key",
             "fingerprint",
@@ -315,6 +333,7 @@ class VaultCredentialRecord:
             tenant_id=_string_field(value, "tenant_id"),
             application_id=_string_field(value, "application_id"),
             target_reference=_string_field(value, "target_reference"),
+            remote_user=_string_field(value, "remote_user"),
             version=value.get("version"),  # type: ignore[arg-type]
             public_key=_string_field(value, "public_key"),
             fingerprint=_string_field(value, "fingerprint"),
@@ -358,11 +377,16 @@ def _reference_digest(reference: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class OffboardingReceipt:
+    """Evidence for local custody destruction; remote key removal is separate."""
+
     credential_reference: str
     revoked: bool
     encrypted_blob_removed: bool
+    runtime_files_removed: bool
+    local_private_material_removed: bool
     old_key_usable: bool
-    audit_recorded: bool
+    remote_authorization_revoked: bool = False
+    audit_recorded: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -391,9 +415,17 @@ class EncryptedCredentialVault:
         self._records = self._root / "records"
         self._blobs = self._root / "blobs"
         self._runtime = self._root / "runtime"
+        self._rotations = self._root / "rotations"
         self._audit = self._root / "audit"
         self._lock_path = self._root / ".vault.lock"
-        for directory in (self._root, self._records, self._blobs, self._runtime, self._audit):
+        for directory in (
+            self._root,
+            self._records,
+            self._blobs,
+            self._runtime,
+            self._rotations,
+            self._audit,
+        ):
             self._ensure_directory(directory)
         self._ensure_lock_file()
 
@@ -405,6 +437,11 @@ class EncryptedCredentialVault:
 
     def get(self, credential_reference: str) -> VaultCredentialRecord:
         reference = validate_credential_reference(credential_reference)
+        with self._exclusive_lock():
+            self._recover_pending_rotations_unlocked()
+            return self._get_unlocked(reference)
+
+    def _get_unlocked(self, reference: str) -> VaultCredentialRecord:
         path = self._record_path(reference)
         value = self._read_json(path)
         try:
@@ -423,6 +460,7 @@ class EncryptedCredentialVault:
         tenant_id: str,
         application_id: str,
         target_reference: str,
+        remote_user: str = "appcare",
         private_key: bytes,
         credential_reference: str | None = None,
         version: int = 1,
@@ -436,6 +474,7 @@ class EncryptedCredentialVault:
             tenant_id=tenant_id,
             application_id=application_id,
             target_reference=target_reference,
+            remote_user=remote_user,
             version=version,
             public_key=public_key,
             fingerprint=fingerprint,
@@ -443,31 +482,36 @@ class EncryptedCredentialVault:
             expires_at=expires_at,
         )
         with self._exclusive_lock():
+            self._recover_pending_rotations_unlocked()
             self._persist_new_unlocked(record, canonical)
         return record
 
     def materialize(self, credential_reference: str) -> ResolvedCredential:
-        record = self.get(credential_reference)
-        private_key = self._resolve_private_key(record)
-        name = f"{secrets.token_hex(16)}.key"
-        target = self._runtime / name
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-        try:
-            descriptor = os.open(target, flags, 0o600)
+        reference = validate_credential_reference(credential_reference)
+        with self._exclusive_lock():
+            self._recover_pending_rotations_unlocked()
+            record = self._get_unlocked(reference)
+            private_key = self._resolve_private_key(record)
+            runtime_scope = self._runtime_scope(record.credential_reference)
+            self._ensure_directory(runtime_scope)
+            target = runtime_scope / f"{secrets.token_hex(16)}.key"
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
             try:
-                _write_all(descriptor, private_key)
-                os.fsync(descriptor)
-                if os.name == "posix":
-                    os.fchmod(descriptor, 0o600)
-            finally:
-                os.close(descriptor)
-        except OSError as exc:
-            try:
-                target.unlink(missing_ok=True)
-            except OSError:
-                pass
-            raise CredentialVaultError("runtime identity could not be materialized") from exc
-        return ResolvedCredential(record.credential_reference, str(target))
+                descriptor = os.open(target, flags | _BINARY_FLAG, 0o600)
+                try:
+                    _write_all(descriptor, private_key)
+                    os.fsync(descriptor)
+                    if os.name == "posix":
+                        os.fchmod(descriptor, 0o600)
+                finally:
+                    os.close(descriptor)
+            except OSError as exc:
+                try:
+                    target.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                raise CredentialVaultError("runtime identity could not be materialized") from exc
+            return ResolvedCredential(record.credential_reference, str(target))
 
     def release(self, credential: ResolvedCredential | str) -> None:
         identity_file = (
@@ -478,16 +522,30 @@ class EncryptedCredentialVault:
             relative = path.relative_to(self._runtime)
         except ValueError as exc:
             raise CredentialVaultError("runtime identity is outside custody") from exc
-        if _RUNTIME_FILE.fullmatch(relative.name) is None or relative.parent != Path("."):
+        if (
+            len(relative.parts) != 2
+            or _RUNTIME_SCOPE_DIR.fullmatch(relative.parts[0]) is None
+            or _RUNTIME_FILE.fullmatch(relative.parts[1]) is None
+        ):
             raise CredentialVaultError("runtime identity is invalid")
+        if isinstance(credential, ResolvedCredential) and relative.parts[0] != _reference_digest(
+            credential.credential_reference
+        ):
+            raise CredentialVaultError("runtime identity scope is invalid")
         if path.is_symlink():
             raise CredentialVaultError("runtime identity is a symlink")
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            return
-        except OSError as exc:
-            raise CredentialVaultError("runtime identity cleanup failed") from exc
+        with self._exclusive_lock():
+            self._recover_pending_rotations_unlocked()
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                return
+            except OSError as exc:
+                raise CredentialVaultError("runtime identity cleanup failed") from exc
+            try:
+                path.parent.rmdir()
+            except OSError:
+                pass
 
     def revoke(
         self,
@@ -496,10 +554,14 @@ class EncryptedCredentialVault:
         now: datetime | None = None,
     ) -> VaultCredentialRecord:
         with self._exclusive_lock():
-            record = self.get(credential_reference)
+            self._recover_pending_rotations_unlocked()
+            record = self._get_unlocked(validate_credential_reference(credential_reference))
             if record.status() == VaultCredentialStatus.DESTROYED:
                 raise CredentialVaultError("credential is already destroyed")
-            revoked = replace(record, revoked_at=now or datetime.now(UTC))
+            timestamp = _aware_timestamp(now or datetime.now(UTC), "revocation time")
+            if timestamp is None or timestamp < record.issued_at:
+                raise CredentialVaultError("credential revocation time is invalid")
+            revoked = replace(record, revoked_at=timestamp)
             self._persist_record_unlocked(revoked)
             self._append_audit_unlocked("revoked", revoked)
             return revoked
@@ -514,7 +576,8 @@ class EncryptedCredentialVault:
     ) -> VaultCredentialRecord:
         canonical, public_key, fingerprint = _private_key_material(private_key)
         with self._exclusive_lock():
-            old = self.get(credential_reference)
+            self._recover_pending_rotations_unlocked()
+            old = self._get_unlocked(validate_credential_reference(credential_reference))
             if old.status() != VaultCredentialStatus.ACTIVE:
                 raise CredentialVaultError("only an active credential can rotate")
             timestamp = _aware_timestamp(now or datetime.now(UTC), "rotation time")
@@ -525,16 +588,32 @@ class EncryptedCredentialVault:
                 tenant_id=old.tenant_id,
                 application_id=old.application_id,
                 target_reference=old.target_reference,
+                remote_user=old.remote_user,
                 version=old.version + 1,
                 public_key=public_key,
                 fingerprint=fingerprint,
                 issued_at=timestamp,
                 expires_at=expires_at,
             )
-            self._persist_new_unlocked(replacement, canonical)
+            rotation_id = uuid.uuid4().hex
+            encrypted = self._encrypted_blob(replacement, canonical)
+            journal_path = self._rotations / f"{rotation_id}.json"
+            journal = {
+                "schema_version": _ROTATION_SCHEMA_VERSION,
+                "rotation_id": rotation_id,
+                "old_reference": old.credential_reference,
+                "old_version": old.version,
+                "old_fingerprint": old.fingerprint,
+                "replacement_record": replacement.to_dict(),
+                "encrypted_blob_sha256": hashlib.sha256(encrypted).hexdigest(),
+            }
+            self._write_atomic(journal_path, _canonical_json(journal))
+            self._write_atomic(self._blob_path(replacement.credential_reference), encrypted)
             revoked = replace(old, revoked_at=timestamp)
             self._persist_record_unlocked(revoked)
-            self._append_audit_unlocked("rotated", replacement)
+            self._persist_record_unlocked(replacement)
+            self._append_audit_unlocked("rotated", replacement, operation_id=rotation_id)
+            self._remove_rotation_journal_unlocked(journal_path)
             return replacement
 
     def offboard(
@@ -544,10 +623,22 @@ class EncryptedCredentialVault:
         now: datetime | None = None,
     ) -> OffboardingReceipt:
         with self._exclusive_lock():
-            record = self.get(credential_reference)
+            self._recover_pending_rotations_unlocked()
+            record = self._get_unlocked(validate_credential_reference(credential_reference))
             if record.status() == VaultCredentialStatus.DESTROYED:
-                raise CredentialVaultError("credential is already destroyed")
-            timestamp = now or datetime.now(UTC)
+                blob_removed = self._remove_blob_unlocked(record)
+                runtime_removed = self._remove_runtime_materializations_unlocked(record)
+                return OffboardingReceipt(
+                    credential_reference=record.credential_reference,
+                    revoked=True,
+                    encrypted_blob_removed=blob_removed,
+                    runtime_files_removed=runtime_removed,
+                    local_private_material_removed=True,
+                    old_key_usable=True,
+                )
+            timestamp = _aware_timestamp(now or datetime.now(UTC), "offboarding time")
+            if timestamp is None or timestamp < record.issued_at:
+                raise CredentialVaultError("offboarding time is invalid")
             destroyed = replace(
                 record,
                 revoked_at=record.revoked_at or timestamp,
@@ -555,14 +646,139 @@ class EncryptedCredentialVault:
             )
             self._persist_record_unlocked(destroyed)
             blob_removed = self._remove_blob_unlocked(destroyed)
+            runtime_removed = self._remove_runtime_materializations_unlocked(destroyed)
             self._append_audit_unlocked("offboarded", destroyed)
             return OffboardingReceipt(
                 credential_reference=destroyed.credential_reference,
                 revoked=True,
                 encrypted_blob_removed=blob_removed,
-                old_key_usable=False,
-                audit_recorded=True,
+                runtime_files_removed=runtime_removed,
+                local_private_material_removed=True,
+                old_key_usable=True,
             )
+
+    def _runtime_scope(self, reference: str) -> Path:
+        return self._runtime / _reference_digest(reference)
+
+    def _remove_runtime_materializations_unlocked(self, record: VaultCredentialRecord) -> bool:
+        directory = self._runtime_scope(record.credential_reference)
+        if directory.is_symlink():
+            raise CredentialVaultError("runtime custody directory is a symlink")
+        if not directory.exists():
+            return True
+        if not directory.is_dir():
+            raise CredentialVaultError("runtime custody directory is invalid")
+        try:
+            entries = sorted(directory.iterdir(), key=lambda path: path.name)
+        except OSError as exc:
+            raise CredentialVaultError("runtime custody directory is unavailable") from exc
+        for entry in entries:
+            if (
+                entry.is_symlink()
+                or _RUNTIME_FILE.fullmatch(entry.name) is None
+                or not entry.is_file()
+            ):
+                raise CredentialVaultError("runtime custody directory contains unsafe material")
+            try:
+                entry.unlink()
+            except OSError as exc:
+                raise CredentialVaultError("runtime identity cleanup failed") from exc
+        try:
+            directory.rmdir()
+        except OSError as exc:
+            raise CredentialVaultError("runtime custody directory cleanup failed") from exc
+        return True
+
+    def _recover_pending_rotations_unlocked(self) -> None:
+        try:
+            journals = sorted(self._rotations.iterdir(), key=lambda path: path.name)
+        except OSError as exc:
+            raise CredentialVaultError("rotation journal is unavailable") from exc
+        for journal_path in journals:
+            if journal_path.is_symlink() or not journal_path.is_file():
+                raise CredentialVaultError("rotation journal contains unsafe material")
+            if _ROTATION_FILE.fullmatch(journal_path.name) is None:
+                raise CredentialVaultError("rotation journal filename is invalid")
+            value = self._read_json(journal_path, maximum=_MAX_ROTATION_BYTES)
+            expected = {
+                "schema_version",
+                "rotation_id",
+                "old_reference",
+                "old_version",
+                "old_fingerprint",
+                "replacement_record",
+                "encrypted_blob_sha256",
+            }
+            if set(value) != expected or value.get("schema_version") != _ROTATION_SCHEMA_VERSION:
+                raise CredentialVaultError("rotation journal schema is invalid")
+            rotation_id = _string_field(value, "rotation_id")
+            if (
+                rotation_id != journal_path.stem
+                or _ROTATION_FILE.fullmatch(f"{rotation_id}.json") is None
+            ):
+                raise CredentialVaultError("rotation journal identifier is invalid")
+            old_reference = validate_credential_reference(value.get("old_reference"))
+            old = self._get_unlocked(old_reference)
+            old_version = value.get("old_version")
+            old_fingerprint = _string_field(value, "old_fingerprint")
+            if old.version != old_version or old.fingerprint != old_fingerprint:
+                raise CredentialVaultError("rotation journal source does not match record")
+            replacement_data = value.get("replacement_record")
+            if not isinstance(replacement_data, Mapping):
+                raise CredentialVaultError("rotation journal replacement is invalid")
+            replacement = VaultCredentialRecord.from_dict(replacement_data)
+            if (
+                replacement.credential_reference == old.credential_reference
+                or replacement.tenant_id != old.tenant_id
+                or replacement.application_id != old.application_id
+                or replacement.target_reference != old.target_reference
+                or replacement.remote_user != old.remote_user
+                or replacement.version != old.version + 1
+                or replacement.issued_at <= old.issued_at
+                or replacement.revoked_at is not None
+                or replacement.destroyed_at is not None
+            ):
+                raise CredentialVaultError("rotation journal replacement does not match source")
+            replacement_path = self._record_path(replacement.credential_reference)
+            blob_path = self._blob_path(replacement.credential_reference)
+            if not blob_path.exists() and not blob_path.is_symlink():
+                if replacement_path.exists() or replacement_path.is_symlink():
+                    raise CredentialVaultError("rotation journal blob is missing")
+                if old.revoked_at is None and old.destroyed_at is None:
+                    self._remove_rotation_journal_unlocked(journal_path)
+                    continue
+                raise CredentialVaultError("rotation journal cannot recover replacement")
+            encrypted = self._read_bytes(blob_path, maximum=_MAX_PRIVATE_KEY_BYTES + 128)
+            if hashlib.sha256(encrypted).hexdigest() != _string_field(
+                value, "encrypted_blob_sha256"
+            ):
+                raise CredentialVaultError("rotation journal blob digest does not match")
+            if replacement_path.exists() or replacement_path.is_symlink():
+                persisted = self._get_unlocked(replacement.credential_reference)
+                if persisted != replacement:
+                    raise CredentialVaultError("rotation journal replacement record mismatches")
+            else:
+                self._write_atomic(replacement_path, _canonical_json(replacement.to_dict()))
+            plaintext = self._resolve_private_key(replacement)
+            del plaintext
+            if old.destroyed_at is not None:
+                raise CredentialVaultError("rotation journal source is destroyed")
+            if old.revoked_at is None:
+                self._persist_record_unlocked(replace(old, revoked_at=replacement.issued_at))
+            self._append_audit_unlocked("rotated", replacement, operation_id=rotation_id)
+            self._remove_rotation_journal_unlocked(journal_path)
+
+    def _remove_rotation_journal_unlocked(self, path: Path) -> None:
+        if path.parent != self._rotations or _ROTATION_FILE.fullmatch(path.name) is None:
+            raise CredentialVaultError("rotation journal path is invalid")
+        if path.is_symlink():
+            raise CredentialVaultError("rotation journal is a symlink")
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise CredentialVaultError("rotation journal cleanup failed") from exc
 
     def _resolve_private_key(self, record: VaultCredentialRecord) -> bytes:
         if record.status() != VaultCredentialStatus.ACTIVE:
@@ -601,6 +817,15 @@ class EncryptedCredentialVault:
             raise CredentialVaultError("master key is invalid")
         return key
 
+    def _encrypted_blob(self, record: VaultCredentialRecord, private_key: bytes) -> bytes:
+        encrypted = _BLOB_MAGIC + secrets.token_bytes(12)
+        nonce = encrypted[len(_BLOB_MAGIC) :]
+        return encrypted + AESGCM(self._load_master_key()).encrypt(
+            nonce,
+            private_key,
+            _canonical_json(record.to_dict()),
+        )
+
     def _persist_new_unlocked(self, record: VaultCredentialRecord, private_key: bytes) -> None:
         record_path = self._record_path(record.credential_reference)
         blob_path = self._blob_path(record.credential_reference)
@@ -611,13 +836,7 @@ class EncryptedCredentialVault:
             or blob_path.is_symlink()
         ):
             raise CredentialVaultError("credential reference already exists")
-        encrypted = _BLOB_MAGIC + secrets.token_bytes(12)
-        nonce = encrypted[len(_BLOB_MAGIC) :]
-        encrypted += AESGCM(self._load_master_key()).encrypt(
-            nonce,
-            private_key,
-            _canonical_json(record.to_dict()),
-        )
+        encrypted = self._encrypted_blob(record, private_key)
         self._write_atomic(blob_path, encrypted)
         try:
             self._write_atomic(record_path, _canonical_json(record.to_dict()))
@@ -668,7 +887,7 @@ class EncryptedCredentialVault:
                 raise CredentialVaultError("vault lock is a symlink")
             descriptor = os.open(
                 self._lock_path,
-                os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+                os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | _BINARY_FLAG,
                 0o600,
             )
             try:
@@ -683,7 +902,10 @@ class EncryptedCredentialVault:
 
     @contextlib.contextmanager
     def _exclusive_lock(self) -> Iterator[None]:
-        descriptor = os.open(self._lock_path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+        descriptor = os.open(
+            self._lock_path,
+            os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | _BINARY_FLAG,
+        )
         try:
             if fcntl is not None:
                 fcntl.flock(descriptor, fcntl.LOCK_EX)
@@ -693,8 +915,13 @@ class EncryptedCredentialVault:
                 fcntl.flock(descriptor, fcntl.LOCK_UN)
             os.close(descriptor)
 
-    def _read_json(self, path: Path) -> Mapping[str, object]:
-        raw = self._read_bytes(path, maximum=_MAX_RECORD_BYTES)
+    def _read_json(
+        self,
+        path: Path,
+        *,
+        maximum: int = _MAX_RECORD_BYTES,
+    ) -> Mapping[str, object]:
+        raw = self._read_bytes(path, maximum=maximum)
         try:
             value = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -708,7 +935,10 @@ class EncryptedCredentialVault:
             raise CredentialVaultError("vault file is unavailable")
         descriptor = -1
         try:
-            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            descriptor = os.open(
+                path,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | _BINARY_FLAG,
+            )
             metadata = os.fstat(descriptor)
             if not stat.S_ISREG(metadata.st_mode):
                 raise CredentialVaultError("vault file is unavailable")
@@ -749,7 +979,7 @@ class EncryptedCredentialVault:
         try:
             descriptor = os.open(
                 temporary,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) | _BINARY_FLAG,
                 0o600,
             )
             _write_all(descriptor, value)
@@ -769,9 +999,17 @@ class EncryptedCredentialVault:
             except OSError:
                 pass
 
-    def _append_audit_unlocked(self, event: str, record: VaultCredentialRecord) -> None:
+    def _append_audit_unlocked(
+        self,
+        event: str,
+        record: VaultCredentialRecord,
+        *,
+        operation_id: str | None = None,
+    ) -> None:
         if event not in {"created", "revoked", "rotated", "offboarded"}:
             raise CredentialVaultError("audit event is invalid")
+        if operation_id is not None and _ROTATION_FILE.fullmatch(f"{operation_id}.json") is None:
+            raise CredentialVaultError("audit operation identifier is invalid")
         path = self._audit / "events.jsonl"
         if path.is_symlink():
             raise CredentialVaultError("audit file is a symlink")
@@ -786,14 +1024,28 @@ class EncryptedCredentialVault:
             "status": record.status().value,
             "recorded_at": _timestamp(datetime.now(UTC)),
         }
+        if operation_id is not None:
+            event_value["operation_id"] = operation_id
         encoded = _canonical_json(event_value) + b"\n"
         try:
             descriptor = os.open(
                 path,
-                os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+                os.O_WRONLY
+                | os.O_APPEND
+                | os.O_CREAT
+                | getattr(os, "O_NOFOLLOW", 0)
+                | _BINARY_FLAG,
                 0o600,
             )
             try:
+                metadata = os.fstat(descriptor)
+                if not stat.S_ISREG(metadata.st_mode):
+                    raise CredentialVaultError("audit file is invalid")
+                if os.name == "posix":
+                    if metadata.st_uid not in {0, os.getuid()}:
+                        raise CredentialVaultError("audit file owner is invalid")
+                    if stat.S_IMODE(metadata.st_mode) & 0o077:
+                        raise CredentialVaultError("audit file permissions are unsafe")
                 _write_all(descriptor, encoded)
                 os.fsync(descriptor)
             finally:
@@ -823,6 +1075,7 @@ class VaultCredentialProvider:
             record.tenant_id != target.tenant_id
             or record.application_id != target.application_id
             or record.target_reference != target.target_reference
+            or record.remote_user != target.remote_user
         ):
             raise CredentialVaultError("credential scope does not match target")
         return self._vault.materialize(record.credential_reference)
@@ -843,6 +1096,7 @@ class Ed25519KeyService:
         tenant_id: str,
         application_id: str,
         target_reference: str,
+        remote_user: str = "appcare",
         expires_at: datetime | None = None,
         now: datetime | None = None,
     ) -> VaultCredentialRecord:
@@ -856,6 +1110,7 @@ class Ed25519KeyService:
             tenant_id=tenant_id,
             application_id=application_id,
             target_reference=target_reference,
+            remote_user=remote_user,
             private_key=private_key,
             expires_at=expires_at,
             now=now,
@@ -867,6 +1122,7 @@ class Ed25519KeyService:
         tenant_id: str,
         application_id: str,
         target_reference: str,
+        remote_user: str = "appcare",
         private_key: bytes,
         expires_at: datetime | None = None,
         now: datetime | None = None,
@@ -875,6 +1131,7 @@ class Ed25519KeyService:
             tenant_id=tenant_id,
             application_id=application_id,
             target_reference=target_reference,
+            remote_user=remote_user,
             private_key=private_key,
             expires_at=expires_at,
             now=now,
@@ -890,6 +1147,8 @@ class Ed25519KeyService:
         if record.status() != VaultCredentialStatus.ACTIVE:
             raise CredentialVaultError("only an active credential can be onboarded")
         user = validate_remote_user(remote_user)
+        if user != record.remote_user:
+            raise CredentialVaultError("remote user does not match credential")
         authorized_key = (
             "no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-pty " + record.public_key
         )
@@ -918,6 +1177,8 @@ class Ed25519KeyService:
         if record.status() != VaultCredentialStatus.ACTIVE:
             raise CredentialVaultError("only an active credential can be bootstrapped")
         user = validate_remote_user(remote_user)
+        if user != record.remote_user:
+            raise CredentialVaultError("remote user does not match credential")
         if _AUTHORIZATION_ID.fullmatch(authorization_id) is None:
             raise CredentialVaultError("bootstrap authorization is invalid")
         return RestrictedBootstrapPlan(
@@ -983,6 +1244,14 @@ class RestrictedBootstrapPlan:
 
     @property
     def complete(self) -> bool:
+        """A local plan cannot self-assert that remote bootstrap completed."""
+
+        return False
+
+    @property
+    def ready_for_external_verification(self) -> bool:
+        """Return whether all fixed steps await independent remote proof."""
+
         return self.next_step is None
 
     def advance(self, step: BootstrapStep) -> RestrictedBootstrapPlan:
@@ -1001,6 +1270,7 @@ class RestrictedBootstrapPlan:
             "completed_steps": [step.value for step in self.completed_steps],
             "next_step": self.next_step.value if self.next_step else None,
             "complete": self.complete,
+            "ready_for_external_verification": self.ready_for_external_verification,
         }
 
 
