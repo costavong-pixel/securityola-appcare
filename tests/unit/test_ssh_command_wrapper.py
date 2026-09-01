@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import runpy
 import shlex
 import stat
 import subprocess
@@ -157,6 +158,20 @@ def test_release_artifact_installs_wrapper_in_libexec() -> None:
     assert '--install-release "$@"' in installer_text
     if os.name == "posix":
         subprocess.run(("/bin/sh", "-n", str(installer)), check=True)  # noqa: S603
+
+
+def test_release_tree_rejects_bytecode_cache(tmp_path: Path) -> None:
+    package_root = tmp_path / "appcare"
+    (package_root / "__pycache__").mkdir(parents=True)
+    (package_root / "__pycache__" / "cached.pyc").write_bytes(b"cached")
+    guard = runpy.run_path(
+        str(Path(__file__).parents[2] / "ops" / "ssh" / "securityola-appcare-release-guard"),
+        run_name="release_guard_test",
+    )
+    with pytest.raises(release_binding.ReleaseBindingError, match="bytecode cache"):
+        release_binding._package_tree_sha256(package_root)
+    with pytest.raises(guard["ReleaseGuardError"], match="bytecode cache"):
+        guard["_package_tree_sha256"](package_root)
 
 
 def test_wrapper_accepts_only_typed_read_only_commands(tmp_path: Path) -> None:

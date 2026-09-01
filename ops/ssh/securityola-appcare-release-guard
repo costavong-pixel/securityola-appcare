@@ -313,9 +313,11 @@ def _package_tree_sha256(package_root: Path) -> str:
     for directory, dirnames, filenames in os.walk(package_root, topdown=True, followlinks=False):
         current = Path(directory)
         for dirname in dirnames:
+            if dirname == "__pycache__":
+                raise ReleaseGuardError("release package tree contains bytecode cache")
             if (current / dirname).is_symlink():
                 raise ReleaseGuardError("release package tree contains a symlink")
-        dirnames[:] = sorted(dirname for dirname in dirnames if dirname != "__pycache__")
+        dirnames[:] = sorted(dirnames)
         for filename in sorted(filenames):
             if filename.endswith(".pyc"):
                 raise ReleaseGuardError("release package tree contains bytecode")
