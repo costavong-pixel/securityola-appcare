@@ -28,8 +28,9 @@ For the **direct DeepSeek fallback path**:
 ```text
 CODEX_SPARK_QUOTA_INVOLVED=NO
 OPENAI_API_INVOLVED=NO
-DEEPSEEK_API=YES
+DEEPSEEK_API_INVOLVED=YES
 DEEPSEEK_API_CREDENTIAL=OWNER_PROVIDED_SERVER_SIDE_ONLY
+DEEPSEEK_API_CREDENTIAL_PRESENCE=NOT_VERIFIED
 ```
 
 The direct DeepSeek worker must not route through Codex Spark or the OpenAI API. It uses the owner's DeepSeek API credential from protected server-side custody.
@@ -46,7 +47,31 @@ No credential value may appear in:
 - test fixtures;
 - reports.
 
-## 3. Lane selection
+The credential-presence field is deliberately `NOT_VERIFIED` until the separately
+controlled host and owner-entry checks pass. A policy declaration is not runtime
+evidence.
+
+## 3. Sealed task-packet enforcement
+
+The sealed packet validator must require the routing fields in the mandatory
+packet contract before creating a worker worktree. A packet that omits or
+contradicts the direct-lane values is rejected before model execution.
+
+The promotion/report contract must contain sanitized runtime attestation derived
+from the validated packet and the executing provider, with no credential
+material:
+
+```text
+REQUESTED_MODEL=
+ACTUAL_MODEL=
+MODEL_ATTESTED=YES | NO
+ROUTING_METADATA_VALIDATED=YES | NO
+```
+
+These fields do not promote the route by themselves; Luna, Terra, Codex
+Security, deterministic gates, and exact-head CI remain required.
+
+## 4. Lane selection
 
 ### Preferred lane — GPT-5.3 Spark
 
@@ -73,7 +98,7 @@ Codex Security remains the independent security scan/verification lane.
 
 Neither coder may self-approve, decide readiness, merge independently, authorize production, or widen scope.
 
-## 4. Prompt Ola VPS isolation boundary
+## 5. Prompt Ola VPS isolation boundary
 
 The Prompt Ola VPS is a **worker host** for the direct DeepSeek route. It is not permission to modify Prompt Ola production.
 
@@ -94,7 +119,7 @@ Required isolation:
 
 The worker must not modify or read Prompt Ola application files, databases, services, credentials, logs, deployment paths, or production directories.
 
-## 5. AppCare repository workflow
+## 6. AppCare repository workflow
 
 The safe default flow is:
 
@@ -117,7 +142,7 @@ Do not run Spark and DeepSeek concurrently against the same files or branch.
 
 A worker summary is never proof. Luna must inspect the actual diff and test evidence.
 
-## 6. Existing launcher status
+## 7. Existing launcher status
 
 The current repository launcher:
 
@@ -151,7 +176,7 @@ Before claiming the direct fallback is runtime-integrated, AppCare must build or
 - passes deterministic and adversarial tests;
 - passes Luna, Terra, Codex Security, and exact-head CI review.
 
-## 7. Failure handling
+## 8. Failure handling
 
 If Spark quota is unavailable and the direct DeepSeek route is not yet runtime-integrated:
 
@@ -162,7 +187,7 @@ If Spark quota is unavailable and the direct DeepSeek route is not yet runtime-i
 - continue independent planning, review, tests, or GitHub work that does not require that coder;
 - report the exact routing blocker.
 
-## 8. Reporting contract
+## 9. Reporting contract
 
 Every delegated coding report must include:
 
@@ -194,7 +219,7 @@ OPENAI_API_INVOLVED=NO
 DEEPSEEK_API_INVOLVED=YES
 ```
 
-## 9. Amendment rule
+## 10. Amendment rule
 
 This routing policy may change only through:
 

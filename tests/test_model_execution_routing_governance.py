@@ -6,10 +6,13 @@ import json
 from pathlib import Path
 from typing import Any
 
+from scripts.validate_task_packet import seal
+
 ROOT = Path(__file__).resolve().parents[1]
 ROUTING_MD = ROOT / "docs/governance/APPCARE_MODEL_EXECUTION_ROUTING.md"
 ROUTING_JSON = ROOT / "docs/governance/APPCARE_MODEL_EXECUTION_ROUTING.json"
 DEEPSEEK_LAUNCHER = ROOT / "scripts/deepseek-worker.sh"
+TEST_HEAD = "0123456789abcdef0123456789abcdef01234567"
 
 
 def _text(path: Path) -> str:
@@ -23,6 +26,46 @@ def _routing() -> dict[str, Any]:
     return payload
 
 
+def _direct_packet() -> str:
+    return (
+        "Phase: P02\n"
+        "Issue: APPCARE-READINESS\n"
+        "Goal: validate direct worker routing metadata\n"
+        "TARGET=AppCare\n"
+        "Coding lane: DIRECT_DEEPSEEK\n"
+        "Worker host: PROMPT_OLA_VPS\n"
+        "Model provider: DEEPSEEK_API\n"
+        "Codex Spark quota involved: NO\n"
+        "OpenAI API involved: NO\n"
+        "DeepSeek API involved: YES\n"
+        "Repository root: .\n"
+        "Branch: codex/test\n"
+        f"Expected base SHA: {TEST_HEAD}\n\n"
+        "Allowed files/paths:\n"
+        "- appcare/*\n\n"
+        "Do not touch:\n"
+        "- WordPress Security resources\n\n"
+        "Forbidden commands/capabilities:\n"
+        "- no network, credentials, production, or deployment\n"
+    )
+
+
+def _seal_direct_packet(tmp_path: Path, packet_text: str) -> list[str]:
+    repo = tmp_path / "repo"
+    task_root = repo / ".codex" / "tasks"
+    task_root.mkdir(parents=True)
+    packet = task_root / "task.md"
+    packet.write_text(packet_text, encoding="utf-8")
+    return seal(
+        packet,
+        tmp_path / "run" / "task.md",
+        repo,
+        task_root,
+        expected_head=TEST_HEAD,
+        expected_branch="codex/test",
+    )
+
+
 def test_direct_deepseek_fallback_does_not_use_spark_quota_or_openai_api() -> None:
     routing = _routing()
     fallback = routing["coding_lanes"]["quota_fallback"]
@@ -33,7 +76,47 @@ def test_direct_deepseek_fallback_does_not_use_spark_quota_or_openai_api() -> No
     assert fallback["codex_spark_quota_involved"] is False
     assert fallback["openai_api_involved"] is False
     assert fallback["deepseek_api_involved"] is True
+    assert fallback["credential_required"] is True
+    assert fallback["credential_presence"] == "NOT_VERIFIED"
+    assert "owner_has_api_credential" not in fallback
     assert fallback["credential_custody"] == "server-side-only"
+
+
+def test_sealed_packet_contract_pins_direct_route_metadata() -> None:
+    enforcement = _routing()["task_packet_enforcement"]
+
+    assert "Coding lane" in enforcement["required_fields"]
+    assert "Model provider" in enforcement["required_fields"]
+    assert enforcement["direct_deepseek_exact_values"] == {
+        "Coding lane": "DIRECT_DEEPSEEK",
+        "Worker host": "PROMPT_OLA_VPS",
+        "Model provider": "DEEPSEEK_API",
+        "Codex Spark quota involved": "NO",
+        "OpenAI API involved": "NO",
+        "DeepSeek API involved": "YES",
+    }
+    assert enforcement["sanitized_runtime_attestation"] == [
+        "REQUESTED_MODEL",
+        "ACTUAL_MODEL",
+        "MODEL_ATTESTED",
+        "ROUTING_METADATA_VALIDATED",
+    ]
+
+
+def test_sealed_packet_rejects_inconsistent_direct_route_metadata(tmp_path: Path) -> None:
+    packet = _direct_packet().replace("OpenAI API involved: NO", "OpenAI API involved: YES")
+
+    findings = _seal_direct_packet(tmp_path, packet)
+
+    assert "direct DeepSeek task packet must declare OpenAI API involved=NO" in findings
+
+
+def test_sealed_packet_rejects_missing_routing_metadata(tmp_path: Path) -> None:
+    packet = _direct_packet().replace("Model provider: DEEPSEEK_API\n", "")
+
+    findings = _seal_direct_packet(tmp_path, packet)
+
+    assert "task packet must declare exactly one Model provider field" in findings
 
 
 def test_luna_terra_and_codex_security_roles_remain_independent() -> None:
@@ -107,7 +190,9 @@ def test_human_readable_policy_pins_direct_route_facts() -> None:
         "direct DeepSeek worker",
         "CODEX_SPARK_QUOTA_INVOLVED=NO",
         "OPENAI_API_INVOLVED=NO",
-        "DEEPSEEK_API=YES",
+        "DEEPSEEK_API_INVOLVED=YES",
+        "DEEPSEEK_API_CREDENTIAL_PRESENCE=NOT_VERIFIED",
+        "ROUTING_METADATA_VALIDATED",
         "scripts/deepseek-worker.sh",
         "does **not** by itself prove the owner-approved direct DeepSeek API route",
     ):

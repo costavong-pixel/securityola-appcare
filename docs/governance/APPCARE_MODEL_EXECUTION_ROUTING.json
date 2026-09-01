@@ -30,7 +30,8 @@
       "codex_spark_quota_involved": false,
       "openai_api_involved": false,
       "deepseek_api_involved": true,
-      "owner_has_api_credential": true,
+      "credential_required": true,
+      "credential_presence": "NOT_VERIFIED",
       "credential_custody": "server-side-only",
       "required_when": "Spark quota is limited, exhausted, or unavailable after runtime qualification",
       "current_maturity": "DOCUMENTED"
@@ -50,6 +51,36 @@
     "secret_scan_before_promotion": true,
     "temporary_state_cleanup": true,
     "prompt_ola_production_access": false
+  },
+  "task_packet_enforcement": {
+    "required_fields": [
+      "Phase",
+      "Issue",
+      "Goal",
+      "TARGET=AppCare",
+      "Coding lane",
+      "Worker host",
+      "Model provider",
+      "Codex Spark quota involved",
+      "OpenAI API involved",
+      "DeepSeek API involved",
+      "Repository root",
+      "Expected base SHA"
+    ],
+    "direct_deepseek_exact_values": {
+      "Coding lane": "DIRECT_DEEPSEEK",
+      "Worker host": "PROMPT_OLA_VPS",
+      "Model provider": "DEEPSEEK_API",
+      "Codex Spark quota involved": "NO",
+      "OpenAI API involved": "NO",
+      "DeepSeek API involved": "YES"
+    },
+    "sanitized_runtime_attestation": [
+      "REQUESTED_MODEL",
+      "ACTUAL_MODEL",
+      "MODEL_ATTESTED",
+      "ROUTING_METADATA_VALIDATED"
+    ]
   },
   "existing_launcher": {
     "path": "scripts/deepseek-worker.sh",
