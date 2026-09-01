@@ -7,6 +7,7 @@ name = "securityola-appcare"
 version = "0.0.0"
 description = "SecurityOla AppCare engineering foundation"
 requires-python = ">=3.12,<3.15"
+scripts = { "securityola-appcare-install-release" = "appcare.connectors.release_binding:main" }
 dependencies = [
     "fastapi==0.141.1",
     "cryptography==50.0.0",
@@ -22,7 +23,10 @@ dependencies = [
 include = ["appcare*"]
 
 [tool.setuptools.data-files]
-"libexec" = ["ops/ssh/securityola-appcare-ssh-wrapper"]
+"libexec" = [
+    "ops/ssh/securityola-appcare-ssh-wrapper",
+    "ops/ssh/install-securityola-appcare-release",
+]
 
 [tool.setuptools.package-data]
 appcare = ["web/*.html", "web/*.css", "web/*.js"]

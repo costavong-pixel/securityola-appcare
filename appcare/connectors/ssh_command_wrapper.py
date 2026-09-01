@@ -20,8 +20,11 @@ from .linux_ssh_contracts import (
     validate_absolute_root,
     validate_identifier,
 )
+from .release_binding import (
+    APPCARE_SSH_WRAPPER_PATH,
+    verify_release_binding,
+)
 
-APPCARE_SSH_WRAPPER_PATH = "/usr/local/libexec/securityola-appcare-ssh-wrapper"
 DEFAULT_PROFILE_ROOT = Path("/etc/securityola/appcare/ssh-profiles")
 _PROFILE_SCHEMA_VERSION = 1
 _MAX_PROFILE_BYTES = 65_536
@@ -331,6 +334,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if len(arguments) != 2 or arguments[0] != "--profile-id":
         return _reject()
     try:
+        verify_release_binding(module_path=Path(__file__))
         profile = load_profile(arguments[1])
         original = os.environ.get("SSH_ORIGINAL_COMMAND", "")
         command = validate_original_command(original, profile)

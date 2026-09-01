@@ -11,14 +11,17 @@ import binascii
 import hashlib
 import ipaddress
 import json
+import os
 import re
+import sqlite3
+import stat
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from pathlib import PurePosixPath
-from typing import Final, Protocol
+from pathlib import Path, PurePosixPath
+from typing import Final, Protocol, cast
 
 from ..readiness.contracts import (
     CapabilityEvidence,
@@ -101,6 +104,16 @@ _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _SAFE_OPERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _SAFE_METADATA_KEY = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 _FINGERPRINT = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
+DEFAULT_OPERATION_LEDGER_PATH = Path("/var/lib/securityola/appcare/ssh/operation-ledger.db")
+
+
+def _current_uid() -> int:
+    if os.name != "posix":
+        return -1
+    getuid = cast(Callable[[], int], getattr(os, "getuid"))  # noqa: B009
+    return getuid()
+
+
 _FORBIDDEN_INPUT_CHARS = frozenset("\x00\n\r;|&$><*?{}[]()!") | {chr(96)}
 _SECRET_ASSIGNMENT = re.compile(
     r"(?:password|passphrase|secret|token|api[_-]?key|authorization|"
@@ -620,6 +633,125 @@ class OperationLedger(Protocol):
         """Atomically claim an operation identity once."""
 
 
+def _validate_operation_ledger_path(value: object) -> Path:
+    if (
+        not isinstance(value, Path)
+        or not value.is_absolute()
+        or value == Path(value.anchor)
+        or any(part in {".", ".."} for part in value.parts)
+    ):
+        raise CredentialBoundaryError("operation ledger path is unsafe")
+    if os.name == "posix":
+        current = Path(value.anchor)
+        for part in value.parts[1:-1]:
+            current /= part
+            try:
+                metadata = os.lstat(current)
+            except (FileNotFoundError, OSError) as exc:
+                raise CredentialBoundaryError("operation ledger directory is unavailable") from exc
+            if (
+                not stat.S_ISDIR(metadata.st_mode)
+                or metadata.st_uid not in {0, _current_uid()}
+                or stat.S_IMODE(metadata.st_mode) & 0o022
+            ):
+                raise CredentialBoundaryError("operation ledger directory is unsafe")
+    return value
+
+
+def _prepare_operation_ledger_file(path: Path) -> None:
+    if path.is_symlink():
+        raise CredentialBoundaryError("operation ledger is a symlink")
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = -1
+    try:
+        descriptor = os.open(path, flags, 0o600)
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise CredentialBoundaryError("operation ledger is not a regular file")
+        if os.name == "posix" and (
+            metadata.st_uid not in {0, _current_uid()} or stat.S_IMODE(metadata.st_mode) & 0o077
+        ):
+            raise CredentialBoundaryError("operation ledger permissions are unsafe")
+    except CredentialBoundaryError:
+        raise
+    except OSError as exc:
+        raise CredentialBoundaryError("operation ledger is unavailable") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+class SqliteOperationLedger:
+    """Durable single-use SSH operation claims for the live connector."""
+
+    __slots__ = ("_path",)
+
+    def __init__(self, path: Path = DEFAULT_OPERATION_LEDGER_PATH) -> None:
+        self._path = _validate_operation_ledger_path(path)
+        _prepare_operation_ledger_file(self._path)
+        connection = self._connect()
+        try:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ssh_operation_claims (
+                    target_reference TEXT NOT NULL,
+                    operation_id TEXT NOT NULL,
+                    claimed_at TEXT NOT NULL,
+                    PRIMARY KEY (target_reference, operation_id)
+                )
+                """
+            )
+            connection.commit()
+        except sqlite3.Error as exc:
+            raise CredentialBoundaryError("operation ledger schema is unavailable") from exc
+        finally:
+            connection.close()
+
+    @property
+    def durable(self) -> bool:
+        return True
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    def claim(self, *, target_reference: str, operation_id: str) -> bool:
+        target = validate_scope_segment(target_reference, field_name="target_reference")
+        operation = validate_operation_id(operation_id)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO ssh_operation_claims
+                    (target_reference, operation_id, claimed_at)
+                VALUES (?, ?, ?)
+                """,
+                (target, operation, datetime.now(UTC).isoformat()),
+            )
+            accepted = cursor.rowcount == 1
+            connection.commit()
+            return accepted
+        except sqlite3.Error as exc:
+            try:
+                connection.rollback()
+            except sqlite3.Error:
+                pass
+            raise CredentialBoundaryError("operation ledger is unavailable") from exc
+        finally:
+            connection.close()
+
+    def _connect(self) -> sqlite3.Connection:
+        try:
+            connection = sqlite3.connect(self._path, timeout=5.0, isolation_level=None)
+            connection.execute("PRAGMA busy_timeout = 5000")
+            connection.execute("PRAGMA journal_mode = DELETE")
+            connection.execute("PRAGMA synchronous = FULL")
+            return connection
+        except sqlite3.Error as exc:
+            raise CredentialBoundaryError("operation ledger is unavailable") from exc
+
+
 class InMemoryOperationLedger:
     """Thread-safe fixture ledger; never use it for live SSH execution."""
 
@@ -630,7 +762,10 @@ class InMemoryOperationLedger:
         self._claimed: set[tuple[str, str]] = set()
 
     def claim(self, *, target_reference: str, operation_id: str) -> bool:
-        key = (target_reference, validate_operation_id(operation_id))
+        key = (
+            validate_scope_segment(target_reference, field_name="target_reference"),
+            validate_operation_id(operation_id),
+        )
         with self._lock:
             if key in self._claimed:
                 return False
@@ -1037,6 +1172,7 @@ __all__ = [
     "CredentialBoundaryError",
     "CredentialProvider",
     "CredentialStatus",
+    "DEFAULT_OPERATION_LEDGER_PATH",
     "DENIED_CAPABILITY_CLASSES",
     "EvidenceClass",
     "FilesystemMetadataRead",
@@ -1056,6 +1192,7 @@ __all__ = [
     "OperationLedger",
     "OperationRejected",
     "OperationStatus",
+    "SqliteOperationLedger",
     "ParsedHostKey",
     "ProcessResult",
     "ProcessRunner",

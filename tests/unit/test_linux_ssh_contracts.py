@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -15,6 +16,7 @@ from appcare.connectors.linux_ssh_contracts import (
     LinuxCredentialRegistry,
     LinuxTarget,
     OperationRejected,
+    SqliteOperationLedger,
     TargetValidationError,
     join_approved_path,
     parse_host_key_line,
@@ -141,3 +143,15 @@ def test_limits_reject_unbounded_values() -> None:
         BoundedLimits(max_stdout_bytes=0)
     with pytest.raises(OperationRejected):
         BoundedLimits(command_timeout_seconds=121)
+
+
+def test_sqlite_operation_ledger_is_atomic_and_survives_restart(tmp_path: Path) -> None:
+    path = tmp_path / "operation-ledger.db"
+    ledger = SqliteOperationLedger(path)
+    assert ledger.durable
+    assert ledger.claim(target_reference="target-a", operation_id="operation-a")
+    assert not ledger.claim(target_reference="target-a", operation_id="operation-a")
+
+    reopened = SqliteOperationLedger(path)
+    assert not reopened.claim(target_reference="target-a", operation_id="operation-a")
+    assert reopened.claim(target_reference="target-b", operation_id="operation-a")

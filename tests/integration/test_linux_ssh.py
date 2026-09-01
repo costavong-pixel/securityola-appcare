@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -41,6 +42,10 @@ from appcare.readiness import (
     ApplicationCapabilityRegistry,
     CapabilityStatus,
     SupportabilityEvaluator,
+)
+
+pytestmark = pytest.mark.skipif(
+    os.name != "posix", reason="Linux SSH integration uses POSIX fixture paths"
 )
 
 KEY_BLOB = b"fixture-host-key"
@@ -167,12 +172,20 @@ def client(
 def test_live_transport_requires_durable_operation_ledger(tmp_path: Path) -> None:
     _, handle = credential()
     provider = FakeCredentials({("tenant-a", "application-a", "vault://appcare/linux-a"): handle})
+
+    class MutableDurableLedger:
+        durable = True
+
+        def claim(self, *, target_reference: str, operation_id: str) -> bool:
+            del target_reference, operation_id
+            return True
+
     with pytest.raises(HostKeyVerificationError, match="durable operation ledger"):
         LinuxSSHClient.for_live(
             target(),
             credential_provider=provider,
             known_hosts_root=tmp_path / "known-hosts",
-            operation_ledger=InMemoryOperationLedger(),
+            operation_ledger=MutableDurableLedger(),
         )
 
 

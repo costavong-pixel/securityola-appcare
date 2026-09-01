@@ -16,6 +16,7 @@ from typing import BinaryIO, cast
 
 from .linux_ssh_commands import CommandRegistry, RemoteCommand
 from .linux_ssh_contracts import (
+    DEFAULT_OPERATION_LEDGER_PATH,
     ApplicationRootVerification,
     BoundedLimits,
     ConnectionProbe,
@@ -42,6 +43,7 @@ from .linux_ssh_contracts import (
     ResolvedCredential,
     RuntimeMetadataRead,
     ServiceMetadataRead,
+    SqliteOperationLedger,
     StorageMetadataRead,
     WebServerMetadataRead,
     parse_host_key_line,
@@ -371,7 +373,10 @@ class LinuxSSHClient:
         limits: BoundedLimits | None = None,
         operation_ledger: OperationLedger | None = None,
     ) -> LinuxSSHClient:
-        if operation_ledger is None or not getattr(operation_ledger, "durable", False):
+        if (
+            type(operation_ledger) is not SqliteOperationLedger
+            or operation_ledger.path != DEFAULT_OPERATION_LEDGER_PATH
+        ):
             raise HostKeyVerificationError("live SSH requires a durable operation ledger")
         if not known_hosts_root.is_absolute() or any(
             part in {".", ".."} for part in known_hosts_root.parts
