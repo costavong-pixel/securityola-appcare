@@ -21,6 +21,13 @@ dependencies = [
 [tool.setuptools.packages.find]
 include = ["appcare*"]
 
+[tool.setuptools.data-files]
+"libexec" = [
+    "ops/ssh/securityola-appcare-ssh-wrapper",
+    "ops/ssh/install-securityola-appcare-release",
+    "ops/ssh/securityola-appcare-release-guard",
+]
+
 [tool.setuptools.package-data]
 appcare = ["web/*.html", "web/*.css", "web/*.js"]
 

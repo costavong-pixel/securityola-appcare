@@ -1,0 +1,12 @@
+#!/bin/sh
+set -efu
+# The standalone root-owned guard validates the full installed package before
+# any AppCare package code can be imported.  Isolated mode removes cwd/user-
+# site/import-env influence; env -i also keeps unrelated SSH-session variables
+# out of Python.
+exec /usr/bin/env -i \
+    PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+    LANG=C \
+    LC_ALL=C \
+    "SSH_ORIGINAL_COMMAND=${SSH_ORIGINAL_COMMAND-}" \
+    /usr/bin/python3 -B -I -E -S -s /usr/local/libexec/securityola-appcare-release-guard "$@"

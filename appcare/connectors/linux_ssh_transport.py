@@ -8,13 +8,15 @@ import stat
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, cast
 
 from .linux_ssh_commands import CommandRegistry, RemoteCommand
 from .linux_ssh_contracts import (
+    DEFAULT_OPERATION_LEDGER_PATH,
     ApplicationRootVerification,
     BoundedLimits,
     ConnectionProbe,
@@ -38,8 +40,10 @@ from .linux_ssh_contracts import (
     ProcessResult,
     ProcessRunner,
     RemoteExecutionResult,
+    ResolvedCredential,
     RuntimeMetadataRead,
     ServiceMetadataRead,
+    SqliteOperationLedger,
     StorageMetadataRead,
     WebServerMetadataRead,
     parse_host_key_line,
@@ -369,6 +373,11 @@ class LinuxSSHClient:
         limits: BoundedLimits | None = None,
         operation_ledger: OperationLedger | None = None,
     ) -> LinuxSSHClient:
+        if (
+            type(operation_ledger) is not SqliteOperationLedger
+            or operation_ledger.path != DEFAULT_OPERATION_LEDGER_PATH
+        ):
+            raise HostKeyVerificationError("live SSH requires a durable operation ledger")
         if not known_hosts_root.is_absolute() or any(
             part in {".", ".."} for part in known_hosts_root.parts
         ):
@@ -403,6 +412,27 @@ class LinuxSSHClient:
                 "operation_replayed",
             )
         credential = self._credential_provider.resolve(self.target)
+        try:
+            return self._execute_with_credential(operation, credential)
+        finally:
+            try:
+                self._release_credential(credential)
+            except Exception:
+                # Release is idempotent and may fail after unlinking the key
+                # but before directory durability. Retry cleanup once without
+                # replaying the remote operation. If both attempts fail, the
+                # claim remains held so a caller cannot silently re-execute an
+                # operation whose remote outcome is already unknown.
+                try:
+                    self._release_credential(credential)
+                except Exception:
+                    raise CredentialBoundaryError(
+                        "credential cleanup failed; operation remains claimed for recovery"
+                    ) from None
+
+    def _execute_with_credential(
+        self, operation: LinuxOperation, credential: ResolvedCredential
+    ) -> RemoteExecutionResult:
         if credential.credential_reference != self.target.credential_reference:
             raise CredentialBoundaryError("resolved credential reference mismatches target")
         self._validate_credential_handle(credential.identity_file)
@@ -412,11 +442,7 @@ class LinuxSSHClient:
             store=self._known_hosts,
             limits=self._limits,
         )
-        commands = self._commands.commands_for(
-            operation,
-            target=self.target,
-            limits=self._limits,
-        )
+        commands = self._commands.commands_for(operation, target=self.target, limits=self._limits)
         records: list[InventoryRecord] = []
         failures: list[RemoteExecutionResult] = []
         for command in commands:
@@ -460,6 +486,11 @@ class LinuxSSHClient:
                 stderr_bytes=sum(item.stderr_bytes for item in failures),
             )
         return self._result(operation, OperationStatus.PASSED, "ok", records=tuple(records))
+
+    def _release_credential(self, credential: ResolvedCredential) -> None:
+        release = getattr(self._credential_provider, "release", None)
+        if release is not None:
+            cast(Callable[[ResolvedCredential], None], release)(credential)
 
     def collect_inventory(self, operation_id: str) -> LinuxInventorySnapshot:
         base = validate_operation_id(operation_id)

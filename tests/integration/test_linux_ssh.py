@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -43,6 +44,10 @@ from appcare.readiness import (
     SupportabilityEvaluator,
 )
 
+pytestmark = pytest.mark.skipif(
+    os.name != "posix", reason="Linux SSH integration uses POSIX fixture paths"
+)
+
 KEY_BLOB = b"fixture-host-key"
 KEY_DATA = base64.b64encode(KEY_BLOB).decode()
 FINGERPRINT = "SHA256:" + base64.b64encode(hashlib.sha256(KEY_BLOB).digest()).decode().rstrip("=")
@@ -71,6 +76,7 @@ def target(**changes: object) -> LinuxTarget:
 class FakeCredentials:
     def __init__(self, allowed: Mapping[tuple[str, str, str], ResolvedCredential]) -> None:
         self.allowed = dict(allowed)
+        self.released: list[ResolvedCredential] = []
 
     def resolve(self, current: LinuxTarget) -> ResolvedCredential:
         try:
@@ -79,6 +85,9 @@ class FakeCredentials:
             ]
         except KeyError as exc:
             raise CredentialBoundaryError("credential reference is unavailable") from exc
+
+    def release(self, resolved: ResolvedCredential) -> None:
+        self.released.append(resolved)
 
 
 class FakeRunner:
@@ -158,6 +167,26 @@ def client(
         operation_ledger=InMemoryOperationLedger(),
     )
     return transport, fake_runner
+
+
+def test_live_transport_requires_durable_operation_ledger(tmp_path: Path) -> None:
+    _, handle = credential()
+    provider = FakeCredentials({("tenant-a", "application-a", "vault://appcare/linux-a"): handle})
+
+    class MutableDurableLedger:
+        durable = True
+
+        def claim(self, *, target_reference: str, operation_id: str) -> bool:
+            del target_reference, operation_id
+            return True
+
+    with pytest.raises(HostKeyVerificationError, match="durable operation ledger"):
+        LinuxSSHClient.for_live(
+            target(),
+            credential_provider=provider,
+            known_hosts_root=tmp_path / "known-hosts",
+            operation_ledger=MutableDurableLedger(),
+        )
 
 
 def test_keyscan_ignores_comment_banners_before_parsing() -> None:
@@ -249,6 +278,28 @@ def test_connection_and_host_inventory_are_strict_and_scoped(tmp_path: Path) -> 
     assert {record.application_id for record in inventory.records} == {"application-a"}
     assert all("StrictHostKeyChecking=no" not in item for call in runner.calls for item in call)
     assert not hasattr(transport, "run_shell")
+
+
+def test_credential_release_runs_after_success_and_failure(tmp_path: Path) -> None:
+    _, handle = credential()
+    provider = FakeCredentials({("tenant-a", "application-a", "vault://appcare/linux-a"): handle})
+    transport, _ = client(tmp_path, credentials=provider)
+
+    passed = transport.execute(ConnectionProbe("connect-1"))
+
+    assert passed.status == OperationStatus.PASSED
+    assert provider.released == [handle]
+
+    failed_runner = FakeRunner({"true": ProcessResult(None, b"", b"", timed_out=True)})
+    failed_transport, _ = client(
+        tmp_path,
+        runner=failed_runner,
+        credentials=provider,
+    )
+    failed = failed_transport.execute(ConnectionProbe("connect-2"))
+
+    assert failed.status == OperationStatus.TIMED_OUT
+    assert provider.released == [handle, handle]
 
 
 def test_host_key_mismatch_halts_before_ssh(tmp_path: Path) -> None:

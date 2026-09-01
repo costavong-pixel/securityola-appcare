@@ -1,0 +1,8 @@
+#!/bin/sh
+set -efu
+exec /usr/bin/env -i \
+    PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+    LANG=C \
+    LC_ALL=C \
+    /usr/bin/python3 -B -I -E -S -s /usr/local/libexec/securityola-appcare-release-guard \
+    --install-release "$@"
