@@ -1,7 +1,7 @@
 # AppCare Model Execution Routing
 
-Status: **MANDATORY PROTECTED-MAIN ROUTING POLICY**  
-Owner decision date: 2026-08-30  
+Status: **MANDATORY PROTECTED-MAIN ROUTING POLICY**
+Owner decision date: 2026-08-30
 Target: `AppCare`
 
 This policy amends the coding-lane selection described by the AppCare implementation blueprint. It does not change Luna's coordinator authority, Terra's independent security role, Codex Security, the one-writer rule, phase dependencies, or production boundaries.
