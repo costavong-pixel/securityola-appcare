@@ -241,6 +241,7 @@ Before `DIRECT_DEEPSEEK_LAUNCHER` can advance beyond `COMPONENT_IMPLEMENTED`, Ap
 - no OpenAI API call;
 - no Spark quota consumption;
 - server-side API-key custody;
+- separate API-request and no-network apply/test identities;
 - sealed task packet;
 - isolated AppCare worktree on Prompt Ola VPS;
 - one-writer enforcement;

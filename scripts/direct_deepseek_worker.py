@@ -83,7 +83,11 @@ _FORBIDDEN_PATH_MARKERS = (
     "secret",
 )
 _WORKTREE_PREFIX = "securityola-appcare-worker."
+_REQUESTS_DIRECTORY = "requests"
 _RESULTS_DIRECTORY = "results"
+_TASK_FILENAME = "task.md"
+_COMPLETION_FILENAME = "completion.json"
+_RUN_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 
 _OUTPUT_KEYS = frozenset(
     {
@@ -134,6 +138,15 @@ class TaskPacket:
     branch: str
     expected_head: str
     allowed_paths: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class StoredRequest:
+    packet: TaskPacket
+    output: WorkerOutput
+    actual_model: str
+    api_auth: str
+    api_response: str
 
 
 @dataclass(frozen=True)
@@ -217,7 +230,7 @@ def _secure_path(path: Path, *, field: str, require_root_owner: bool) -> tuple[o
             raise _failure(f"{field}_path_unavailable") from exc
         if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
             raise _failure(f"{field}_parent_invalid")
-        if info.st_mode & 0o022:
+        if require_root_owner and info.st_mode & 0o022:
             raise _failure(f"{field}_parent_writable")
         if require_root_owner and hasattr(os, "getuid") and info.st_uid != 0:
             raise _failure(f"{field}_parent_owner_invalid")
@@ -575,6 +588,74 @@ def parse_worker_output(content: str, *, allowed_paths: Sequence[str]) -> Worker
     )
 
 
+def _packet_from_sealed_text(text: str, *, expected_head: str, expected_branch: str) -> TaskPacket:
+    if not text or len(text.encode("utf-8")) > validate_task_packet.MAX_PACKET_BYTES:
+        raise _failure("task_packet_invalid")
+    _assert_secret_free(text, code="task_packet_contains_secret")
+    _validated_text, findings = validate_task_packet._validate_bytes(
+        Path("sealed-task.md"),
+        text.encode("utf-8"),
+        require_scope=True,
+        require_context=True,
+        expected_head=expected_head,
+        expected_branch=expected_branch,
+    )
+    if findings:
+        raise _failure("task_packet_rejected")
+    branch = _field(text, "Branch")
+    head = _field(text, "Expected base SHA").casefold()
+    try:
+        allowed = tuple(validate_task_packet.allowed_paths(text))
+    except ValueError as exc:
+        raise _failure("task_packet_scope_invalid") from exc
+    if head != expected_head.casefold() or branch != expected_branch:
+        raise _failure("task_packet_context_changed")
+    return TaskPacket(text=text, branch=branch, expected_head=head, allowed_paths=allowed)
+
+
+def _completion_document(output: WorkerOutput, *, actual_model: str) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "actual_model": actual_model,
+        "api_auth": "PASS",
+        "api_response": "PASS",
+        "analysis_summary": output.analysis_summary,
+        "files_to_change": list(output.files_to_change),
+        "unified_diff": output.unified_diff,
+        "tests_to_run": list(output.tests_to_run),
+        "risks": list(output.risks),
+        "assumptions": list(output.assumptions),
+    }
+
+
+def _parse_completion_document(
+    text: str, *, allowed_paths: Sequence[str]
+) -> tuple[WorkerOutput, str, str, str]:
+    try:
+        document = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise _failure("worker_completion_invalid") from exc
+    expected_keys = _OUTPUT_KEYS | {"schema_version", "actual_model", "api_auth", "api_response"}
+    if not isinstance(document, dict) or set(document) != expected_keys:
+        raise _failure("worker_completion_invalid")
+    if document.get("schema_version") != 1:
+        raise _failure("worker_completion_invalid")
+    actual_model = document.get("actual_model")
+    if not isinstance(actual_model, str) or _SAFE_MODEL.fullmatch(actual_model) is None:
+        raise _failure("worker_completion_invalid")
+    api_auth = document.get("api_auth")
+    api_response = document.get("api_response")
+    if api_auth != "PASS" or api_response != "PASS":
+        raise _failure("worker_completion_invalid")
+    output_document = {key: document[key] for key in _OUTPUT_KEYS}
+    output = parse_worker_output(
+        json.dumps(output_document, separators=(",", ":")),
+        allowed_paths=allowed_paths,
+    )
+    _assert_secret_free(text, code="worker_completion_contains_secret")
+    return output, actual_model, api_auth, api_response
+
+
 def _field(text: str, label: str) -> str:
     values = [
         line[len(label) + 1 :].strip()
@@ -605,18 +686,16 @@ def seal_task_packet(
     )
     if findings:
         raise _failure("task_packet_rejected")
-    text = output.read_text(encoding="utf-8")
-    branch = _field(text, "Branch")
-    head = _field(text, "Expected base SHA").casefold()
-    if _SAFE_BRANCH.fullmatch(branch) is None or _FULL_SHA.fullmatch(head) is None:
-        raise _failure("task_packet_context_invalid")
     try:
-        allowed = tuple(validate_task_packet.allowed_paths(text))
-    except ValueError as exc:
-        raise _failure("task_packet_scope_invalid") from exc
-    if head != expected_head.casefold() or branch != expected_branch:
-        raise _failure("task_packet_context_changed")
-    return TaskPacket(text=text, branch=branch, expected_head=head, allowed_paths=allowed)
+        text = output.read_text(encoding="utf-8")
+        os.chmod(output, 0o660)
+    except OSError as exc:
+        raise _failure("task_packet_write_failed") from exc
+    return _packet_from_sealed_text(
+        text,
+        expected_head=expected_head,
+        expected_branch=expected_branch,
+    )
 
 
 def _git_path() -> str:
@@ -858,21 +937,69 @@ def _validate_worker_roots(repo_root: Path, state_root: Path) -> tuple[Path, Pat
     state = state_root.resolve(strict=False)
     if state != WORKER_STATE_ROOT:
         raise _failure("worker_state_boundary")
-    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    state_created = not state.exists()
+    state.mkdir(parents=True, exist_ok=True, mode=0o770)
+    if state_created:
+        try:
+            os.chmod(state, 0o770)  # noqa: S103 - shared state is group-restricted
+        except OSError as exc:
+            raise _failure("worker_state_invalid") from exc
     if state.is_symlink() or not state.is_dir():
         raise _failure("worker_state_invalid")
-    os.chmod(state, 0o700)
+    try:
+        state_mode = stat.S_IMODE(os.lstat(state).st_mode)
+    except OSError as exc:
+        raise _failure("worker_state_invalid") from exc
+    if state_mode & 0o007 or state_mode & 0o070 != 0o070:
+        raise _failure("worker_state_permissions_invalid")
     return repo, state
+
+
+def _ensure_directory(path: Path, *, mode: int, code: str) -> None:
+    if path.is_symlink() or path.exists() and not path.is_dir():
+        raise _failure(code)
+    created = not path.exists()
+    try:
+        path.mkdir(parents=True, exist_ok=True, mode=mode)
+        if created:
+            os.chmod(path, mode)
+    except OSError as exc:
+        raise _failure(code) from exc
+    if path.is_symlink() or not path.is_dir():
+        raise _failure(code)
+    try:
+        directory_mode = stat.S_IMODE(os.lstat(path).st_mode)
+    except OSError as exc:
+        raise _failure(code) from exc
+    if directory_mode & 0o007:
+        raise _failure(code)
+
+
+def _ensure_shared_state(state_root: Path) -> None:
+    directory = state_root / _REQUESTS_DIRECTORY
+    _ensure_directory(directory, mode=0o770, code="worker_state_invalid")
+    try:
+        directory_mode = stat.S_IMODE(os.lstat(directory).st_mode)
+    except OSError as exc:
+        raise _failure("worker_state_invalid") from exc
+    if directory_mode & 0o007 or directory_mode & 0o070 != 0o070:
+        raise _failure("worker_state_permissions_invalid")
+
+
+def _validate_run_id(run_id: str) -> str:
+    if _RUN_ID_PATTERN.fullmatch(run_id) is None:
+        raise _failure("worker_run_id_invalid")
+    return run_id
 
 
 @contextmanager
 def _one_writer_lock(path: Path) -> Iterator[None]:
     if path.is_symlink():
         raise _failure("worker_lock_invalid")
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o770)
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
     try:
-        descriptor = os.open(path, flags, 0o600)
+        descriptor = os.open(path, flags, 0o660)
     except OSError as exc:
         raise _failure("worker_lock_unavailable") from exc
     try:
@@ -921,23 +1048,117 @@ def _new_run_root(state_root: Path) -> tuple[str, Path]:
     return run_id, run_root
 
 
-def _remove_worktree(repo_root: Path, workspace: WorkerWorkspace) -> bool:
-    result = _run_process(
-        _git_command(
-            "-C",
-            str(repo_root),
-            "worktree",
-            "remove",
-            "--force",
-            str(workspace.worktree),
-        ),
-        cwd=repo_root,
-        timeout_seconds=60,
-        environment=_git_environment(repo_root),
-    )
-    if result.returncode != 0 or result.timed_out or result.output_limited:
+def _new_request_root(state_root: Path, run_id: str) -> Path:
+    _validate_run_id(run_id)
+    requests = state_root / _REQUESTS_DIRECTORY
+    _ensure_directory(requests, mode=0o770, code="worker_state_invalid")
+    request_root = requests / run_id
+    if request_root.is_symlink() or request_root.exists():
+        raise _failure("worker_request_already_exists")
+    try:
+        request_root.mkdir(mode=0o770)
+    except OSError as exc:
+        raise _failure("worker_request_create_failed") from exc
+    if request_root.is_symlink() or not request_root.is_dir():
+        raise _failure("worker_request_invalid")
+    return request_root
+
+
+def _read_shared_file(path: Path, *, maximum_bytes: int, code: str) -> bytes:
+    if path.is_symlink() or not path.is_file():
+        raise _failure(code)
+    try:
+        before = os.lstat(path)
+    except OSError as exc:
+        raise _failure(code) from exc
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+        raise _failure(code)
+    if before.st_mode & 0o002 or before.st_size > maximum_bytes:
+        raise _failure(code)
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise _failure(code) from exc
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_size,
+            opened.st_mtime_ns,
+        ) != (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+        ):
+            raise _failure(code)
+        chunks: list[bytes] = []
+        total = 0
+        while total <= maximum_bytes:
+            chunk = os.read(descriptor, min(65_536, maximum_bytes + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > maximum_bytes:
+                raise _failure(code)
+        after = os.lstat(path)
+        if (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+        ) != (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+        ):
+            raise _failure(code)
+        return b"".join(chunks)
+    except OSError as exc:
+        raise _failure(code) from exc
+    finally:
+        os.close(descriptor)
+
+
+def _cleanup_request_root(state_root: Path, run_id: str) -> bool:
+    _validate_run_id(run_id)
+    requests = state_root / _REQUESTS_DIRECTORY
+    root = requests / run_id
+    if (
+        requests.is_symlink()
+        or not requests.is_dir()
+        or root.is_symlink()
+        or not root.is_dir()
+        or root.parent != requests
+    ):
         return False
-    return not workspace.worktree.exists() and not workspace.worktree.is_symlink()
+    try:
+        shutil.rmtree(root)
+    except OSError:
+        return False
+    return not root.exists() and not root.is_symlink()
+
+
+def _remove_worktree(repo_root: Path, workspace: WorkerWorkspace) -> bool:
+    del repo_root
+    worktree = workspace.worktree
+    if worktree.parent != workspace.run_root:
+        return False
+    if worktree.is_symlink():
+        return False
+    if not worktree.exists():
+        return True
+    if not worktree.is_dir():
+        return False
+    try:
+        shutil.rmtree(worktree)
+    except OSError:
+        return False
+    return not worktree.exists() and not worktree.is_symlink()
 
 
 def _cleanup_run_root(workspace: WorkerWorkspace) -> bool:
@@ -959,15 +1180,19 @@ def _cleanup_run_root(workspace: WorkerWorkspace) -> bool:
 
 
 def _create_worktree(repo_root: Path, workspace: WorkerWorkspace, expected_head: str) -> None:
+    if workspace.worktree.exists() or workspace.worktree.is_symlink():
+        raise _failure("worker_worktree_invalid")
     result = _run_process(
         _git_command(
-            "-C",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "clone",
+            "--no-local",
+            "--no-hardlinks",
+            "--no-checkout",
+            "--",
             str(repo_root),
-            "worktree",
-            "add",
-            "--detach",
             str(workspace.worktree),
-            expected_head,
         ),
         cwd=repo_root,
         timeout_seconds=90,
@@ -977,6 +1202,22 @@ def _create_worktree(repo_root: Path, workspace: WorkerWorkspace, expected_head:
         raise _failure("worker_worktree_create_failed")
     if workspace.worktree.is_symlink() or not workspace.worktree.is_dir():
         raise _failure("worker_worktree_invalid")
+    checkout = _run_process(
+        _git_command(
+            "-C",
+            str(workspace.worktree),
+            "-c",
+            "core.hooksPath=/dev/null",
+            "checkout",
+            "--detach",
+            expected_head,
+        ),
+        cwd=workspace.worktree,
+        timeout_seconds=90,
+        environment=_git_environment(workspace.worktree),
+    )
+    if checkout.returncode != 0 or checkout.timed_out or checkout.output_limited:
+        raise _failure("worker_worktree_create_failed")
 
 
 def _copy_sealed_packet(worktree: Path, packet: TaskPacket) -> Path:
@@ -1125,19 +1366,25 @@ def run_deterministic_tests(
             raise _failure("deterministic_tests_failed")
 
 
-def _atomic_write(path: Path, payload: bytes) -> None:
+def _atomic_write(
+    path: Path,
+    payload: bytes,
+    *,
+    directory_mode: int = 0o700,
+    file_mode: int = 0o600,
+) -> None:
     if path.is_symlink() or path.exists() and not path.is_file():
         raise _failure("worker_result_path_invalid")
     if path.parent.exists() and path.parent.is_symlink():
         raise _failure("worker_result_path_invalid")
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=directory_mode)
     if path.parent.is_symlink() or not path.parent.is_dir():
         raise _failure("worker_result_path_invalid")
     temporary = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
     descriptor = os.open(
         temporary,
         os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
-        0o600,
+        file_mode,
     )
     try:
         with os.fdopen(descriptor, "wb", closefd=True) as stream:
@@ -1146,6 +1393,7 @@ def _atomic_write(path: Path, payload: bytes) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+        os.chmod(path, file_mode)
     finally:
         if descriptor != -1:
             os.close(descriptor)
@@ -1237,66 +1485,182 @@ def _base_receipt(
     )
 
 
-def execute_worker(
+def _request_root(state_root: Path, run_id: str) -> Path:
+    _validate_run_id(run_id)
+    requests = state_root / _REQUESTS_DIRECTORY
+    if requests.is_symlink() or not requests.is_dir():
+        raise _failure("worker_state_invalid")
+    root = requests / run_id
+    if root.is_symlink() or not root.is_dir() or root.parent != requests:
+        raise _failure("worker_request_invalid")
+    return root
+
+
+def _read_utf8_file(path: Path, *, maximum_bytes: int, code: str) -> str:
+    try:
+        raw = _read_shared_file(path, maximum_bytes=maximum_bytes, code=code)
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise _failure(code) from exc
+
+
+def _load_stored_request(
+    state_root: Path,
+    run_id: str,
+    *,
+    expected_head: str,
+    expected_branch: str,
+) -> StoredRequest:
+    request_root = _request_root(state_root, run_id)
+    packet = _packet_from_sealed_text(
+        _read_utf8_file(
+            request_root / _TASK_FILENAME,
+            maximum_bytes=MAX_PACKET_PROMPT_BYTES,
+            code="worker_task_artifact_invalid",
+        ),
+        expected_head=expected_head,
+        expected_branch=expected_branch,
+    )
+    completion_text = _read_utf8_file(
+        request_root / _COMPLETION_FILENAME,
+        maximum_bytes=MAX_RESPONSE_BYTES,
+        code="worker_completion_invalid",
+    )
+    output, actual_model, api_auth, api_response = _parse_completion_document(
+        completion_text,
+        allowed_paths=packet.allowed_paths,
+    )
+    return StoredRequest(
+        packet=packet,
+        output=output,
+        actual_model=actual_model,
+        api_auth=api_auth,
+        api_response=api_response,
+    )
+
+
+def request_completion(
     task_file: Path,
     *,
+    run_id: str,
     repo_root: Path = WORKER_REPOSITORY_ROOT,
     state_root: Path = WORKER_STATE_ROOT,
     client: DirectDeepSeekClient | None = None,
-    test_runner: Callable[[Path], None] = run_deterministic_tests,
-    secret_scanner: Callable[[Path, Path], None] = _run_secret_scan,
 ) -> Path:
+    """Perform only the API stage; never apply or execute the returned patch."""
+
     _assert_non_root()
     _assert_virtualenv()
     repo, state = _validate_worker_roots(repo_root, state_root)
+    _validate_run_id(run_id)
+    _ensure_shared_state(state)
     base_sha, branch, status = _git_status(repo)
     if status:
         raise _failure("coordinator_checkout_not_clean")
-    run_id, run_root = _new_run_root(state)
-    workspace = WorkerWorkspace(run_id=run_id, run_root=run_root, worktree=run_root / "worktree")
-    model = "unknown"
-    patch: str | None = None
-    receipt: WorkerReceipt | None = None
-    actual_model: str | None = None
-    routing_metadata_validated = "NO"
+    model = load_model()
+    request_root: Path | None = None
     try:
-        model = load_model()
         with _one_writer_lock(state / "worker.lock"):
             current_sha, current_branch, current_status = _git_status(repo)
             if current_sha != base_sha or current_branch != branch or current_status:
                 raise _failure("coordinator_checkout_changed")
-            sealed_path = run_root / "task.md"
+            request_root = _new_request_root(state, run_id)
             packet = seal_task_packet(
                 task_file,
                 repo_root=repo,
-                output=sealed_path,
+                output=request_root / _TASK_FILENAME,
                 expected_head=base_sha,
                 expected_branch=branch,
             )
-            routing_metadata_validated = "YES"
-            _create_worktree(repo, workspace, base_sha)
-            task_in_worktree = _copy_sealed_packet(workspace.worktree, packet)
-            before = verify_task_scope.snapshot(workspace.worktree)
-            before_path = run_root / "before.json"
-            _atomic_write(before_path, json.dumps(before, sort_keys=True).encode("utf-8"))
             active_client = client or DirectDeepSeekClient(model=model)
             if active_client.model != model:
                 raise _failure("worker_model_binding_invalid")
             completion = active_client.complete(packet.text)
-            actual_model = completion.actual_model
-            if actual_model != model:
+            if completion.actual_model != model:
                 raise _failure("worker_model_attestation_failed")
             output = parse_worker_output(completion.content, allowed_paths=packet.allowed_paths)
-            _apply_diff(workspace.worktree, run_root, output.unified_diff)
+            _atomic_write(
+                request_root / _COMPLETION_FILENAME,
+                (
+                    json.dumps(
+                        _completion_document(output, actual_model=completion.actual_model),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                ).encode("utf-8"),
+                directory_mode=0o770,
+                file_mode=0o660,
+            )
+    except BaseException:
+        if request_root is not None:
+            _cleanup_request_root(state, run_id)
+        raise
+    if request_root is None:
+        raise _failure("worker_request_failed")
+    return request_root / _COMPLETION_FILENAME
+
+
+def execute_stored_worker(
+    run_id: str,
+    *,
+    repo_root: Path = WORKER_REPOSITORY_ROOT,
+    state_root: Path = WORKER_STATE_ROOT,
+    test_runner: Callable[[Path], None] = run_deterministic_tests,
+    secret_scanner: Callable[[Path, Path], None] = _run_secret_scan,
+) -> Path:
+    """Apply a previously normalized API response in the no-network worker stage."""
+
+    _assert_non_root()
+    _assert_virtualenv()
+    repo, state = _validate_worker_roots(repo_root, state_root)
+    _validate_run_id(run_id)
+    _ensure_shared_state(state)
+    base_sha, branch, status = _git_status(repo)
+    if status:
+        raise _failure("coordinator_checkout_not_clean")
+    disposable_id, run_root = _new_run_root(state)
+    workspace = WorkerWorkspace(
+        run_id=disposable_id,
+        run_root=run_root,
+        worktree=run_root / "worktree",
+    )
+    model = "unknown"
+    patch: str | None = None
+    receipt: WorkerReceipt | None = None
+    actual_model: str | None = None
+    request_existed = False
+    try:
+        request_existed = (state / _REQUESTS_DIRECTORY / run_id).exists()
+        with _one_writer_lock(state / "worker.lock"):
+            current_sha, current_branch, current_status = _git_status(repo)
+            if current_sha != base_sha or current_branch != branch or current_status:
+                raise _failure("coordinator_checkout_changed")
+            model = load_model()
+            stored = _load_stored_request(
+                state,
+                run_id,
+                expected_head=base_sha,
+                expected_branch=branch,
+            )
+            actual_model = stored.actual_model
+            if actual_model != model:
+                raise _failure("worker_model_attestation_failed")
+            _create_worktree(repo, workspace, base_sha)
+            task_in_worktree = _copy_sealed_packet(workspace.worktree, stored.packet)
+            before = verify_task_scope.snapshot(workspace.worktree)
+            before_path = run_root / "before.json"
+            _atomic_write(before_path, json.dumps(before, sort_keys=True).encode("utf-8"))
+            _apply_diff(workspace.worktree, run_root, stored.output.unified_diff)
             _validate_applied_scope(
                 workspace.worktree,
                 before_path=before_path,
                 task_path=task_in_worktree,
-                expected_paths=output.files_to_change,
+                expected_paths=stored.output.files_to_change,
             )
             secret_scanner(workspace.worktree, before_path)
             test_runner(workspace.worktree)
-            patch = output.unified_diff
+            patch = stored.output.unified_diff
             receipt = _base_receipt(
                 run_id=run_id,
                 base_sha=base_sha,
@@ -1304,13 +1668,13 @@ def execute_worker(
                 model=model,
                 status="PASS",
                 actual_model=actual_model,
-                routing_metadata_validated=routing_metadata_validated,
-                files=output.files_to_change,
+                routing_metadata_validated="YES",
+                files=stored.output.files_to_change,
                 patch_sha256=hashlib.sha256(patch.encode("utf-8")).hexdigest(),
                 tests="PASS",
                 scan_status="PASS",
-                api_auth="PASS",
-                api_response="PASS",
+                api_auth=stored.api_auth,
+                api_response=stored.api_response,
             )
     except WorkerError as exc:
         receipt = _base_receipt(
@@ -1320,7 +1684,7 @@ def execute_worker(
             model=model,
             failure_code=exc.code,
             actual_model=actual_model,
-            routing_metadata_validated=routing_metadata_validated,
+            routing_metadata_validated="NO",
         )
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         receipt = _base_receipt(
@@ -1330,7 +1694,7 @@ def execute_worker(
             model=model,
             failure_code="worker_failed",
             actual_model=actual_model,
-            routing_metadata_validated=routing_metadata_validated,
+            routing_metadata_validated="NO",
         )
     finally:
         if workspace.worktree.exists() or workspace.worktree.is_symlink():
@@ -1341,34 +1705,43 @@ def execute_worker(
         else:
             removed_worktree = True
         removed_root = _cleanup_run_root(workspace) if removed_worktree else False
-        workspace.cleanup_status = "PASS" if removed_worktree and removed_root else "FAIL"
+        removed_request = _cleanup_request_root(state, run_id) if request_existed else True
+        workspace.cleanup_status = (
+            "PASS" if removed_worktree and removed_root and removed_request else "FAIL"
+        )
         if receipt is not None:
-            cleanup_failed = not (removed_worktree and removed_root)
+            cleanup_failed = workspace.cleanup_status != "PASS"
             receipt = replace(
                 receipt,
                 status="FAILED" if cleanup_failed else receipt.status,
                 failure_code="worker_cleanup_failed" if cleanup_failed else receipt.failure_code,
                 cleanup_status=workspace.cleanup_status,
-                temporary_worker_state_removed="YES" if removed_worktree and removed_root else "NO",
+                temporary_worker_state_removed=("YES" if not cleanup_failed else "NO"),
             )
     if receipt is None:
         raise _failure("worker_failed")
     return _write_result_bundle(
-        state, receipt=receipt, patch=patch if receipt.status == "PASS" else None
+        state,
+        receipt=receipt,
+        patch=patch if receipt.status == "PASS" else None,
     )
 
 
-def check_environment() -> int:
+def check_environment(*, role: str = "api") -> int:
     try:
         _assert_non_root()
         _assert_virtualenv()
         _validate_worker_roots(WORKER_REPOSITORY_ROOT, WORKER_STATE_ROOT)
-        key_state = "PRESENT"
+        if role not in {"api", "worker"}:
+            raise _failure("worker_role_invalid")
+        key_state = "NOT_ACCESSED"
+        if role == "api":
+            key_state = "PRESENT"
+            try:
+                load_api_key()
+            except WorkerError:
+                key_state = "ABSENT"
         model_state = "PRESENT"
-        try:
-            load_api_key()
-        except WorkerError:
-            key_state = "ABSENT"
         try:
             load_model()
         except WorkerError:
@@ -1378,7 +1751,7 @@ def check_environment() -> int:
         print(f"DEEPSEEK_API_KEY={key_state}")
         print(f"DEEPSEEK_MODEL={model_state}")
         print(f"DEEPSEEK_ENDPOINT={DEEPSEEK_CHAT_ENDPOINT}")
-        return 0 if key_state == "PRESENT" and model_state == "PRESENT" else 1
+        return 0 if model_state == "PRESENT" and (role == "worker" or key_state == "PRESENT") else 1
     except WorkerError:
         print("PYTHON_RUNTIME=FAIL")
         return 1
@@ -1387,20 +1760,23 @@ def check_environment() -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="AppCare direct DeepSeek worker")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("check-environment")
-    run_parser = subparsers.add_parser("run")
-    run_parser.add_argument("--task-file", type=Path, required=True)
-    run_parser.add_argument("--repo-root", type=Path, default=WORKER_REPOSITORY_ROOT)
-    run_parser.add_argument("--state-root", type=Path, default=WORKER_STATE_ROOT)
+    environment_parser = subparsers.add_parser("check-environment")
+    environment_parser.add_argument("--role", choices=("api", "worker"), default="api")
+    request_parser = subparsers.add_parser("request")
+    request_parser.add_argument("--task-file", type=Path, required=True)
+    request_parser.add_argument("--run-id", required=True)
+    apply_parser = subparsers.add_parser("apply")
+    apply_parser.add_argument("--run-id", required=True)
     args = parser.parse_args(argv)
     if args.command == "check-environment":
-        return check_environment()
+        return check_environment(role=args.role)
     try:
-        receipt = execute_worker(
-            args.task_file,
-            repo_root=args.repo_root,
-            state_root=args.state_root,
-        )
+        if args.command == "request":
+            completion_path = request_completion(args.task_file, run_id=args.run_id)
+            print("DIRECT_DEEPSEEK_API=PASS")
+            print(f"COMPLETION_ARTIFACT={completion_path.name}")
+            return 0
+        receipt = execute_stored_worker(args.run_id)
     except WorkerError:
         print("DIRECT_DEEPSEEK_WORKER=FAIL")
         return 1

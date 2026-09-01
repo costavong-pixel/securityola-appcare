@@ -1,7 +1,7 @@
 [Unit]
-Description=SecurityOla AppCare direct DeepSeek bounded worker (%i)
-After=network-online.target
-Wants=network-online.target
+Description=SecurityOla AppCare direct DeepSeek patch worker (%i)
+Requires=securityola-appcare-deepseek-api@%i.service
+After=securityola-appcare-deepseek-api@%i.service
 
 [Service]
 Type=oneshot
@@ -9,20 +9,29 @@ User=appcare-deepseek-worker
 Group=appcare-deepseek-worker
 WorkingDirectory=/opt/securityola/appcare-deepseek-worker/repository
 Environment=PATH=/opt/securityola/appcare-deepseek-worker/venv/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/opt/securityola/appcare-deepseek-worker/venv/bin/python -I -B /opt/securityola/appcare-deepseek-worker/repository/scripts/direct_deepseek_worker.py run --task-file /opt/securityola/appcare-deepseek-worker/repository/.codex/tasks/%i.md
+ExecStart=/opt/securityola/appcare-deepseek-worker/venv/bin/python -I -B /opt/securityola/appcare-deepseek-worker/repository/scripts/direct_deepseek_worker.py apply --run-id %i
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
+PrivateNetwork=true
 ProtectSystem=strict
 ProtectHome=true
+ProtectProc=invisible
+ProcSubset=pid
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
-RestrictAddressFamilies=AF_INET AF_INET6
+RestrictAddressFamilies=AF_UNIX
 CapabilityBoundingSet=
 LockPersonality=true
 MemoryDenyWriteExecute=true
 ReadWritePaths=/var/lib/securityola/appcare-deepseek-worker
+TasksMax=64
+MemoryMax=1G
+CPUQuota=100%
+LimitNOFILE=256
+LimitNPROC=64
+RestrictSUIDSGID=true
 UMask=0077
 TimeoutStartSec=20min
 

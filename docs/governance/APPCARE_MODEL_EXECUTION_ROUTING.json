@@ -98,9 +98,11 @@
   },
   "direct_launcher": {
     "path": "scripts/direct_deepseek_worker.py",
+    "api_service_unit": "ops/worker/securityola-appcare-deepseek-api@.service",
     "service_unit": "ops/worker/securityola-appcare-deepseek-worker@.service",
     "endpoint": "https://api.deepseek.com/chat/completions",
-    "credential_custody": "fixed-root-controlled-file",
+    "credential_custody": "fixed-root-controlled-file-readable-only-by-api-identity",
+    "execution_boundary": "separate-api-and-no-network-apply-services",
     "current_maturity": "COMPONENT_IMPLEMENTED",
     "runtime_integrated": false,
     "live_verification": "NO"

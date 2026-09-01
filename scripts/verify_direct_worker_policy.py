@@ -15,7 +15,11 @@ REQUIRED_SOURCE_MARKERS = (
     'getattr(os, "O_NOFOLLOW", 0)',
     "_assert_non_root()",
     "_assert_virtualenv()",
-    '"worktree",\n            "add",',
+    '"--no-local",',
+    '"--no-hardlinks",',
+    '"--no-checkout",',
+    "def request_completion(",
+    "def execute_stored_worker(",
     '"apply",',
     '"--check"',
     "scan_worker_changes.scan",
@@ -34,20 +38,49 @@ FORBIDDEN_SOURCE_MARKERS = (
     "shell=True",
     "eval(",
     "exec(",
+    "execute_worker(",
 )
-REQUIRED_SERVICE_MARKERS = (
+REQUIRED_API_SERVICE_MARKERS = (
+    "User=appcare-deepseek-api",
+    "Group=appcare-deepseek-worker",
+    "SupplementaryGroups=appcare-deepseek-api",
+    "WorkingDirectory=/opt/securityola/appcare-deepseek-worker/repository",
+    "/opt/securityola/appcare-deepseek-worker/venv/bin/python",
+    "request --task-file",
+    "--run-id %i",
+    "NoNewPrivileges=true",
+    "PrivateTmp=true",
+    "PrivateDevices=true",
+    "ProtectSystem=strict",
+    "ProtectHome=true",
+    "ReadOnlyPaths=/etc/securityola-appcare-deepseek-worker",
+    "ReadWritePaths=/var/lib/securityola-appcare-deepseek-worker",
+    "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
+    "CapabilityBoundingSet=",
+)
+REQUIRED_WORKER_SERVICE_MARKERS = (
+    "Requires=securityola-appcare-deepseek-api@%i.service",
     "User=appcare-deepseek-worker",
     "Group=appcare-deepseek-worker",
     "WorkingDirectory=/opt/securityola/appcare-deepseek-worker/repository",
     "/opt/securityola/appcare-deepseek-worker/venv/bin/python",
-    "-I -B",
+    "apply --run-id %i",
     "NoNewPrivileges=true",
     "PrivateTmp=true",
+    "PrivateNetwork=true",
     "ProtectSystem=strict",
     "ProtectHome=true",
+    "ProtectProc=invisible",
+    "ProcSubset=pid",
     "ReadWritePaths=/var/lib/securityola/appcare-deepseek-worker",
-    "RestrictAddressFamilies=AF_INET AF_INET6",
+    "RestrictAddressFamilies=AF_UNIX",
     "CapabilityBoundingSet=",
+    "TasksMax=64",
+    "MemoryMax=1G",
+    "CPUQuota=100%",
+    "LimitNOFILE=256",
+    "LimitNPROC=64",
+    "RestrictSUIDSGID=true",
 )
 
 
@@ -77,14 +110,16 @@ def _ast_findings(tree: ast.AST) -> list[str]:
 
 def verify(root: Path) -> list[str]:
     source_path = root / "scripts" / "direct_deepseek_worker.py"
-    service_path = root / "ops" / "worker" / "securityola-appcare-deepseek-worker@.service"
+    api_service_path = root / "ops" / "worker" / "securityola-appcare-deepseek-api@.service"
+    worker_service_path = root / "ops" / "worker" / "securityola-appcare-deepseek-worker@.service"
     findings: list[str] = []
     try:
         source = source_path.read_text(encoding="utf-8")
         tree = ast.parse(source, filename=str(source_path))
-        service = service_path.read_text(encoding="utf-8")
+        api_service = api_service_path.read_text(encoding="utf-8")
+        worker_service = worker_service_path.read_text(encoding="utf-8")
     except (OSError, SyntaxError):
-        return ["direct worker source or service unit is unreadable"]
+        return ["direct worker source or service units are unreadable"]
     findings.extend(_ast_findings(tree))
     for marker in REQUIRED_SOURCE_MARKERS:
         if marker not in source:
@@ -92,11 +127,21 @@ def verify(root: Path) -> list[str]:
     for marker in FORBIDDEN_SOURCE_MARKERS:
         if marker in source.casefold():
             findings.append(f"forbidden direct worker marker: {marker}")
-    for marker in REQUIRED_SERVICE_MARKERS:
-        if marker not in service:
+    for marker in REQUIRED_API_SERVICE_MARKERS:
+        if marker not in api_service:
+            findings.append(f"missing direct API service guard: {marker}")
+    for marker in REQUIRED_WORKER_SERVICE_MARKERS:
+        if marker not in worker_service:
             findings.append(f"missing direct worker service guard: {marker}")
-    if "DEEPSEEK_API_KEY" in service or "Authorization=" in service:
-        findings.append("service unit must not contain credential material")
+    if "DEEPSEEK_API_KEY" in api_service or "Authorization=" in api_service:
+        findings.append("API service unit must not contain credential material")
+    if (
+        "deepseek-api-key" in worker_service.casefold()
+        or "Authorization=" in worker_service
+        or "AF_INET" in worker_service
+        or "request --task-file" in worker_service
+    ):
+        findings.append("apply worker service must not access the API or credential")
     return findings
 
 

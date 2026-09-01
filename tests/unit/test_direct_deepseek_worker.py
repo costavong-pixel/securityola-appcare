@@ -264,11 +264,12 @@ def test_worker_lifecycle_uses_disposable_worktree_and_sanitized_receipt(
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "src.py").write_text('"old"\n', encoding="utf-8")
+    (repo / ".gitignore").write_text(".codex/tasks/\n", encoding="utf-8")
     subprocess.run(  # noqa: S603 - Git is resolved before fixed test argv
         [git, "init", "-q", "-b", "main"], cwd=repo, check=True
     )
     subprocess.run(  # noqa: S603 - Git is resolved before fixed test argv
-        [git, "add", "src.py"], cwd=repo, check=True
+        [git, "add", ".gitignore", "src.py"], cwd=repo, check=True
     )
     subprocess.run(  # noqa: S603 - Git is resolved before fixed test argv
         [
@@ -341,13 +342,27 @@ def test_worker_lifecycle_uses_disposable_worktree_and_sanitized_receipt(
                 }
             ).encode()
         ),
+        timeout_seconds=15,
     )
 
-    receipt_path = worker.execute_worker(
+    completion_path = worker.request_completion(
         task,
+        run_id="a" * 32,
         repo_root=repo,
         state_root=state,
         client=client,
+    )
+    assert completion_path.name == "completion.json"
+    monkeypatch.setattr(
+        worker,
+        "load_api_key",
+        lambda: pytest.fail("apply stage must never load the API key"),
+    )
+
+    receipt_path = worker.execute_stored_worker(
+        "a" * 32,
+        repo_root=repo,
+        state_root=state,
         test_runner=lambda _worktree: None,
         secret_scanner=lambda _worktree, _before: None,
     )
@@ -360,3 +375,4 @@ def test_worker_lifecycle_uses_disposable_worktree_and_sanitized_receipt(
     run_id = receipt["run_id"]
     assert (receipt_path.parent / f"{run_id}.patch").is_file()
     assert not list((state / "runs").iterdir())
+    assert not list((state / "requests").iterdir())
