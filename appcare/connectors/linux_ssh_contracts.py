@@ -651,7 +651,7 @@ def _validate_operation_ledger_path(value: object) -> Path:
                 raise CredentialBoundaryError("operation ledger directory is unavailable") from exc
             mode = stat.S_IMODE(metadata.st_mode)
             owner_is_trusted = metadata.st_uid in {0, _current_uid()}
-            shared_sticky_directory = metadata.st_uid == 0 and stat.S_ISVTX(metadata.st_mode)
+            shared_sticky_directory = metadata.st_uid == 0 and bool(metadata.st_mode & stat.S_ISVTX)
             if (
                 not stat.S_ISDIR(metadata.st_mode)
                 or not owner_is_trusted
