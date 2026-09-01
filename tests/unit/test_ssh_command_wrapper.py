@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
 import shlex
@@ -49,10 +50,32 @@ def test_profile_round_trips_without_secret_material(tmp_path: Path) -> None:
 def test_installed_wrapper_scrubs_python_import_environment() -> None:
     wrapper = Path(__file__).parents[2] / "ops" / "ssh" / "securityola-appcare-ssh-wrapper"
     text = wrapper.read_text(encoding="utf-8")
+    guard = Path(__file__).parents[2] / "ops" / "ssh" / "securityola-appcare-release-guard"
     source = Path(__file__).parents[2] / "appcare" / "connectors" / "ssh_command_wrapper.py"
     assert "/usr/bin/env -i" in text
     assert '"SSH_ORIGINAL_COMMAND=${SSH_ORIGINAL_COMMAND-}"' in text
-    assert "/usr/bin/python3 -I -E -s -m appcare.connectors.ssh_command_wrapper" in text
+    assert (
+        "/usr/bin/python3 -B -I -E -s /usr/local/libexec/securityola-appcare-release-guard" in text
+    )
+    assert "-m appcare.connectors" not in text
+    guard_source = guard.read_text(encoding="utf-8")
+    assert "importlib.metadata" in guard_source
+    assert "importlib.import_module" in guard_source
+    assert "package_tree_sha256" in guard_source
+    assert "appcare.connectors" in guard_source
+    guard_tree = ast.parse(guard_source)
+    assert all(
+        not (
+            isinstance(node, ast.ImportFrom)
+            and node.module is not None
+            and node.module.startswith("appcare")
+        )
+        and not (
+            isinstance(node, ast.Import)
+            and any(alias.name.startswith("appcare") for alias in node.names)
+        )
+        for node in ast.walk(guard_tree)
+    )
     assert "verify_release_binding(module_path=Path(__file__))" in source.read_text(
         encoding="utf-8"
     )
@@ -63,6 +86,8 @@ def test_installed_wrapper_scrubs_python_import_environment() -> None:
     assert '"binding_sha256"' in binding_source
     assert "approved-release.json" in binding_source
     assert '"artifact_sha256"' in binding_source
+    assert '"guard_sha256"' in binding_source
+    assert '"package_tree_sha256"' in binding_source
     assert '"installed artifact is not approved"' in binding_source
     if os.name == "posix":
         assert stat.S_IMODE(wrapper.stat().st_mode) & 0o111
@@ -120,14 +145,18 @@ def test_release_artifact_installs_wrapper_in_libexec() -> None:
     assert config["tool"]["setuptools"]["data-files"]["libexec"] == [
         "ops/ssh/securityola-appcare-ssh-wrapper",
         "ops/ssh/install-securityola-appcare-release",
+        "ops/ssh/securityola-appcare-release-guard",
     ]
-    assert config["project"]["scripts"]["securityola-appcare-install-release"] == (
-        "appcare.connectors.release_binding:main"
-    )
+    assert "scripts" not in config["project"]
     installer = project / "ops" / "ssh" / "install-securityola-appcare-release"
-    assert "/usr/bin/python3 -I -E -s -m appcare.connectors.release_binding" in installer.read_text(
-        encoding="utf-8"
+    installer_text = installer.read_text(encoding="utf-8")
+    assert (
+        "/usr/bin/python3 -B -I -E -s /usr/local/libexec/securityola-appcare-release-guard"
+        in installer_text
     )
+    assert '--install-release "$@"' in installer_text
+    if os.name == "posix":
+        subprocess.run(("/bin/sh", "-n", str(installer)), check=True)  # noqa: S603
 
 
 def test_wrapper_accepts_only_typed_read_only_commands(tmp_path: Path) -> None:

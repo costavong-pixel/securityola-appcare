@@ -4,4 +4,5 @@ exec /usr/bin/env -i \
     PATH=/usr/bin:/bin:/usr/sbin:/sbin \
     LANG=C \
     LC_ALL=C \
-    /usr/bin/python3 -I -E -s -m appcare.connectors.release_binding "$@"
+    /usr/bin/python3 -B -I -E -s /usr/local/libexec/securityola-appcare-release-guard \
+    --install-release "$@"

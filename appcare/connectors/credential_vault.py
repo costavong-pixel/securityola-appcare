@@ -40,7 +40,7 @@ from .linux_ssh_contracts import (
     validate_credential_reference,
     validate_remote_user,
 )
-from .release_binding import APPCARE_APPROVED_RELEASE_PATH
+from .release_binding import APPCARE_APPROVED_RELEASE_PATH, APPCARE_RELEASE_GUARD_PATH
 from .ssh_command_wrapper import APPCARE_SSH_WRAPPER_PATH, profile_id
 
 try:
@@ -1584,7 +1584,8 @@ class Ed25519KeyService:
             public_key=record.public_key,
             authorized_keys_line=authorized_key,
             instructions=(
-                f"Install the root-owned AppCare release artifact, run its root-only "
+                f"Install the root-owned AppCare release artifact and pre-import release guard "
+                f"at {APPCARE_RELEASE_GUARD_PATH}, then run its root-only "
                 f"release-binding installer with the approved release revision and artifact "
                 f"digest recorded in the root-owned file {APPCARE_APPROVED_RELEASE_PATH}, "
                 f"and verify "
