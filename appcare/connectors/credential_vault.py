@@ -1583,8 +1583,9 @@ class Ed25519KeyService:
             public_key=record.public_key,
             authorized_keys_line=authorized_key,
             instructions=(
-                f"Install the root-owned AppCare forced-command wrapper at "
-                f"{APPCARE_SSH_WRAPPER_PATH} and its target-scoped profile before "
+                f"Install the root-owned AppCare release artifact and verify its "
+                f"libexec wrapper is present at {APPCARE_SSH_WRAPPER_PATH} with "
+                f"root ownership and mode 0755; install its target-scoped profile before "
                 f"installing exactly the supplied public key for the non-root account {user} "
                 f"on target {record.target_reference}; verify the fingerprint "
                 f"{record.fingerprint}; keep forwarding, PTY, and user startup files disabled; "

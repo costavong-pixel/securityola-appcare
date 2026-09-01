@@ -7,4 +7,5 @@ exec /usr/bin/env -i \
     PATH=/usr/bin:/bin:/usr/sbin:/sbin \
     LANG=C \
     LC_ALL=C \
+    "SSH_ORIGINAL_COMMAND=${SSH_ORIGINAL_COMMAND-}" \
     /usr/bin/python3 -I -E -s -m appcare.connectors.ssh_command_wrapper "$@"

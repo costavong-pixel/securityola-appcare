@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import os
 import shlex
+import stat
+import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -45,7 +48,19 @@ def test_installed_wrapper_scrubs_python_import_environment() -> None:
     wrapper = Path(__file__).parents[2] / "ops" / "ssh" / "securityola-appcare-ssh-wrapper"
     text = wrapper.read_text(encoding="utf-8")
     assert "/usr/bin/env -i" in text
+    assert '"SSH_ORIGINAL_COMMAND=${SSH_ORIGINAL_COMMAND-}"' in text
     assert "/usr/bin/python3 -I -E -s -m appcare.connectors.ssh_command_wrapper" in text
+    if os.name == "posix":
+        assert stat.S_IMODE(wrapper.stat().st_mode) & 0o111
+        subprocess.run(("/bin/sh", "-n", str(wrapper)), check=True)  # noqa: S603
+
+
+def test_release_artifact_installs_wrapper_in_libexec() -> None:
+    project = Path(__file__).parents[2]
+    config = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))
+    assert config["tool"]["setuptools"]["data-files"]["libexec"] == [
+        "ops/ssh/securityola-appcare-ssh-wrapper"
+    ]
 
 
 def test_wrapper_accepts_only_typed_read_only_commands(tmp_path: Path) -> None:
