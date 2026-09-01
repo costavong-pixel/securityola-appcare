@@ -649,10 +649,13 @@ def _validate_operation_ledger_path(value: object) -> Path:
                 metadata = os.lstat(current)
             except (FileNotFoundError, OSError) as exc:
                 raise CredentialBoundaryError("operation ledger directory is unavailable") from exc
+            mode = stat.S_IMODE(metadata.st_mode)
+            owner_is_trusted = metadata.st_uid in {0, _current_uid()}
+            shared_sticky_directory = metadata.st_uid == 0 and stat.S_ISVTX(metadata.st_mode)
             if (
                 not stat.S_ISDIR(metadata.st_mode)
-                or metadata.st_uid not in {0, _current_uid()}
-                or stat.S_IMODE(metadata.st_mode) & 0o022
+                or not owner_is_trusted
+                or (mode & 0o022 and not shared_sticky_directory)
             ):
                 raise CredentialBoundaryError("operation ledger directory is unsafe")
     return value

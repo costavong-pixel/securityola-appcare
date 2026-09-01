@@ -16,10 +16,12 @@ from typing import cast
 
 APPCARE_SSH_WRAPPER_PATH = "/usr/local/libexec/securityola-appcare-ssh-wrapper"
 APPCARE_RELEASE_MANIFEST_PATH = Path("/etc/securityola/appcare/ssh-release.json")
+APPCARE_APPROVED_RELEASE_REVISION_PATH = Path("/etc/securityola/appcare/approved-release-revision")
 _PACKAGE_NAME = "securityola-appcare"
 _SCHEMA_VERSION = 1
 _MAX_MANIFEST_BYTES = 16_384
 _MAX_BOUND_FILE_BYTES = 4 * 1024 * 1024
+_MAX_APPROVED_REVISION_BYTES = 128
 _RELEASE_REVISION = re.compile(r"^[0-9a-f]{40,64}$")
 _PACKAGE_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.!+_-]{0,63}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -35,6 +37,8 @@ def verify_release_binding(*, module_path: Path) -> None:
     module = _resolved_path(module_path, "AppCare SSH module")
     manifest_path = _validated_path(APPCARE_RELEASE_MANIFEST_PATH, "release manifest")
     manifest = _manifest(_read_trusted_file(manifest_path, "release manifest"))
+    if manifest["release_revision"] != _approved_release_revision():
+        raise ReleaseBindingError("release revision is not approved")
     expected_module = manifest["module_path"]
     if expected_module != module.as_posix():
         raise ReleaseBindingError("release module binding does not match")
@@ -62,6 +66,8 @@ def install_release_binding(release_revision: str) -> None:
     geteuid = cast(Callable[[], int], getattr(os, "geteuid"))  # noqa: B009
     if geteuid() != 0:
         raise ReleaseBindingError("release binding installation requires root")
+    if release_revision != _approved_release_revision():
+        raise ReleaseBindingError("release revision is not approved")
     wrapper = _validated_path(Path(APPCARE_SSH_WRAPPER_PATH), "SSH wrapper")
     module = _installed_ssh_module_path()
     payload = build_release_manifest(
@@ -82,8 +88,7 @@ def build_release_manifest(
 ) -> dict[str, object]:
     """Build a non-secret manifest from trusted installed release files."""
 
-    if _RELEASE_REVISION.fullmatch(release_revision) is None:
-        raise ReleaseBindingError("release revision is invalid")
+    _validate_release_revision(release_revision, field_name="release revision")
     module = _resolved_path(module_path, "AppCare SSH module")
     wrapper = _validated_path(wrapper_path, "SSH wrapper")
     if wrapper.as_posix() != APPCARE_SSH_WRAPPER_PATH:
@@ -175,6 +180,30 @@ def _manifest(raw: bytes) -> dict[str, str | int]:
         "binding_path": binding_path,
         "binding_sha256": binding_sha256,
     }
+
+
+def _validate_release_revision(value: object, *, field_name: str) -> str:
+    if not isinstance(value, str) or _RELEASE_REVISION.fullmatch(value) is None:
+        raise ReleaseBindingError(f"{field_name} is invalid")
+    return value
+
+
+def _approved_release_revision() -> str:
+    raw = _read_trusted_file(
+        _validated_path(APPCARE_APPROVED_RELEASE_REVISION_PATH, "approved release revision"),
+        "approved release revision",
+    )
+    if len(raw) > _MAX_APPROVED_REVISION_BYTES:
+        raise ReleaseBindingError("approved release revision is too large")
+    try:
+        value = raw.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise ReleaseBindingError("approved release revision is invalid") from exc
+    if value.endswith("\n"):
+        value = value[:-1]
+    if "\n" in value or "\r" in value or value != value.strip():
+        raise ReleaseBindingError("approved release revision is invalid")
+    return _validate_release_revision(value, field_name="approved release revision")
 
 
 def _package_version() -> str:
@@ -310,6 +339,7 @@ def _reject() -> int:
 
 
 __all__ = [
+    "APPCARE_APPROVED_RELEASE_REVISION_PATH",
     "APPCARE_RELEASE_MANIFEST_PATH",
     "APPCARE_SSH_WRAPPER_PATH",
     "ReleaseBindingError",

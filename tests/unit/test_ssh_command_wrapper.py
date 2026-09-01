@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from appcare.connectors import release_binding
 from appcare.connectors.ssh_command_wrapper import (
     SshCommandProfile,
     SSHCommandRejected,
@@ -59,9 +60,36 @@ def test_installed_wrapper_scrubs_python_import_environment() -> None:
     ).read_text(encoding="utf-8")
     assert "ssh-release.json" in binding_source
     assert '"binding_sha256"' in binding_source
+    assert "approved-release-revision" in binding_source
+    assert '"release revision is not approved"' in binding_source
     if os.name == "posix":
         assert stat.S_IMODE(wrapper.stat().st_mode) & 0o111
         subprocess.run(("/bin/sh", "-n", str(wrapper)), check=True)  # noqa: S603
+
+
+def test_approved_release_revision_is_strict_and_single_valued(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    revision = "a" * 40
+    monkeypatch.setattr(
+        release_binding,
+        "APPCARE_APPROVED_RELEASE_REVISION_PATH",
+        tmp_path / "approved-release-revision",
+    )
+    monkeypatch.setattr(
+        release_binding,
+        "_read_trusted_file",
+        lambda path, field_name: (revision + "\n").encode("ascii"),
+    )
+    assert release_binding._approved_release_revision() == revision
+
+    monkeypatch.setattr(
+        release_binding,
+        "_read_trusted_file",
+        lambda path, field_name: (revision + "\n\n").encode("ascii"),
+    )
+    with pytest.raises(release_binding.ReleaseBindingError):
+        release_binding._approved_release_revision()
 
 
 def test_release_artifact_installs_wrapper_in_libexec() -> None:
