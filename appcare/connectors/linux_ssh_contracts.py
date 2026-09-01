@@ -614,6 +614,9 @@ class OperationLedger(Protocol):
     def claim(self, *, target_reference: str, operation_id: str) -> bool:
         """Atomically claim an operation identity once."""
 
+    def abandon(self, *, target_reference: str, operation_id: str) -> None:
+        """Release a claim when credential cleanup did not complete."""
+
 
 class InMemoryOperationLedger:
     def __init__(self) -> None:
@@ -625,6 +628,9 @@ class InMemoryOperationLedger:
             return False
         self._claimed.add(key)
         return True
+
+    def abandon(self, *, target_reference: str, operation_id: str) -> None:
+        self._claimed.discard((target_reference, validate_operation_id(operation_id)))
 
 
 @dataclass(frozen=True, slots=True)

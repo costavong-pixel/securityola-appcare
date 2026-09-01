@@ -408,7 +408,14 @@ class LinuxSSHClient:
         try:
             return self._execute_with_credential(operation, credential)
         finally:
-            self._release_credential(credential)
+            try:
+                self._release_credential(credential)
+            except Exception:
+                self._ledger.abandon(
+                    target_reference=self.target.target_reference,
+                    operation_id=operation_id,
+                )
+                raise
 
     def _execute_with_credential(
         self, operation: LinuxOperation, credential: ResolvedCredential

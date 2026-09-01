@@ -503,6 +503,10 @@ def test_manual_onboarding_and_bootstrap_are_public_only(tmp_path: Path) -> None
     instructions = keys.manual_onboarding(record.credential_reference, remote_user="appcare")
     assert instructions.public_key == record.public_key
     assert instructions.authorized_keys_line.endswith(record.public_key)
+    assert 'command="/usr/local/libexec/securityola-appcare-ssh-wrapper --profile-id ' in (
+        instructions.authorized_keys_line
+    )
+    assert "no-user-rc" in instructions.authorized_keys_line
     assert "PRIVATE KEY" not in repr(instructions)
     assert "BEGIN" not in instructions.instructions
 

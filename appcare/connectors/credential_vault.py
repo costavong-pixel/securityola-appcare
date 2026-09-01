@@ -40,6 +40,7 @@ from .linux_ssh_contracts import (
     validate_credential_reference,
     validate_remote_user,
 )
+from .ssh_command_wrapper import APPCARE_SSH_WRAPPER_PATH, profile_id
 
 try:
     import fcntl
@@ -1570,7 +1571,10 @@ class Ed25519KeyService:
         if user != record.remote_user:
             raise CredentialVaultError("remote user does not match credential")
         authorized_key = (
-            "no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-pty " + record.public_key
+            f'command="{APPCARE_SSH_WRAPPER_PATH} '
+            f'--profile-id {profile_id(record.target_reference)}",'
+            "no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-pty,no-user-rc "
+            + record.public_key
         )
         return ManualOnboardingInstructions(
             credential_reference=record.credential_reference,
@@ -1579,10 +1583,13 @@ class Ed25519KeyService:
             public_key=record.public_key,
             authorized_keys_line=authorized_key,
             instructions=(
-                f"Install exactly the supplied public key for the non-root account {user} "
+                f"Install the root-owned AppCare forced-command wrapper at "
+                f"{APPCARE_SSH_WRAPPER_PATH} and its target-scoped profile before "
+                f"installing exactly the supplied public key for the non-root account {user} "
                 f"on target {record.target_reference}; verify the fingerprint "
-                f"{record.fingerprint}; do not export or disclose the private key; "
-                "remove the exact line during offboarding."
+                f"{record.fingerprint}; keep forwarding, PTY, and user startup files disabled; "
+                "do not export or disclose the private key; remove the exact key line and "
+                "profile during offboarding."
             ),
         )
 
