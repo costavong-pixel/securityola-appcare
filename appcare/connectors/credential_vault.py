@@ -102,7 +102,7 @@ class FileMasterKeyProvider:
                     allowed_owners = {0, os.getuid()}
                     if metadata.st_uid not in allowed_owners:
                         raise CredentialVaultError("master key owner is invalid")
-                    if stat.S_IMODE(metadata.st_mode) & 0o027:
+                    if stat.S_IMODE(metadata.st_mode) & 0o077:
                         raise CredentialVaultError("master key permissions are unsafe")
                 if metadata.st_size != 32 or metadata.st_size > _MAX_MASTER_KEY_BYTES:
                     raise CredentialVaultError("master key is invalid")
@@ -150,6 +150,28 @@ def _reject_symlink_components(path: Path, field_name: str) -> None:
             raise CredentialVaultError(f"{field_name} is unavailable") from exc
         if stat.S_ISLNK(mode):
             raise CredentialVaultError(f"{field_name} crosses a symlink")
+
+
+def _validate_private_file_descriptor(
+    descriptor: int,
+    field_name: str,
+    *,
+    allow_empty: bool = False,
+) -> os.stat_result:
+    try:
+        metadata = os.fstat(descriptor)
+    except OSError as exc:
+        raise CredentialVaultError(f"{field_name} is unavailable") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise CredentialVaultError(f"{field_name} is not a regular file")
+    if os.name == "posix":
+        if metadata.st_uid not in {0, os.getuid()}:
+            raise CredentialVaultError(f"{field_name} owner is invalid")
+        if stat.S_IMODE(metadata.st_mode) & 0o077:
+            raise CredentialVaultError(f"{field_name} permissions are unsafe")
+    if not allow_empty and metadata.st_size < 1:
+        raise CredentialVaultError(f"{field_name} is empty")
+    return metadata
 
 
 def _validate_scope(value: object, field_name: str) -> str:
@@ -385,8 +407,8 @@ class OffboardingReceipt:
     runtime_files_removed: bool
     local_private_material_removed: bool
     old_key_usable: bool
+    audit_recorded: bool
     remote_authorization_revoked: bool = False
-    audit_recorded: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -628,6 +650,10 @@ class EncryptedCredentialVault:
             if record.status() == VaultCredentialStatus.DESTROYED:
                 blob_removed = self._remove_blob_unlocked(record)
                 runtime_removed = self._remove_runtime_materializations_unlocked(record)
+                audit_recorded = self._audit_event_exists_unlocked("offboarded", record)
+                if not audit_recorded:
+                    self._append_audit_unlocked("offboarded", record)
+                    audit_recorded = True
                 return OffboardingReceipt(
                     credential_reference=record.credential_reference,
                     revoked=True,
@@ -635,6 +661,7 @@ class EncryptedCredentialVault:
                     runtime_files_removed=runtime_removed,
                     local_private_material_removed=True,
                     old_key_usable=True,
+                    audit_recorded=audit_recorded,
                 )
             timestamp = _aware_timestamp(now or datetime.now(UTC), "offboarding time")
             if timestamp is None or timestamp < record.issued_at:
@@ -655,6 +682,7 @@ class EncryptedCredentialVault:
                 runtime_files_removed=runtime_removed,
                 local_private_material_removed=True,
                 old_key_usable=True,
+                audit_recorded=True,
             )
 
     def _runtime_scope(self, reference: str) -> Path:
@@ -753,18 +781,19 @@ class EncryptedCredentialVault:
                 value, "encrypted_blob_sha256"
             ):
                 raise CredentialVaultError("rotation journal blob digest does not match")
-            if replacement_path.exists() or replacement_path.is_symlink():
+            replacement_present = replacement_path.exists() or replacement_path.is_symlink()
+            if replacement_present:
                 persisted = self._get_unlocked(replacement.credential_reference)
                 if persisted != replacement:
                     raise CredentialVaultError("rotation journal replacement record mismatches")
-            else:
-                self._write_atomic(replacement_path, _canonical_json(replacement.to_dict()))
-            plaintext = self._resolve_private_key(replacement)
+            plaintext = self._decrypt_private_key(replacement, encrypted)
             del plaintext
             if old.destroyed_at is not None:
                 raise CredentialVaultError("rotation journal source is destroyed")
             if old.revoked_at is None:
                 self._persist_record_unlocked(replace(old, revoked_at=replacement.issued_at))
+            if not replacement_present:
+                self._write_atomic(replacement_path, _canonical_json(replacement.to_dict()))
             self._append_audit_unlocked("rotated", replacement, operation_id=rotation_id)
             self._remove_rotation_journal_unlocked(journal_path)
 
@@ -785,6 +814,13 @@ class EncryptedCredentialVault:
             raise CredentialVaultError("credential is not active")
         blob_path = self._blob_path(record.credential_reference)
         encrypted = self._read_bytes(blob_path, maximum=_MAX_PRIVATE_KEY_BYTES + 128)
+        return self._decrypt_private_key(record, encrypted)
+
+    def _decrypt_private_key(
+        self,
+        record: VaultCredentialRecord,
+        encrypted: bytes,
+    ) -> bytes:
         if not encrypted.startswith(_BLOB_MAGIC) or len(encrypted) <= len(_BLOB_MAGIC) + 12 + 16:
             raise CredentialVaultError("credential blob is invalid")
         nonce_start = len(_BLOB_MAGIC)
@@ -872,10 +908,27 @@ class EncryptedCredentialVault:
         _reject_symlink_components(path, "vault path")
         try:
             path.mkdir(mode=0o700, parents=True, exist_ok=True)
-            if path.is_symlink() or not path.is_dir():
-                raise CredentialVaultError("vault directory is invalid")
             if os.name == "posix":
-                os.chmod(path, 0o700)
+                descriptor = os.open(
+                    path,
+                    os.O_RDONLY
+                    | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_NOFOLLOW", 0)
+                    | _BINARY_FLAG,
+                )
+                try:
+                    metadata = os.fstat(descriptor)
+                    if not stat.S_ISDIR(metadata.st_mode):
+                        raise CredentialVaultError("vault directory is invalid")
+                    if metadata.st_uid not in {0, os.getuid()}:
+                        raise CredentialVaultError("vault directory owner is invalid")
+                    os.fchmod(descriptor, 0o700)
+                    if stat.S_IMODE(os.fstat(descriptor).st_mode) != 0o700:
+                        raise CredentialVaultError("vault directory permissions are unsafe")
+                finally:
+                    os.close(descriptor)
+            elif path.is_symlink() or not path.is_dir():
+                raise CredentialVaultError("vault directory is invalid")
         except CredentialVaultError:
             raise
         except OSError as exc:
@@ -891,8 +944,15 @@ class EncryptedCredentialVault:
                 0o600,
             )
             try:
+                _validate_private_file_descriptor(
+                    descriptor,
+                    "vault lock",
+                    allow_empty=True,
+                )
                 if os.name == "posix":
                     os.fchmod(descriptor, 0o600)
+                    if stat.S_IMODE(os.fstat(descriptor).st_mode) != 0o600:
+                        raise CredentialVaultError("vault lock permissions are unsafe")
             finally:
                 os.close(descriptor)
         except CredentialVaultError:
@@ -907,6 +967,13 @@ class EncryptedCredentialVault:
             os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | _BINARY_FLAG,
         )
         try:
+            metadata = _validate_private_file_descriptor(
+                descriptor,
+                "vault lock",
+                allow_empty=True,
+            )
+            if os.name == "posix" and stat.S_IMODE(metadata.st_mode) != 0o600:
+                raise CredentialVaultError("vault lock permissions are unsafe")
             if fcntl is not None:
                 fcntl.flock(descriptor, fcntl.LOCK_EX)
             yield
@@ -999,6 +1066,55 @@ class EncryptedCredentialVault:
             except OSError:
                 pass
 
+    def _audit_event_exists_unlocked(
+        self,
+        event: str,
+        record: VaultCredentialRecord,
+        *,
+        operation_id: str | None = None,
+    ) -> bool:
+        path = self._audit / "events.jsonl"
+        if path.is_symlink():
+            raise CredentialVaultError("audit file is a symlink")
+        if not path.exists():
+            return False
+        descriptor = -1
+        try:
+            descriptor = os.open(
+                path,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | _BINARY_FLAG,
+            )
+            _validate_private_file_descriptor(descriptor, "audit file", allow_empty=True)
+            stream = os.fdopen(descriptor, "rb", closefd=True)
+            descriptor = -1
+            try:
+                for raw_line in stream:
+                    if len(raw_line) > 8_192:
+                        raise CredentialVaultError("audit record is too large")
+                    try:
+                        value = json.loads(raw_line.decode("utf-8"))
+                    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                        raise CredentialVaultError("audit record is invalid") from exc
+                    if not isinstance(value, Mapping):
+                        raise CredentialVaultError("audit record is invalid")
+                    if (
+                        value.get("event") == event
+                        and value.get("credential_reference") == record.credential_reference
+                        and value.get("version") == record.version
+                        and (operation_id is None or value.get("operation_id") == operation_id)
+                    ):
+                        return True
+            finally:
+                stream.close()
+        except CredentialVaultError:
+            raise
+        except (OSError, ValueError) as exc:
+            raise CredentialVaultError("audit file is unavailable") from exc
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        return False
+
     def _append_audit_unlocked(
         self,
         event: str,
@@ -1010,6 +1126,12 @@ class EncryptedCredentialVault:
             raise CredentialVaultError("audit event is invalid")
         if operation_id is not None and _ROTATION_FILE.fullmatch(f"{operation_id}.json") is None:
             raise CredentialVaultError("audit operation identifier is invalid")
+        if operation_id is not None and self._audit_event_exists_unlocked(
+            event,
+            record,
+            operation_id=operation_id,
+        ):
+            return
         path = self._audit / "events.jsonl"
         if path.is_symlink():
             raise CredentialVaultError("audit file is a symlink")

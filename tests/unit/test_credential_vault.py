@@ -183,6 +183,66 @@ def test_rotation_journal_recovers_after_interruption(
     assert not any((vault.root / "rotations").iterdir())
 
 
+def test_offboarding_retries_missing_audit_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault, keys = _vault(tmp_path)
+    record = keys.generate(
+        tenant_id="tenant-a",
+        application_id="application-a",
+        target_reference="target-a",
+    )
+    append = vault._append_audit_unlocked
+
+    def fail_once(
+        event: str, value: VaultCredentialRecord, *, operation_id: str | None = None
+    ) -> None:
+        if event == "offboarded":
+            raise RuntimeError("simulated audit interruption")
+        append(event, value, operation_id=operation_id)
+
+    monkeypatch.setattr(vault, "_append_audit_unlocked", fail_once)
+    with pytest.raises(RuntimeError, match="simulated audit interruption"):
+        vault.offboard(record.credential_reference, now=datetime.now(UTC) + timedelta(minutes=1))
+    monkeypatch.undo()
+
+    receipt = vault.offboard(record.credential_reference)
+    assert receipt.audit_recorded
+    assert receipt.local_private_material_removed
+
+
+def test_rotation_audit_replay_is_idempotent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault, keys = _vault(tmp_path)
+    record = keys.generate(
+        tenant_id="tenant-a",
+        application_id="application-a",
+        target_reference="target-a",
+    )
+
+    def fail_once(path: Path) -> None:
+        raise RuntimeError("simulated journal interruption")
+
+    monkeypatch.setattr(vault, "_remove_rotation_journal_unlocked", fail_once)
+    with pytest.raises(RuntimeError, match="simulated journal interruption"):
+        vault.rotate(
+            record.credential_reference,
+            private_key=_private_key(),
+            now=datetime.now(UTC) + timedelta(minutes=1),
+        )
+    monkeypatch.undo()
+    vault.get(record.credential_reference)
+
+    events = [
+        json.loads(line)
+        for line in (vault.root / "audit" / "events.jsonl").read_text().splitlines()
+        if json.loads(line)["event"] == "rotated"
+    ]
+    assert len(events) == 1
+    assert not any((vault.root / "rotations").iterdir())
+
+
 def test_tampered_blob_and_non_ed25519_key_are_rejected(tmp_path: Path) -> None:
     vault, keys = _vault(tmp_path)
     record = keys.generate(
@@ -243,6 +303,12 @@ def test_file_master_key_provider_requires_exact_32_bytes(tmp_path: Path) -> Non
     if os.name == "posix":
         path.chmod(0o600)
     assert FileMasterKeyProvider(path).load_key() == b"k" * 32
+
+    if os.name == "posix":
+        path.chmod(0o640)
+        with pytest.raises(CredentialVaultError, match="permissions"):
+            FileMasterKeyProvider(path).load_key()
+        path.chmod(0o600)
 
     path.write_bytes(b"too-short")
     with pytest.raises(CredentialVaultError, match="invalid"):
