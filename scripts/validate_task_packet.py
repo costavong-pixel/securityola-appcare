@@ -152,22 +152,22 @@ def _packet_metadata_errors(text: str) -> list[str]:
     fields: dict[str, str] = {}
     labels = dict(_REQUIRED_PACKET_FIELDS)
     for key, label in _REQUIRED_PACKET_FIELDS:
-        names = ("HEAD", "Expected base SHA") if key == "base sha" else (label,)
+        names = (label,)
         values = _field_values(text, names)
         if len(values) != 1 or not values[0]:
             findings.append(f"task packet must declare exactly one {label} field")
             continue
         fields[key] = values[0]
 
-    coding_lane = fields.get("coding lane", "").upper()
+    coding_lane = fields.get("coding lane", "")
     if coding_lane and coding_lane not in _ALLOWED_CODING_LANES:
         findings.append("task packet Coding lane must be SPARK or DIRECT_DEEPSEEK")
 
-    worker_host = fields.get("worker host", "").upper()
+    worker_host = fields.get("worker host", "")
     if worker_host and worker_host not in _ALLOWED_WORKER_HOSTS:
         findings.append("task packet Worker host must be CODEX_RUNTIME or PROMPT_OLA_VPS")
 
-    model_provider = fields.get("model provider", "").upper()
+    model_provider = fields.get("model provider", "")
     if model_provider and model_provider not in _ALLOWED_MODEL_PROVIDERS:
         findings.append("task packet Model provider must be OPENAI_INCLUDED_CODEX or DEEPSEEK_API")
 
@@ -176,14 +176,14 @@ def _packet_metadata_errors(text: str) -> list[str]:
         ("openai api involved", "OpenAI API involved"),
         ("deepseek api involved", "DeepSeek API involved"),
     ):
-        value = fields.get(key, "").upper()
+        value = fields.get(key, "")
         if value and value not in _BOOLEAN_VALUES:
             findings.append(f"task packet {label} must be YES or NO")
 
     if coding_lane == "DIRECT_DEEPSEEK":
         for key, expected in _DIRECT_DEEPSEEK_FIELDS.items():
             actual = fields.get(key)
-            if actual is not None and actual.upper() != expected:
+            if actual is not None and actual != expected:
                 findings.append(
                     f"direct DeepSeek task packet must declare {labels[key]}={expected}"
                 )
@@ -224,7 +224,7 @@ def _validate_context(
     elif expected_branch is not None and branch_values[0] != expected_branch:
         findings.append("task packet branch does not match the coordinator branch")
 
-    head_values = _field_values(text, ("HEAD", "Expected base SHA"))
+    head_values = _field_values(text, ("Expected base SHA",))
     if len(head_values) != 1 or not _HEAD_PATTERN.fullmatch(head_values[0].casefold()):
         findings.append("task packet must declare one full Git HEAD SHA")
     elif expected_head is not None and head_values[0].casefold() != expected_head.casefold():

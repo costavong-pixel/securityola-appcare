@@ -119,6 +119,35 @@ def test_sealed_packet_rejects_missing_routing_metadata(tmp_path: Path) -> None:
     assert "task packet must declare exactly one Model provider field" in findings
 
 
+def test_sealed_packet_rejects_noncanonical_direct_route_tokens(tmp_path: Path) -> None:
+    packet = _direct_packet()
+    for value in (
+        "DIRECT_DEEPSEEK",
+        "PROMPT_OLA_VPS",
+        "DEEPSEEK_API",
+        "NO",
+        "YES",
+    ):
+        packet = packet.replace(value, value.lower())
+
+    findings = _seal_direct_packet(tmp_path, packet)
+
+    assert "task packet Coding lane must be SPARK or DIRECT_DEEPSEEK" in findings
+    assert "task packet Worker host must be CODEX_RUNTIME or PROMPT_OLA_VPS" in findings
+    assert "task packet Model provider must be OPENAI_INCLUDED_CODEX or DEEPSEEK_API" in findings
+    assert "task packet Codex Spark quota involved must be YES or NO" in findings
+    assert "task packet OpenAI API involved must be YES or NO" in findings
+    assert "task packet DeepSeek API involved must be YES or NO" in findings
+
+
+def test_sealed_packet_rejects_legacy_head_alias(tmp_path: Path) -> None:
+    packet = _direct_packet().replace(f"Expected base SHA: {TEST_HEAD}", f"HEAD: {TEST_HEAD}")
+
+    findings = _seal_direct_packet(tmp_path, packet)
+
+    assert "task packet must declare exactly one Expected base SHA field" in findings
+
+
 def test_luna_terra_and_codex_security_roles_remain_independent() -> None:
     routing = _routing()
 
