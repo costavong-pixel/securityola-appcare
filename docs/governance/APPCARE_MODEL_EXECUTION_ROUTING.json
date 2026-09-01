@@ -96,6 +96,15 @@
     "direct_deepseek_api_compliant": false,
     "may_be_claimed_runtime_integrated": false
   },
+  "direct_launcher": {
+    "path": "scripts/direct_deepseek_worker.py",
+    "service_unit": "ops/worker/securityola-appcare-deepseek-worker@.service",
+    "endpoint": "https://api.deepseek.com/chat/completions",
+    "credential_custody": "fixed-root-controlled-file",
+    "current_maturity": "COMPONENT_IMPLEMENTED",
+    "runtime_integrated": false,
+    "live_verification": "NO"
+  },
   "direct_route_acceptance": {
     "must_call_deepseek_api_directly": true,
     "must_not_call_openai_api": true,

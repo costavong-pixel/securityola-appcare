@@ -223,6 +223,20 @@ def test_direct_route_requires_full_existing_worker_safety_controls() -> None:
         assert acceptance[marker] is True
 
 
+def test_direct_launcher_is_component_only_until_runtime_qualification() -> None:
+    launcher = _routing()["direct_launcher"]
+
+    assert launcher == {
+        "path": "scripts/direct_deepseek_worker.py",
+        "service_unit": "ops/worker/securityola-appcare-deepseek-worker@.service",
+        "endpoint": "https://api.deepseek.com/chat/completions",
+        "credential_custody": "fixed-root-controlled-file",
+        "current_maturity": "COMPONENT_IMPLEMENTED",
+        "runtime_integrated": False,
+        "live_verification": "NO",
+    }
+
+
 def test_active_agent_guidance_links_to_routing_policy() -> None:
     for relative_path in ("AGENTS.md", "WORKER_PROTOCOL.md", ".specify/memory/constitution.md"):
         text = _text(ROOT / relative_path)
