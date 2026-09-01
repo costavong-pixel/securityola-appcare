@@ -13,6 +13,7 @@ import base64
 import binascii
 import contextlib
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -56,9 +57,12 @@ _MAX_RECORD_BYTES = 32_768
 _MAX_MASTER_KEY_BYTES = 64
 _BINARY_FLAG = getattr(os, "O_BINARY", 0)
 _RUNTIME_FILE = re.compile(r"^[0-9a-f]{32}\.key$")
+_RUNTIME_LEASE_FILE = re.compile(r"^[0-9a-f]{32}\.lease$")
 _RUNTIME_SCOPE_DIR = re.compile(r"^[0-9a-f]{64}$")
 _ROTATION_FILE = re.compile(r"^[0-9a-f]{32}\.json$")
 _MAX_ROTATION_BYTES = 65_536
+_RUNTIME_LEASE_SCHEMA_VERSION = 1
+_MAX_RUNTIME_LEASE_BYTES = 4_096
 _AUTHORIZATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _FINGERPRINT = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
 
@@ -397,6 +401,47 @@ def _reference_digest(reference: str) -> str:
     return hashlib.sha256(reference.encode("utf-8")).hexdigest()
 
 
+def _offboarding_operation_id(record: VaultCredentialRecord) -> str:
+    if record.destroyed_at is None:
+        raise CredentialVaultError("offboarding operation requires a destroyed record")
+    value = f"offboard\x00{record.credential_reference}\x00{_timestamp(record.destroyed_at)}"
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:32]
+
+
+def _process_start_time(pid: int) -> str | None:
+    if os.name != "posix" or pid < 1:
+        return None
+    path = Path(f"/proc/{pid}/stat")
+    try:
+        raw = path.read_bytes()[:4_096]
+    except OSError:
+        return None
+    try:
+        fields = raw.decode("ascii").rsplit(")", 1)[1].split()
+        start_time = fields[19]
+    except (IndexError, UnicodeDecodeError):
+        return None
+    return start_time if start_time.isdigit() else None
+
+
+def _fsync_directory(path: Path) -> None:
+    if os.name != "posix":
+        return
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise OSError("not a directory")
+        os.fsync(descriptor)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 @dataclass(frozen=True, slots=True)
 class OffboardingReceipt:
     """Evidence for local custody destruction; remote key removal is separate."""
@@ -450,6 +495,8 @@ class EncryptedCredentialVault:
         ):
             self._ensure_directory(directory)
         self._ensure_lock_file()
+        with self._exclusive_lock():
+            self._recover_stale_runtime_materializations_unlocked()
 
     @property
     def root(self) -> Path:
@@ -512,13 +559,37 @@ class EncryptedCredentialVault:
         reference = validate_credential_reference(credential_reference)
         with self._exclusive_lock():
             self._recover_pending_rotations_unlocked()
+            self._recover_stale_runtime_materializations_unlocked()
             record = self._get_unlocked(reference)
             private_key = self._resolve_private_key(record)
             runtime_scope = self._runtime_scope(record.credential_reference)
             self._ensure_directory(runtime_scope)
-            target = runtime_scope / f"{secrets.token_hex(16)}.key"
+            runtime_name = f"{secrets.token_hex(16)}.key"
+            target = runtime_scope / runtime_name
+            lease_path = target.with_suffix(".lease")
+            process_start_time = _process_start_time(os.getpid())
+            if os.name == "posix" and process_start_time is None:
+                raise CredentialVaultError("runtime lease is unavailable")
+            lease = {
+                "schema_version": _RUNTIME_LEASE_SCHEMA_VERSION,
+                "pid": os.getpid(),
+                "process_start_time": process_start_time or "unsupported",
+                "created_at": _timestamp(datetime.now(UTC)),
+                "scope": runtime_scope.name,
+                "runtime_file": runtime_name,
+            }
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+            lease_descriptor = -1
             try:
+                lease_descriptor = os.open(lease_path, flags | _BINARY_FLAG, 0o600)
+                try:
+                    _write_all(lease_descriptor, _canonical_json(lease) + b"\n")
+                    os.fsync(lease_descriptor)
+                    if os.name == "posix":
+                        os.fchmod(lease_descriptor, 0o600)
+                finally:
+                    os.close(lease_descriptor)
+                    lease_descriptor = -1
                 descriptor = os.open(target, flags | _BINARY_FLAG, 0o600)
                 try:
                     _write_all(descriptor, private_key)
@@ -532,7 +603,14 @@ class EncryptedCredentialVault:
                     target.unlink(missing_ok=True)
                 except OSError:
                     pass
+                try:
+                    lease_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
                 raise CredentialVaultError("runtime identity could not be materialized") from exc
+            finally:
+                if lease_descriptor >= 0:
+                    os.close(lease_descriptor)
             return ResolvedCredential(record.credential_reference, str(target))
 
     def release(self, credential: ResolvedCredential | str) -> None:
@@ -556,14 +634,23 @@ class EncryptedCredentialVault:
             raise CredentialVaultError("runtime identity scope is invalid")
         if path.is_symlink():
             raise CredentialVaultError("runtime identity is a symlink")
+        lease_path = path.with_suffix(".lease")
         with self._exclusive_lock():
             self._recover_pending_rotations_unlocked()
             try:
                 path.unlink()
             except FileNotFoundError:
-                return
+                pass
             except OSError as exc:
                 raise CredentialVaultError("runtime identity cleanup failed") from exc
+            if lease_path.is_symlink():
+                raise CredentialVaultError("runtime lease is a symlink")
+            try:
+                lease_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                raise CredentialVaultError("runtime lease cleanup failed") from exc
             try:
                 path.parent.rmdir()
             except OSError:
@@ -631,9 +718,9 @@ class EncryptedCredentialVault:
             }
             self._write_atomic(journal_path, _canonical_json(journal))
             self._write_atomic(self._blob_path(replacement.credential_reference), encrypted)
+            self._persist_record_unlocked(replacement)
             revoked = replace(old, revoked_at=timestamp)
             self._persist_record_unlocked(revoked)
-            self._persist_record_unlocked(replacement)
             self._append_audit_unlocked("rotated", replacement, operation_id=rotation_id)
             self._remove_rotation_journal_unlocked(journal_path)
             return replacement
@@ -650,9 +737,18 @@ class EncryptedCredentialVault:
             if record.status() == VaultCredentialStatus.DESTROYED:
                 blob_removed = self._remove_blob_unlocked(record)
                 runtime_removed = self._remove_runtime_materializations_unlocked(record)
-                audit_recorded = self._audit_event_exists_unlocked("offboarded", record)
+                operation_id = _offboarding_operation_id(record)
+                audit_recorded = self._audit_event_exists_unlocked(
+                    "offboarded",
+                    record,
+                    operation_id=operation_id,
+                )
                 if not audit_recorded:
-                    self._append_audit_unlocked("offboarded", record)
+                    self._append_audit_unlocked(
+                        "offboarded",
+                        record,
+                        operation_id=operation_id,
+                    )
                     audit_recorded = True
                 return OffboardingReceipt(
                     credential_reference=record.credential_reference,
@@ -674,7 +770,11 @@ class EncryptedCredentialVault:
             self._persist_record_unlocked(destroyed)
             blob_removed = self._remove_blob_unlocked(destroyed)
             runtime_removed = self._remove_runtime_materializations_unlocked(destroyed)
-            self._append_audit_unlocked("offboarded", destroyed)
+            self._append_audit_unlocked(
+                "offboarded",
+                destroyed,
+                operation_id=_offboarding_operation_id(destroyed),
+            )
             return OffboardingReceipt(
                 credential_reference=destroyed.credential_reference,
                 revoked=True,
@@ -687,6 +787,95 @@ class EncryptedCredentialVault:
 
     def _runtime_scope(self, reference: str) -> Path:
         return self._runtime / _reference_digest(reference)
+
+    def _recover_stale_runtime_materializations_unlocked(self) -> None:
+        try:
+            scopes = sorted(self._runtime.iterdir(), key=lambda path: path.name)
+        except OSError as exc:
+            raise CredentialVaultError("runtime custody is unavailable") from exc
+        for scope in scopes:
+            if (
+                scope.is_symlink()
+                or _RUNTIME_SCOPE_DIR.fullmatch(scope.name) is None
+                or not scope.is_dir()
+            ):
+                raise CredentialVaultError("runtime custody directory is unsafe")
+            try:
+                entries = sorted(scope.iterdir(), key=lambda path: path.name)
+            except OSError as exc:
+                raise CredentialVaultError("runtime custody directory is unavailable") from exc
+            grouped: dict[str, dict[str, Path]] = {}
+            for entry in entries:
+                if entry.is_symlink() or not entry.is_file():
+                    raise CredentialVaultError("runtime custody contains unsafe material")
+                key_match = _RUNTIME_FILE.fullmatch(entry.name)
+                lease_match = _RUNTIME_LEASE_FILE.fullmatch(entry.name)
+                if key_match is None and lease_match is None:
+                    raise CredentialVaultError("runtime custody filename is invalid")
+                token = entry.name.rsplit(".", 1)[0]
+                grouped.setdefault(token, {})["key" if key_match else "lease"] = entry
+            for material in grouped.values():
+                key_path = material.get("key")
+                lease_path = material.get("lease")
+                if key_path is None or lease_path is None:
+                    orphan = key_path or lease_path
+                    if orphan is not None:
+                        self._remove_runtime_entry_unlocked(orphan)
+                    continue
+                lease = self._read_json(lease_path, maximum=_MAX_RUNTIME_LEASE_BYTES)
+                pid, process_start_time = self._validate_runtime_lease(
+                    lease,
+                    scope=scope.name,
+                    runtime_file=key_path.name,
+                )
+                if _process_start_time(pid) != process_start_time:
+                    self._remove_runtime_entry_unlocked(key_path)
+                    self._remove_runtime_entry_unlocked(lease_path)
+            try:
+                scope.rmdir()
+            except OSError:
+                pass
+
+    def _validate_runtime_lease(
+        self,
+        value: Mapping[str, object],
+        *,
+        scope: str,
+        runtime_file: str,
+    ) -> tuple[int, str]:
+        expected = {
+            "schema_version",
+            "pid",
+            "process_start_time",
+            "created_at",
+            "scope",
+            "runtime_file",
+        }
+        if set(value) != expected or value.get("schema_version") != _RUNTIME_LEASE_SCHEMA_VERSION:
+            raise CredentialVaultError("runtime lease schema is invalid")
+        pid = value.get("pid")
+        if isinstance(pid, bool) or not isinstance(pid, int) or pid < 1:
+            raise CredentialVaultError("runtime lease process is invalid")
+        process_start_time = value.get("process_start_time")
+        if not isinstance(process_start_time, str) or (
+            os.name == "posix" and (not process_start_time or not process_start_time.isdigit())
+        ):
+            raise CredentialVaultError("runtime lease process identity is invalid")
+        if value.get("scope") != scope or value.get("runtime_file") != runtime_file:
+            raise CredentialVaultError("runtime lease scope is invalid")
+        if _parse_timestamp(value.get("created_at"), "runtime lease time", required=True) is None:
+            raise CredentialVaultError("runtime lease time is invalid")
+        return pid, process_start_time
+
+    @staticmethod
+    def _remove_runtime_entry_unlocked(path: Path) -> None:
+        try:
+            path.unlink()
+            _fsync_directory(path.parent)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise CredentialVaultError("runtime material cleanup failed") from exc
 
     def _remove_runtime_materializations_unlocked(self, record: VaultCredentialRecord) -> bool:
         directory = self._runtime_scope(record.credential_reference)
@@ -701,16 +890,14 @@ class EncryptedCredentialVault:
         except OSError as exc:
             raise CredentialVaultError("runtime custody directory is unavailable") from exc
         for entry in entries:
+            if entry.is_symlink() or not entry.is_file():
+                raise CredentialVaultError("runtime custody directory contains unsafe material")
             if (
-                entry.is_symlink()
-                or _RUNTIME_FILE.fullmatch(entry.name) is None
-                or not entry.is_file()
+                _RUNTIME_FILE.fullmatch(entry.name) is None
+                and _RUNTIME_LEASE_FILE.fullmatch(entry.name) is None
             ):
                 raise CredentialVaultError("runtime custody directory contains unsafe material")
-            try:
-                entry.unlink()
-            except OSError as exc:
-                raise CredentialVaultError("runtime identity cleanup failed") from exc
+            self._remove_runtime_entry_unlocked(entry)
         try:
             directory.rmdir()
         except OSError as exc:
@@ -790,10 +977,10 @@ class EncryptedCredentialVault:
             del plaintext
             if old.destroyed_at is not None:
                 raise CredentialVaultError("rotation journal source is destroyed")
-            if old.revoked_at is None:
-                self._persist_record_unlocked(replace(old, revoked_at=replacement.issued_at))
             if not replacement_present:
                 self._write_atomic(replacement_path, _canonical_json(replacement.to_dict()))
+            if old.revoked_at is None:
+                self._persist_record_unlocked(replace(old, revoked_at=replacement.issued_at))
             self._append_audit_unlocked("rotated", replacement, operation_id=rotation_id)
             self._remove_rotation_journal_unlocked(journal_path)
 
@@ -804,6 +991,7 @@ class EncryptedCredentialVault:
             raise CredentialVaultError("rotation journal is a symlink")
         try:
             path.unlink()
+            _fsync_directory(path.parent)
         except FileNotFoundError:
             return
         except OSError as exc:
@@ -1056,6 +1244,7 @@ class EncryptedCredentialVault:
             os.close(descriptor)
             descriptor = -1
             os.replace(temporary, path)
+            _fsync_directory(path.parent)
         except OSError as exc:
             raise CredentialVaultError("vault atomic write failed") from exc
         finally:
@@ -1078,6 +1267,7 @@ class EncryptedCredentialVault:
             raise CredentialVaultError("audit file is a symlink")
         if not path.exists():
             return False
+        integrity_key = self._load_master_key()
         descriptor = -1
         try:
             descriptor = os.open(
@@ -1097,11 +1287,86 @@ class EncryptedCredentialVault:
                         raise CredentialVaultError("audit record is invalid") from exc
                     if not isinstance(value, Mapping):
                         raise CredentialVaultError("audit record is invalid")
+                    event_name = value.get("event")
+                    if event_name not in {"created", "revoked", "rotated", "offboarded"}:
+                        raise CredentialVaultError("audit record event is invalid")
+                    has_operation_id = "operation_id" in value
+                    expected = {
+                        "event",
+                        "credential_reference",
+                        "tenant_id",
+                        "application_id",
+                        "target_reference",
+                        "version",
+                        "fingerprint",
+                        "status",
+                        "recorded_at",
+                        "integrity_mac",
+                    }
+                    if has_operation_id:
+                        expected.add("operation_id")
+                    if set(value) != expected or (
+                        event_name in {"rotated", "offboarded"} and not has_operation_id
+                    ):
+                        raise CredentialVaultError("audit record schema is invalid")
+                    if any(
+                        not isinstance(value.get(field), str)
+                        for field in (
+                            "event",
+                            "credential_reference",
+                            "tenant_id",
+                            "application_id",
+                            "target_reference",
+                            "fingerprint",
+                            "status",
+                            "recorded_at",
+                            "integrity_mac",
+                        )
+                    ):
+                        raise CredentialVaultError("audit record fields are invalid")
+                    version = value.get("version")
+                    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+                        raise CredentialVaultError("audit record version is invalid")
+                    if _FINGERPRINT.fullmatch(value["fingerprint"]) is None:
+                        raise CredentialVaultError("audit record fingerprint is invalid")
+                    if value["status"] not in {item.value for item in VaultCredentialStatus}:
+                        raise CredentialVaultError("audit record status is invalid")
                     if (
-                        value.get("event") == event
+                        _parse_timestamp(value["recorded_at"], "audit record time", required=True)
+                        is None
+                    ):
+                        raise CredentialVaultError("audit record time is invalid")
+                    if (
+                        has_operation_id
+                        and _ROTATION_FILE.fullmatch(f"{value.get('operation_id')}.json") is None
+                    ):
+                        raise CredentialVaultError("audit record operation identifier is invalid")
+                    unsigned = dict(value)
+                    supplied_mac = unsigned.pop("integrity_mac")
+                    if not hmac.compare_digest(
+                        supplied_mac,
+                        hmac.new(
+                            integrity_key,
+                            _canonical_json(unsigned),
+                            hashlib.sha256,
+                        ).hexdigest(),
+                    ):
+                        raise CredentialVaultError("audit record integrity check failed")
+                    if (
+                        event_name == event
                         and value.get("credential_reference") == record.credential_reference
+                        and value.get("tenant_id") == record.tenant_id
+                        and value.get("application_id") == record.application_id
+                        and value.get("target_reference") == record.target_reference
                         and value.get("version") == record.version
-                        and (operation_id is None or value.get("operation_id") == operation_id)
+                        and value.get("fingerprint") == record.fingerprint
+                        and value.get("status") == record.status().value
+                        and (
+                            operation_id is None
+                            and not has_operation_id
+                            or has_operation_id
+                            and value.get("operation_id") == operation_id
+                        )
                     ):
                         return True
             finally:
@@ -1124,6 +1389,8 @@ class EncryptedCredentialVault:
     ) -> None:
         if event not in {"created", "revoked", "rotated", "offboarded"}:
             raise CredentialVaultError("audit event is invalid")
+        if event in {"rotated", "offboarded"} and operation_id is None:
+            raise CredentialVaultError("audit operation identifier is required")
         if operation_id is not None and _ROTATION_FILE.fullmatch(f"{operation_id}.json") is None:
             raise CredentialVaultError("audit operation identifier is invalid")
         if operation_id is not None and self._audit_event_exists_unlocked(
@@ -1148,6 +1415,11 @@ class EncryptedCredentialVault:
         }
         if operation_id is not None:
             event_value["operation_id"] = operation_id
+        event_value["integrity_mac"] = hmac.new(
+            self._load_master_key(),
+            _canonical_json(event_value),
+            hashlib.sha256,
+        ).hexdigest()
         encoded = _canonical_json(event_value) + b"\n"
         try:
             descriptor = os.open(

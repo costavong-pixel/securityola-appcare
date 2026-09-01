@@ -99,11 +99,14 @@ def test_runtime_resolution_is_scoped_and_release_removes_ephemeral_identity(
     provider = VaultCredentialProvider(vault)
     resolved = provider.resolve(_target(record))
     identity = Path(resolved.identity_file)
+    lease = identity.with_suffix(".lease")
     assert identity.is_file()
+    assert lease.is_file()
     if os.name == "posix":
         assert identity.stat().st_mode & 0o077 == 0
     provider.release(resolved)
     assert not identity.exists()
+    assert not lease.exists()
 
     with pytest.raises(CredentialVaultError, match="scope"):
         provider.resolve(_target(record, target_reference="other-target"))
@@ -181,6 +184,63 @@ def test_rotation_journal_recovers_after_interruption(
     assert vault.get(first.credential_reference).status() == VaultCredentialStatus.REVOKED
     assert vault.get(replacement_reference).status() == VaultCredentialStatus.ACTIVE
     assert not any((vault.root / "rotations").iterdir())
+
+
+def test_rotation_publishes_replacement_before_revoking_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault, keys = _vault(tmp_path)
+    first = keys.generate(
+        tenant_id="tenant-a",
+        application_id="application-a",
+        target_reference="target-a",
+    )
+    persist = vault._persist_record_unlocked
+    writes: list[tuple[int, VaultCredentialStatus]] = []
+
+    def track(record: VaultCredentialRecord) -> None:
+        writes.append((record.version, record.status()))
+        persist(record)
+
+    monkeypatch.setattr(vault, "_persist_record_unlocked", track)
+    replacement = vault.rotate(
+        first.credential_reference,
+        private_key=_private_key(),
+        now=datetime.now(UTC) + timedelta(minutes=1),
+    )
+
+    assert replacement.version == 2
+    assert writes == [
+        (2, VaultCredentialStatus.ACTIVE),
+        (1, VaultCredentialStatus.REVOKED),
+    ]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="SSH runtime identity paths are POSIX-only")
+def test_startup_reclaims_runtime_material_from_dead_process_lease(tmp_path: Path) -> None:
+    vault, keys = _vault(tmp_path)
+    record = keys.generate(
+        tenant_id="tenant-a",
+        application_id="application-a",
+        target_reference="target-a",
+    )
+    resolved = VaultCredentialProvider(vault).resolve(_target(record))
+    identity = Path(resolved.identity_file)
+    lease = identity.with_suffix(".lease")
+    lease_data = json.loads(lease.read_text())
+    lease_data["pid"] = os.getpid()
+    lease_data["process_start_time"] = "0"
+    lease.write_text(json.dumps(lease_data, sort_keys=True, separators=(",", ":")))
+    lease.chmod(0o600)
+
+    EncryptedCredentialVault(
+        vault.root,
+        master_key_provider=TestMasterKeyProvider(),
+    )
+
+    assert not identity.exists()
+    assert not lease.exists()
 
 
 def test_offboarding_retries_missing_audit_receipt(
