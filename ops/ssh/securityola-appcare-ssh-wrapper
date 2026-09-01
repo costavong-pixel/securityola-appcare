@@ -1,3 +1,10 @@
 #!/bin/sh
 set -efu
-exec /usr/bin/python3 -m appcare.connectors.ssh_command_wrapper "$@"
+# The AppCare package must be installed as a root-owned system package before
+# this wrapper is installed.  Isolated mode removes cwd/user-site/import-env
+# influence; env -i also keeps unrelated SSH-session variables out of Python.
+exec /usr/bin/env -i \
+    PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+    LANG=C \
+    LC_ALL=C \
+    /usr/bin/python3 -I -E -s -m appcare.connectors.ssh_command_wrapper "$@"

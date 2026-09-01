@@ -371,6 +371,8 @@ class LinuxSSHClient:
         limits: BoundedLimits | None = None,
         operation_ledger: OperationLedger | None = None,
     ) -> LinuxSSHClient:
+        if operation_ledger is None or not getattr(operation_ledger, "durable", False):
+            raise HostKeyVerificationError("live SSH requires a durable operation ledger")
         if not known_hosts_root.is_absolute() or any(
             part in {".", ".."} for part in known_hosts_root.parts
         ):
@@ -411,11 +413,17 @@ class LinuxSSHClient:
             try:
                 self._release_credential(credential)
             except Exception:
-                self._ledger.abandon(
-                    target_reference=self.target.target_reference,
-                    operation_id=operation_id,
-                )
-                raise
+                # Release is idempotent and may fail after unlinking the key
+                # but before directory durability. Retry cleanup once without
+                # replaying the remote operation. If both attempts fail, the
+                # claim remains held so a caller cannot silently re-execute an
+                # operation whose remote outcome is already unknown.
+                try:
+                    self._release_credential(credential)
+                except Exception:
+                    raise CredentialBoundaryError(
+                        "credential cleanup failed; operation remains claimed for recovery"
+                    ) from None
 
     def _execute_with_credential(
         self, operation: LinuxOperation, credential: ResolvedCredential

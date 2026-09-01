@@ -18,7 +18,6 @@ from appcare.connectors.credential_vault import (
 from appcare.connectors.linux_ssh_contracts import (
     BoundedLimits,
     ConnectionProbe,
-    CredentialBoundaryError,
     HostKeyScanner,
     InMemoryOperationLedger,
     LinuxTarget,
@@ -92,7 +91,7 @@ class _Runner:
         return ProcessResult(0, b"", b"")
 
 
-def test_release_failure_abandons_claim_for_same_operation_retry(
+def test_release_failure_retries_cleanup_without_replaying_remote_operation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     vault = EncryptedCredentialVault(
@@ -132,15 +131,12 @@ def test_release_failure_abandons_claim_for_same_operation_retry(
         operation_ledger=InMemoryOperationLedger(),
     )
 
-    with pytest.raises(CredentialBoundaryError, match="durability|cleanup"):
-        client.execute(ConnectionProbe("retry-release"))
-    assert [entry.suffix for entry in scope.iterdir()] == [".lease"]
     result = client.execute(ConnectionProbe("retry-release"))
 
     assert result.passed
     assert provider.release_count == 2
     assert fsync_failure_injected
-    assert sum(call[0] == "ssh" for call in runner.calls) == 2
+    assert sum(call[0] == "ssh" for call in runner.calls) == 1
     EncryptedCredentialVault(
         vault.root,
         master_key_provider=_MasterKeyProvider(),

@@ -41,6 +41,13 @@ def test_profile_round_trips_without_secret_material(tmp_path: Path) -> None:
     assert "secret" not in repr(profile).casefold()
 
 
+def test_installed_wrapper_scrubs_python_import_environment() -> None:
+    wrapper = Path(__file__).parents[2] / "ops" / "ssh" / "securityola-appcare-ssh-wrapper"
+    text = wrapper.read_text(encoding="utf-8")
+    assert "/usr/bin/env -i" in text
+    assert "/usr/bin/python3 -I -E -s -m appcare.connectors.ssh_command_wrapper" in text
+
+
 def test_wrapper_accepts_only_typed_read_only_commands(tmp_path: Path) -> None:
     profile = _profile(tmp_path)
     root = profile.approved_application_roots[0]

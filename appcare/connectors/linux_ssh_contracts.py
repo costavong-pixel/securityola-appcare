@@ -12,6 +12,7 @@ import hashlib
 import ipaddress
 import json
 import re
+import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -611,26 +612,30 @@ class LinuxCredentialRegistry:
 
 
 class OperationLedger(Protocol):
+    @property
+    def durable(self) -> bool:
+        """Whether claims survive process restart and use an atomic store."""
+
     def claim(self, *, target_reference: str, operation_id: str) -> bool:
         """Atomically claim an operation identity once."""
 
-    def abandon(self, *, target_reference: str, operation_id: str) -> None:
-        """Release a claim when credential cleanup did not complete."""
-
 
 class InMemoryOperationLedger:
+    """Thread-safe fixture ledger; never use it for live SSH execution."""
+
+    durable = False
+
     def __init__(self) -> None:
+        self._lock = threading.Lock()
         self._claimed: set[tuple[str, str]] = set()
 
     def claim(self, *, target_reference: str, operation_id: str) -> bool:
         key = (target_reference, validate_operation_id(operation_id))
-        if key in self._claimed:
-            return False
-        self._claimed.add(key)
-        return True
-
-    def abandon(self, *, target_reference: str, operation_id: str) -> None:
-        self._claimed.discard((target_reference, validate_operation_id(operation_id)))
+        with self._lock:
+            if key in self._claimed:
+                return False
+            self._claimed.add(key)
+            return True
 
 
 @dataclass(frozen=True, slots=True)

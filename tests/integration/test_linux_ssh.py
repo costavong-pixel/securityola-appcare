@@ -164,6 +164,18 @@ def client(
     return transport, fake_runner
 
 
+def test_live_transport_requires_durable_operation_ledger(tmp_path: Path) -> None:
+    _, handle = credential()
+    provider = FakeCredentials({("tenant-a", "application-a", "vault://appcare/linux-a"): handle})
+    with pytest.raises(HostKeyVerificationError, match="durable operation ledger"):
+        LinuxSSHClient.for_live(
+            target(),
+            credential_provider=provider,
+            known_hosts_root=tmp_path / "known-hosts",
+            operation_ledger=InMemoryOperationLedger(),
+        )
+
+
 def test_keyscan_ignores_comment_banners_before_parsing() -> None:
     class BannerRunner:
         def run(
