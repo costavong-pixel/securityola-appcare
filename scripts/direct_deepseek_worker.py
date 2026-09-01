@@ -879,8 +879,9 @@ def _one_writer_lock(path: Path) -> Iterator[None]:
         if os.name == "nt":
             import msvcrt
 
+            msvcrt_api = cast(Any, msvcrt)
             try:
-                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                msvcrt_api.locking(descriptor, msvcrt_api.LK_NBLCK, 1)
             except OSError as exc:
                 raise _failure("worker_already_running") from exc
         else:
@@ -897,7 +898,8 @@ def _one_writer_lock(path: Path) -> Iterator[None]:
             if os.name == "nt":
                 import msvcrt
 
-                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+                msvcrt_api = cast(Any, msvcrt)
+                msvcrt_api.locking(descriptor, msvcrt_api.LK_UNLCK, 1)
             else:
                 import fcntl
 
