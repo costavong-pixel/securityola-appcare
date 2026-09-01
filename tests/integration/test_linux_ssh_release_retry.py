@@ -9,6 +9,7 @@ from typing import Any, cast
 import pytest
 
 import appcare.connectors.credential_vault as credential_vault_module
+import appcare.connectors.linux_ssh_transport as linux_ssh_transport_module
 from appcare.connectors.credential_vault import (
     Ed25519KeyService,
     EncryptedCredentialVault,
@@ -91,7 +92,9 @@ class _Runner:
         return ProcessResult(0, b"", b"")
 
 
-def test_release_failure_abandons_claim_for_same_operation_retry(tmp_path: Path) -> None:
+def test_release_failure_abandons_claim_for_same_operation_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     vault = EncryptedCredentialVault(
         tmp_path / "credentials",
         master_key_provider=_MasterKeyProvider(),
@@ -106,6 +109,11 @@ def test_release_failure_abandons_claim_for_same_operation_retry(tmp_path: Path)
     fsync_failure_injected = False
     scope = vault._runtime_scope(record.credential_reference)
     original_fsync = credential_vault_module._fsync_directory
+    monkeypatch.setattr(
+        linux_ssh_transport_module,
+        "_ALLOWED_CUSTODY_ROOTS",
+        (*linux_ssh_transport_module._ALLOWED_CUSTODY_ROOTS, vault.root),
+    )
 
     def fsync_with_post_unlink_failure(path: Path) -> None:
         nonlocal fsync_failure_injected
@@ -114,23 +122,20 @@ def test_release_failure_abandons_claim_for_same_operation_retry(tmp_path: Path)
             raise OSError("simulated post-unlink fsync failure")
         original_fsync(path)
 
-    credential_vault_module._fsync_directory = fsync_with_post_unlink_failure
-    try:
-        client = LinuxSSHClient(
-            _target(record.credential_reference),
-            credential_provider=cast(Any, provider),
-            runner=runner,
-            known_hosts=KnownHostsStore(tmp_path / "known-hosts"),
-            scanner=cast(HostKeyScanner, _Scanner()),
-            operation_ledger=InMemoryOperationLedger(),
-        )
+    monkeypatch.setattr(credential_vault_module, "_fsync_directory", fsync_with_post_unlink_failure)
+    client = LinuxSSHClient(
+        _target(record.credential_reference),
+        credential_provider=cast(Any, provider),
+        runner=runner,
+        known_hosts=KnownHostsStore(tmp_path / "known-hosts"),
+        scanner=cast(HostKeyScanner, _Scanner()),
+        operation_ledger=InMemoryOperationLedger(),
+    )
 
-        with pytest.raises(CredentialBoundaryError, match="durability|cleanup"):
-            client.execute(ConnectionProbe("retry-release"))
-        assert [entry.suffix for entry in scope.iterdir()] == [".lease"]
-        result = client.execute(ConnectionProbe("retry-release"))
-    finally:
-        credential_vault_module._fsync_directory = original_fsync
+    with pytest.raises(CredentialBoundaryError, match="durability|cleanup"):
+        client.execute(ConnectionProbe("retry-release"))
+    assert [entry.suffix for entry in scope.iterdir()] == [".lease"]
+    result = client.execute(ConnectionProbe("retry-release"))
 
     assert result.passed
     assert provider.release_count == 2
