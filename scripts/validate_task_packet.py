@@ -169,9 +169,7 @@ def _packet_metadata_errors(text: str) -> list[str]:
 
     model_provider = fields.get("model provider", "").upper()
     if model_provider and model_provider not in _ALLOWED_MODEL_PROVIDERS:
-        findings.append(
-            "task packet Model provider must be OPENAI_INCLUDED_CODEX or DEEPSEEK_API"
-        )
+        findings.append("task packet Model provider must be OPENAI_INCLUDED_CODEX or DEEPSEEK_API")
 
     for key, label in (
         ("codex spark quota involved", "Codex Spark quota involved"),
