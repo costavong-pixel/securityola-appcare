@@ -95,6 +95,14 @@ def test_sealed_packet_contract_pins_direct_route_metadata() -> None:
         "OpenAI API involved": "NO",
         "DeepSeek API involved": "YES",
     }
+    assert enforcement["spark_exact_values"] == {
+        "Coding lane": "SPARK",
+        "Worker host": "CODEX_RUNTIME",
+        "Model provider": "OPENAI_INCLUDED_CODEX",
+        "Codex Spark quota involved": "YES",
+        "OpenAI API involved": "NO",
+        "DeepSeek API involved": "NO",
+    }
     assert enforcement["sanitized_runtime_attestation"] == [
         "REQUESTED_MODEL",
         "ACTUAL_MODEL",
@@ -146,6 +154,17 @@ def test_sealed_packet_rejects_legacy_head_alias(tmp_path: Path) -> None:
     findings = _seal_direct_packet(tmp_path, packet)
 
     assert "task packet must declare exactly one Expected base SHA field" in findings
+
+
+def test_sealed_packet_rejects_mixed_spark_and_deepseek_route(tmp_path: Path) -> None:
+    packet = _direct_packet().replace("Coding lane: DIRECT_DEEPSEEK", "Coding lane: SPARK")
+
+    findings = _seal_direct_packet(tmp_path, packet)
+
+    assert "SPARK task packet must declare Worker host=CODEX_RUNTIME" in findings
+    assert "SPARK task packet must declare Model provider=OPENAI_INCLUDED_CODEX" in findings
+    assert "SPARK task packet must declare Codex Spark quota involved=YES" in findings
+    assert "SPARK task packet must declare DeepSeek API involved=NO" in findings
 
 
 def test_luna_terra_and_codex_security_roles_remain_independent() -> None:

@@ -71,6 +71,20 @@ ROUTING_METADATA_VALIDATED=YES | NO
 These fields do not promote the route by themselves; Luna, Terra, Codex
 Security, deterministic gates, and exact-head CI remain required.
 
+The preferred Spark lane has its own exact packet tuple:
+
+```text
+Coding lane=SPARK
+Worker host=CODEX_RUNTIME
+Model provider=OPENAI_INCLUDED_CODEX
+Codex Spark quota involved=YES
+OpenAI API involved=NO
+DeepSeek API involved=NO
+```
+
+The validator rejects mixed-lane tuples, including a Spark packet that names
+the Prompt Ola VPS or DeepSeek API.
+
 ## 4. Lane selection
 
 ### Preferred lane — GPT-5.3 Spark

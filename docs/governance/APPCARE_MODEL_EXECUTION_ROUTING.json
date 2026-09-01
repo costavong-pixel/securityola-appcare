@@ -75,6 +75,14 @@
       "OpenAI API involved": "NO",
       "DeepSeek API involved": "YES"
     },
+    "spark_exact_values": {
+      "Coding lane": "SPARK",
+      "Worker host": "CODEX_RUNTIME",
+      "Model provider": "OPENAI_INCLUDED_CODEX",
+      "Codex Spark quota involved": "YES",
+      "OpenAI API involved": "NO",
+      "DeepSeek API involved": "NO"
+    },
     "sanitized_runtime_attestation": [
       "REQUESTED_MODEL",
       "ACTUAL_MODEL",

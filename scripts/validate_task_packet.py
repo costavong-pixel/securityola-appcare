@@ -63,13 +63,23 @@ _REQUIRED_PACKET_FIELDS: tuple[tuple[str, str], ...] = (
     ("repository root", "Repository root"),
     ("base sha", "Expected base SHA"),
 )
-_DIRECT_DEEPSEEK_FIELDS = {
-    "coding lane": "DIRECT_DEEPSEEK",
-    "worker host": "PROMPT_OLA_VPS",
-    "model provider": "DEEPSEEK_API",
-    "codex spark quota involved": "NO",
-    "openai api involved": "NO",
-    "deepseek api involved": "YES",
+_ROUTE_EXACT_FIELDS = {
+    "SPARK": {
+        "coding lane": "SPARK",
+        "worker host": "CODEX_RUNTIME",
+        "model provider": "OPENAI_INCLUDED_CODEX",
+        "codex spark quota involved": "YES",
+        "openai api involved": "NO",
+        "deepseek api involved": "NO",
+    },
+    "DIRECT_DEEPSEEK": {
+        "coding lane": "DIRECT_DEEPSEEK",
+        "worker host": "PROMPT_OLA_VPS",
+        "model provider": "DEEPSEEK_API",
+        "codex spark quota involved": "NO",
+        "openai api involved": "NO",
+        "deepseek api involved": "YES",
+    },
 }
 _ALLOWED_CODING_LANES = {"SPARK", "DIRECT_DEEPSEEK"}
 _ALLOWED_WORKER_HOSTS = {"CODEX_RUNTIME", "PROMPT_OLA_VPS"}
@@ -180,13 +190,16 @@ def _packet_metadata_errors(text: str) -> list[str]:
         if value and value not in _BOOLEAN_VALUES:
             findings.append(f"task packet {label} must be YES or NO")
 
-    if coding_lane == "DIRECT_DEEPSEEK":
-        for key, expected in _DIRECT_DEEPSEEK_FIELDS.items():
+    if coding_lane in _ROUTE_EXACT_FIELDS:
+        for key, expected in _ROUTE_EXACT_FIELDS[coding_lane].items():
             actual = fields.get(key)
             if actual is not None and actual != expected:
-                findings.append(
-                    f"direct DeepSeek task packet must declare {labels[key]}={expected}"
-                )
+                if coding_lane == "DIRECT_DEEPSEEK":
+                    findings.append(
+                        f"direct DeepSeek task packet must declare {labels[key]}={expected}"
+                    )
+                else:
+                    findings.append(f"SPARK task packet must declare {labels[key]}={expected}")
     return findings
 
 
