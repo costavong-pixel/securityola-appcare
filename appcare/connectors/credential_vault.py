@@ -598,15 +598,13 @@ class EncryptedCredentialVault:
                         os.fchmod(descriptor, 0o600)
                 finally:
                     os.close(descriptor)
-            except OSError as exc:
+                _fsync_directory(runtime_scope)
+            except (OSError, CredentialVaultError) as exc:
                 try:
-                    target.unlink(missing_ok=True)
-                except OSError:
-                    pass
-                try:
-                    lease_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
+                    self._remove_runtime_entry_unlocked(target)
+                    self._remove_runtime_entry_unlocked(lease_path)
+                except CredentialVaultError as cleanup_exc:
+                    raise CredentialVaultError("runtime identity cleanup failed") from cleanup_exc
                 raise CredentialVaultError("runtime identity could not be materialized") from exc
             finally:
                 if lease_descriptor >= 0:
@@ -638,7 +636,7 @@ class EncryptedCredentialVault:
         with self._exclusive_lock():
             self._recover_pending_rotations_unlocked()
             try:
-                path.unlink()
+                self._remove_runtime_entry_unlocked(path)
             except FileNotFoundError:
                 pass
             except OSError as exc:
@@ -646,7 +644,7 @@ class EncryptedCredentialVault:
             if lease_path.is_symlink():
                 raise CredentialVaultError("runtime lease is a symlink")
             try:
-                lease_path.unlink()
+                self._remove_runtime_entry_unlocked(lease_path)
             except FileNotFoundError:
                 pass
             except OSError as exc:
@@ -655,6 +653,11 @@ class EncryptedCredentialVault:
                 path.parent.rmdir()
             except OSError:
                 pass
+            else:
+                try:
+                    _fsync_directory(path.parent.parent)
+                except OSError as exc:
+                    raise CredentialVaultError("runtime custody cleanup is not durable") from exc
 
     def revoke(
         self,
@@ -835,6 +838,11 @@ class EncryptedCredentialVault:
                 scope.rmdir()
             except OSError:
                 pass
+            else:
+                try:
+                    _fsync_directory(scope.parent)
+                except OSError as exc:
+                    raise CredentialVaultError("runtime custody cleanup is not durable") from exc
 
     def _validate_runtime_lease(
         self,
@@ -902,6 +910,10 @@ class EncryptedCredentialVault:
             directory.rmdir()
         except OSError as exc:
             raise CredentialVaultError("runtime custody directory cleanup failed") from exc
+        try:
+            _fsync_directory(directory.parent)
+        except OSError as exc:
+            raise CredentialVaultError("runtime custody cleanup is not durable") from exc
         return True
 
     def _recover_pending_rotations_unlocked(self) -> None:
@@ -1084,6 +1096,10 @@ class EncryptedCredentialVault:
             return False
         except OSError as exc:
             raise CredentialVaultError("credential blob cleanup failed") from exc
+        try:
+            _fsync_directory(path.parent)
+        except OSError as exc:
+            raise CredentialVaultError("credential blob cleanup is not durable") from exc
         return True
 
     def _record_path(self, reference: str) -> Path:
@@ -1115,6 +1131,7 @@ class EncryptedCredentialVault:
                         raise CredentialVaultError("vault directory permissions are unsafe")
                 finally:
                     os.close(descriptor)
+                _fsync_directory(path.parent)
             elif path.is_symlink() or not path.is_dir():
                 raise CredentialVaultError("vault directory is invalid")
         except CredentialVaultError:
@@ -1444,6 +1461,7 @@ class EncryptedCredentialVault:
                 os.fsync(descriptor)
             finally:
                 os.close(descriptor)
+            _fsync_directory(path.parent)
         except OSError as exc:
             raise CredentialVaultError("audit record could not be written") from exc
 
