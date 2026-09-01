@@ -16,12 +16,12 @@ from typing import cast
 
 APPCARE_SSH_WRAPPER_PATH = "/usr/local/libexec/securityola-appcare-ssh-wrapper"
 APPCARE_RELEASE_MANIFEST_PATH = Path("/etc/securityola/appcare/ssh-release.json")
-APPCARE_APPROVED_RELEASE_REVISION_PATH = Path("/etc/securityola/appcare/approved-release-revision")
+APPCARE_APPROVED_RELEASE_PATH = Path("/etc/securityola/appcare/approved-release.json")
 _PACKAGE_NAME = "securityola-appcare"
 _SCHEMA_VERSION = 1
+_APPROVAL_SCHEMA_VERSION = 1
 _MAX_MANIFEST_BYTES = 16_384
 _MAX_BOUND_FILE_BYTES = 4 * 1024 * 1024
-_MAX_APPROVED_REVISION_BYTES = 128
 _RELEASE_REVISION = re.compile(r"^[0-9a-f]{40,64}$")
 _PACKAGE_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.!+_-]{0,63}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -37,25 +37,44 @@ def verify_release_binding(*, module_path: Path) -> None:
     module = _resolved_path(module_path, "AppCare SSH module")
     manifest_path = _validated_path(APPCARE_RELEASE_MANIFEST_PATH, "release manifest")
     manifest = _manifest(_read_trusted_file(manifest_path, "release manifest"))
-    if manifest["release_revision"] != _approved_release_revision():
+    approved = _approved_release()
+    if manifest["release_revision"] != approved["release_revision"]:
         raise ReleaseBindingError("release revision is not approved")
     expected_module = manifest["module_path"]
     if expected_module != module.as_posix():
         raise ReleaseBindingError("release module binding does not match")
     if manifest["wrapper_path"] != APPCARE_SSH_WRAPPER_PATH:
         raise ReleaseBindingError("release wrapper binding does not match")
-    if manifest["package_version"] != _package_version():
+    package_version = _package_version()
+    if (
+        manifest["package_version"] != package_version
+        or approved["package_version"] != package_version
+    ):
         raise ReleaseBindingError("release package binding does not match")
-    if manifest["module_sha256"] != _sha256_file(module, "AppCare SSH module"):
+    module_sha256 = _sha256_file(module, "AppCare SSH module")
+    if manifest["module_sha256"] != module_sha256:
         raise ReleaseBindingError("release module digest does not match")
     binding = _resolved_path(Path(__file__), "release binding module")
     if manifest["binding_path"] != binding.as_posix():
         raise ReleaseBindingError("release binding module does not match")
-    if manifest["binding_sha256"] != _sha256_file(binding, "release binding module"):
+    binding_sha256 = _sha256_file(binding, "release binding module")
+    if manifest["binding_sha256"] != binding_sha256:
         raise ReleaseBindingError("release binding module digest does not match")
     wrapper = _validated_path(Path(APPCARE_SSH_WRAPPER_PATH), "SSH wrapper")
-    if manifest["wrapper_sha256"] != _sha256_file(wrapper, "SSH wrapper", executable=True):
+    wrapper_sha256 = _sha256_file(wrapper, "SSH wrapper", executable=True)
+    if manifest["wrapper_sha256"] != wrapper_sha256:
         raise ReleaseBindingError("release wrapper digest does not match")
+    artifact_sha256 = _artifact_sha256(
+        package_version=package_version,
+        wrapper_sha256=wrapper_sha256,
+        module_sha256=module_sha256,
+        binding_sha256=binding_sha256,
+    )
+    if (
+        manifest["artifact_sha256"] != artifact_sha256
+        or approved["artifact_sha256"] != artifact_sha256
+    ):
+        raise ReleaseBindingError("release artifact digest does not match")
 
 
 def install_release_binding(release_revision: str) -> None:
@@ -66,7 +85,9 @@ def install_release_binding(release_revision: str) -> None:
     geteuid = cast(Callable[[], int], getattr(os, "geteuid"))  # noqa: B009
     if geteuid() != 0:
         raise ReleaseBindingError("release binding installation requires root")
-    if release_revision != _approved_release_revision():
+    approved = _approved_release()
+    release_revision = _validate_release_revision(release_revision, field_name="release revision")
+    if release_revision != approved["release_revision"]:
         raise ReleaseBindingError("release revision is not approved")
     wrapper = _validated_path(Path(APPCARE_SSH_WRAPPER_PATH), "SSH wrapper")
     module = _installed_ssh_module_path()
@@ -75,6 +96,11 @@ def install_release_binding(release_revision: str) -> None:
         module_path=module,
         wrapper_path=wrapper,
     )
+    if (
+        payload["package_version"] != approved["package_version"]
+        or payload["artifact_sha256"] != approved["artifact_sha256"]
+    ):
+        raise ReleaseBindingError("installed artifact is not approved")
     _write_manifest(APPCARE_RELEASE_MANIFEST_PATH, payload)
 
 
@@ -97,16 +123,25 @@ def build_release_manifest(
     version = package_version or _package_version()
     if _PACKAGE_VERSION.fullmatch(version) is None:
         raise ReleaseBindingError("release package version is invalid")
+    wrapper_sha256 = _sha256_file(wrapper, "SSH wrapper", executable=True)
+    module_sha256 = _sha256_file(module, "AppCare SSH module")
+    binding_sha256 = _sha256_file(binding, "release binding module")
     return {
         "schema_version": _SCHEMA_VERSION,
         "release_revision": release_revision,
         "package_version": version,
         "wrapper_path": APPCARE_SSH_WRAPPER_PATH,
-        "wrapper_sha256": _sha256_file(wrapper, "SSH wrapper", executable=True),
+        "wrapper_sha256": wrapper_sha256,
         "module_path": module.as_posix(),
-        "module_sha256": _sha256_file(module, "AppCare SSH module"),
+        "module_sha256": module_sha256,
         "binding_path": binding.as_posix(),
-        "binding_sha256": _sha256_file(binding, "release binding module"),
+        "binding_sha256": binding_sha256,
+        "artifact_sha256": _artifact_sha256(
+            package_version=version,
+            wrapper_sha256=wrapper_sha256,
+            module_sha256=module_sha256,
+            binding_sha256=binding_sha256,
+        ),
     }
 
 
@@ -136,6 +171,7 @@ def _manifest(raw: bytes) -> dict[str, str | int]:
         "module_sha256",
         "binding_path",
         "binding_sha256",
+        "artifact_sha256",
     }
     if not isinstance(value, Mapping) or set(value) != expected:
         raise ReleaseBindingError("release manifest schema is invalid")
@@ -148,6 +184,7 @@ def _manifest(raw: bytes) -> dict[str, str | int]:
     module_sha256 = value.get("module_sha256")
     binding_path = value.get("binding_path")
     binding_sha256 = value.get("binding_sha256")
+    artifact_sha256 = value.get("artifact_sha256")
     if (
         schema_version != _SCHEMA_VERSION
         or not isinstance(revision, str)
@@ -167,6 +204,8 @@ def _manifest(raw: bytes) -> dict[str, str | int]:
         or ".." in Path(binding_path).parts
         or not isinstance(binding_sha256, str)
         or _SHA256.fullmatch(binding_sha256) is None
+        or not isinstance(artifact_sha256, str)
+        or _SHA256.fullmatch(artifact_sha256) is None
     ):
         raise ReleaseBindingError("release manifest values are invalid")
     return {
@@ -179,6 +218,7 @@ def _manifest(raw: bytes) -> dict[str, str | int]:
         "module_sha256": module_sha256,
         "binding_path": binding_path,
         "binding_sha256": binding_sha256,
+        "artifact_sha256": artifact_sha256,
     }
 
 
@@ -188,22 +228,60 @@ def _validate_release_revision(value: object, *, field_name: str) -> str:
     return value
 
 
-def _approved_release_revision() -> str:
+def _approved_release() -> dict[str, str]:
     raw = _read_trusted_file(
-        _validated_path(APPCARE_APPROVED_RELEASE_REVISION_PATH, "approved release revision"),
-        "approved release revision",
+        _validated_path(APPCARE_APPROVED_RELEASE_PATH, "approved release"),
+        "approved release",
     )
-    if len(raw) > _MAX_APPROVED_REVISION_BYTES:
-        raise ReleaseBindingError("approved release revision is too large")
+    if len(raw) > _MAX_MANIFEST_BYTES:
+        raise ReleaseBindingError("approved release is too large")
     try:
-        value = raw.decode("ascii")
-    except UnicodeDecodeError as exc:
-        raise ReleaseBindingError("approved release revision is invalid") from exc
-    if value.endswith("\n"):
-        value = value[:-1]
-    if "\n" in value or "\r" in value or value != value.strip():
-        raise ReleaseBindingError("approved release revision is invalid")
-    return _validate_release_revision(value, field_name="approved release revision")
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ReleaseBindingError("approved release is invalid") from exc
+    expected = {"schema_version", "release_revision", "package_version", "artifact_sha256"}
+    if not isinstance(value, Mapping) or set(value) != expected:
+        raise ReleaseBindingError("approved release schema is invalid")
+    schema_version = value.get("schema_version")
+    release_revision = value.get("release_revision")
+    package_version = value.get("package_version")
+    artifact_sha256 = value.get("artifact_sha256")
+    if (
+        schema_version != _APPROVAL_SCHEMA_VERSION
+        or not isinstance(release_revision, str)
+        or _RELEASE_REVISION.fullmatch(release_revision) is None
+        or not isinstance(package_version, str)
+        or _PACKAGE_VERSION.fullmatch(package_version) is None
+        or not isinstance(artifact_sha256, str)
+        or _SHA256.fullmatch(artifact_sha256) is None
+    ):
+        raise ReleaseBindingError("approved release values are invalid")
+    return {
+        "release_revision": release_revision,
+        "package_version": package_version,
+        "artifact_sha256": artifact_sha256,
+    }
+
+
+def _artifact_sha256(
+    *,
+    package_version: str,
+    wrapper_sha256: str,
+    module_sha256: str,
+    binding_sha256: str,
+) -> str:
+    payload = json.dumps(
+        {
+            "package_name": _PACKAGE_NAME,
+            "package_version": package_version,
+            "wrapper_sha256": wrapper_sha256,
+            "module_sha256": module_sha256,
+            "binding_sha256": binding_sha256,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _package_version() -> str:
@@ -339,7 +417,7 @@ def _reject() -> int:
 
 
 __all__ = [
-    "APPCARE_APPROVED_RELEASE_REVISION_PATH",
+    "APPCARE_APPROVED_RELEASE_PATH",
     "APPCARE_RELEASE_MANIFEST_PATH",
     "APPCARE_SSH_WRAPPER_PATH",
     "ReleaseBindingError",

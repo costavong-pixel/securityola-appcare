@@ -40,7 +40,7 @@ from .linux_ssh_contracts import (
     validate_credential_reference,
     validate_remote_user,
 )
-from .release_binding import APPCARE_APPROVED_RELEASE_REVISION_PATH
+from .release_binding import APPCARE_APPROVED_RELEASE_PATH
 from .ssh_command_wrapper import APPCARE_SSH_WRAPPER_PATH, profile_id
 
 try:
@@ -1585,8 +1585,9 @@ class Ed25519KeyService:
             authorized_keys_line=authorized_key,
             instructions=(
                 f"Install the root-owned AppCare release artifact, run its root-only "
-                f"release-binding installer with the approved release revision recorded in "
-                f"the root-owned file {APPCARE_APPROVED_RELEASE_REVISION_PATH}, and verify "
+                f"release-binding installer with the approved release revision and artifact "
+                f"digest recorded in the root-owned file {APPCARE_APPROVED_RELEASE_PATH}, "
+                f"and verify "
                 f"its libexec wrapper is present at {APPCARE_SSH_WRAPPER_PATH} with root "
                 f"ownership and mode 0755 plus the manifest at "
                 f"/etc/securityola/appcare/ssh-release.json; install its target-scoped "

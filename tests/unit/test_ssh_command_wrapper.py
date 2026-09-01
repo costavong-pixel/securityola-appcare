@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import stat
@@ -60,36 +61,57 @@ def test_installed_wrapper_scrubs_python_import_environment() -> None:
     ).read_text(encoding="utf-8")
     assert "ssh-release.json" in binding_source
     assert '"binding_sha256"' in binding_source
-    assert "approved-release-revision" in binding_source
-    assert '"release revision is not approved"' in binding_source
+    assert "approved-release.json" in binding_source
+    assert '"artifact_sha256"' in binding_source
+    assert '"installed artifact is not approved"' in binding_source
     if os.name == "posix":
         assert stat.S_IMODE(wrapper.stat().st_mode) & 0o111
         subprocess.run(("/bin/sh", "-n", str(wrapper)), check=True)  # noqa: S603
 
 
-def test_approved_release_revision_is_strict_and_single_valued(
+def test_approved_release_record_is_strict_and_artifact_bound(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     revision = "a" * 40
+    artifact = "b" * 64
     monkeypatch.setattr(
         release_binding,
-        "APPCARE_APPROVED_RELEASE_REVISION_PATH",
-        tmp_path / "approved-release-revision",
+        "APPCARE_APPROVED_RELEASE_PATH",
+        tmp_path / "approved-release.json",
     )
     monkeypatch.setattr(
         release_binding,
         "_read_trusted_file",
-        lambda path, field_name: (revision + "\n").encode("ascii"),
+        lambda path, field_name: json.dumps(
+            {
+                "schema_version": 1,
+                "release_revision": revision,
+                "package_version": "0.0.0",
+                "artifact_sha256": artifact,
+            }
+        ).encode("utf-8"),
     )
-    assert release_binding._approved_release_revision() == revision
+    assert release_binding._approved_release() == {
+        "release_revision": revision,
+        "package_version": "0.0.0",
+        "artifact_sha256": artifact,
+    }
 
     monkeypatch.setattr(
         release_binding,
         "_read_trusted_file",
-        lambda path, field_name: (revision + "\n\n").encode("ascii"),
+        lambda path, field_name: json.dumps(
+            {
+                "schema_version": 1,
+                "release_revision": revision,
+                "package_version": "0.0.0",
+                "artifact_sha256": artifact,
+                "unexpected": "field",
+            }
+        ).encode("utf-8"),
     )
     with pytest.raises(release_binding.ReleaseBindingError):
-        release_binding._approved_release_revision()
+        release_binding._approved_release()
 
 
 def test_release_artifact_installs_wrapper_in_libexec() -> None:
