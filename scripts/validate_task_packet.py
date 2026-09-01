@@ -50,6 +50,41 @@ _FORBIDDEN_SCOPE_MARKERS = (
     "secret",
 )
 _REQUIRED_FORBIDDEN_MARKERS = ("network", "credential", "production", "deployment")
+_REQUIRED_PACKET_FIELDS: tuple[tuple[str, str], ...] = (
+    ("phase", "Phase"),
+    ("issue", "Issue"),
+    ("goal", "Goal"),
+    ("coding lane", "Coding lane"),
+    ("worker host", "Worker host"),
+    ("model provider", "Model provider"),
+    ("codex spark quota involved", "Codex Spark quota involved"),
+    ("openai api involved", "OpenAI API involved"),
+    ("deepseek api involved", "DeepSeek API involved"),
+    ("repository root", "Repository root"),
+    ("base sha", "Expected base SHA"),
+)
+_ROUTE_EXACT_FIELDS = {
+    "SPARK": {
+        "coding lane": "SPARK",
+        "worker host": "CODEX_RUNTIME",
+        "model provider": "OPENAI_INCLUDED_CODEX",
+        "codex spark quota involved": "YES",
+        "openai api involved": "NO",
+        "deepseek api involved": "NO",
+    },
+    "DIRECT_DEEPSEEK": {
+        "coding lane": "DIRECT_DEEPSEEK",
+        "worker host": "PROMPT_OLA_VPS",
+        "model provider": "DEEPSEEK_API",
+        "codex spark quota involved": "NO",
+        "openai api involved": "NO",
+        "deepseek api involved": "YES",
+    },
+}
+_ALLOWED_CODING_LANES = {"SPARK", "DIRECT_DEEPSEEK"}
+_ALLOWED_WORKER_HOSTS = {"CODEX_RUNTIME", "PROMPT_OLA_VPS"}
+_ALLOWED_MODEL_PROVIDERS = {"OPENAI_INCLUDED_CODEX", "DEEPSEEK_API"}
+_BOOLEAN_VALUES = {"YES", "NO"}
 
 
 def _section_items(text: str, names: set[str]) -> list[str]:
@@ -102,13 +137,79 @@ def _scope_path_errors(paths: list[str]) -> list[str]:
     return findings
 
 
+def _field_values(text: str, field_names: tuple[str, ...]) -> list[str]:
+    """Read one-line packet fields while accepting the documented ':'/'=' forms."""
+
+    values: list[str] = []
+    normalized_names = tuple(name.casefold() for name in field_names)
+    for line in text.splitlines():
+        stripped = line.strip()
+        lowered = stripped.casefold()
+        for name in normalized_names:
+            if not lowered.startswith(name):
+                continue
+            remainder = stripped[len(name) :]
+            if remainder.startswith((":", "=")):
+                values.append(remainder[1:].strip())
+            break
+    return values
+
+
+def _packet_metadata_errors(text: str) -> list[str]:
+    """Enforce the routing metadata that the worker receives and reports."""
+
+    findings: list[str] = []
+    fields: dict[str, str] = {}
+    labels = dict(_REQUIRED_PACKET_FIELDS)
+    for key, label in _REQUIRED_PACKET_FIELDS:
+        names = (label,)
+        values = _field_values(text, names)
+        if len(values) != 1 or not values[0]:
+            findings.append(f"task packet must declare exactly one {label} field")
+            continue
+        fields[key] = values[0]
+
+    coding_lane = fields.get("coding lane", "")
+    if coding_lane and coding_lane not in _ALLOWED_CODING_LANES:
+        findings.append("task packet Coding lane must be SPARK or DIRECT_DEEPSEEK")
+
+    worker_host = fields.get("worker host", "")
+    if worker_host and worker_host not in _ALLOWED_WORKER_HOSTS:
+        findings.append("task packet Worker host must be CODEX_RUNTIME or PROMPT_OLA_VPS")
+
+    model_provider = fields.get("model provider", "")
+    if model_provider and model_provider not in _ALLOWED_MODEL_PROVIDERS:
+        findings.append("task packet Model provider must be OPENAI_INCLUDED_CODEX or DEEPSEEK_API")
+
+    for key, label in (
+        ("codex spark quota involved", "Codex Spark quota involved"),
+        ("openai api involved", "OpenAI API involved"),
+        ("deepseek api involved", "DeepSeek API involved"),
+    ):
+        value = fields.get(key, "")
+        if value and value not in _BOOLEAN_VALUES:
+            findings.append(f"task packet {label} must be YES or NO")
+
+    if coding_lane in _ROUTE_EXACT_FIELDS:
+        for key, expected in _ROUTE_EXACT_FIELDS[coding_lane].items():
+            actual = fields.get(key)
+            if actual is not None and actual != expected:
+                if coding_lane == "DIRECT_DEEPSEEK":
+                    findings.append(
+                        f"direct DeepSeek task packet must declare {labels[key]}={expected}"
+                    )
+                else:
+                    findings.append(f"SPARK task packet must declare {labels[key]}={expected}")
+    return findings
+
+
 def _validate_context(
     text: str,
     *,
     expected_head: str | None = None,
     expected_branch: str | None = None,
 ) -> list[str]:
-    findings: list[str] = []
+    findings: list[str] = _packet_metadata_errors(text)
     lines = [line.strip() for line in text.splitlines()]
 
     target_values = [
@@ -136,9 +237,7 @@ def _validate_context(
     elif expected_branch is not None and branch_values[0] != expected_branch:
         findings.append("task packet branch does not match the coordinator branch")
 
-    head_values = [
-        line.split(":", 1)[1].strip() for line in lines if line.casefold().startswith("head:")
-    ]
+    head_values = _field_values(text, ("Expected base SHA",))
     if len(head_values) != 1 or not _HEAD_PATTERN.fullmatch(head_values[0].casefold()):
         findings.append("task packet must declare one full Git HEAD SHA")
     elif expected_head is not None and head_values[0].casefold() != expected_head.casefold():

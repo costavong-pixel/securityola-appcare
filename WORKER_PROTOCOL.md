@@ -6,6 +6,8 @@ This protocol is subordinate to:
 
 - `APPCARE_PRODUCT_IMPLEMENTATION_BLUEPRINT.md`
 - `docs/governance/APPCARE_CURRENT_SCOPE.json`
+- `docs/governance/APPCARE_MODEL_EXECUTION_ROUTING.md`
+- `docs/governance/APPCARE_MODEL_EXECUTION_ROUTING.json`
 - `AGENTS.md`
 - `.specify/memory/constitution.md`
 - `docs/security/PRE_BETA_SECURITY_GATE.md`
@@ -18,6 +20,7 @@ Owns:
 
 - dependency and architecture plan;
 - task decomposition;
+- coder-lane routing;
 - acceptance criteria;
 - scope and path allowlists;
 - integration decisions;
@@ -29,7 +32,7 @@ Owns:
 
 ### GPT-5.3 Spark
 
-Primary coder for Luna-approved packets:
+Preferred coder for Luna-approved packets while included Spark quota is available:
 
 - implementation;
 - tests;
@@ -38,6 +41,38 @@ Primary coder for Luna-approved packets:
 - review-finding fixes.
 
 Spark does not approve itself, merge, authorize production, alter architecture independently, or promote readiness.
+
+### Direct DeepSeek worker
+
+The mandatory Spark-quota fallback, once runtime-qualified, is:
+
+```text
+GPT-5.6 Luna Max coordinator
+→ Prompt Ola VPS
+→ direct DeepSeek worker
+→ owner's DeepSeek API
+```
+
+For this route:
+
+```text
+CODEX_SPARK_QUOTA_INVOLVED=NO
+OPENAI_API_INVOLVED=NO
+DEEPSEEK_API_INVOLVED=YES
+```
+
+The DeepSeek API credential remains in protected server-side custody. It must not enter chat, Git, GitHub, task packets, normal logs, CI artifacts, evidence, or reports.
+
+Use direct DeepSeek when:
+
+- Spark quota is limited, exhausted, or unavailable;
+- Luna intentionally preserves Spark quota for harder integration/debugging;
+- the packet is bulk, repetitive, or well-bounded;
+- DeepSeek is the cheapest capable coder.
+
+DeepSeek does not approve itself, merge, authorize production, alter architecture independently, or promote readiness.
+
+The existing `scripts/deepseek-worker.sh` currently routes through `opencode/deepseek-v4-flash-free`. It is bounded, but it is not the owner-approved direct DeepSeek API path. Do not claim direct-runtime integration until the launcher/provider is safely adapted or replaced and independently qualified.
 
 ### GPT-5.6 Terra
 
@@ -57,11 +92,33 @@ Terra does not merge or self-approve fixes it authors.
 
 Independent scan/verification lane. Security-relevant PRs require the applicable scan; repaired vulnerabilities require verify-fix where appropriate.
 
-### OpenCode/DeepSeek/Qwen auxiliary workers
+### OpenCode/Qwen auxiliary workers
 
 Auxiliary workers remain cheap bounded implementation/test lanes. They never own architecture, credential handling, production access, deployment authority, readiness, or final review.
 
-The existing audited `scripts/deepseek-worker.sh` and deny-by-default OS sandbox remain available for qualified auxiliary tasks.
+## Prompt Ola VPS worker boundary
+
+The Prompt Ola VPS is a worker host only for the direct DeepSeek route.
+
+Required:
+
+- dedicated AppCare checkout/worktree;
+- dedicated AppCare worker state directory;
+- exact base SHA and branch binding;
+- sealed sanitized task packet;
+- allowlisted writable paths;
+- deny-by-default commands/network;
+- bounded time/output/resources;
+- deterministic scope verification;
+- secret scan before promotion;
+- temporary-state cleanup.
+
+Forbidden:
+
+- reading or modifying Prompt Ola production files;
+- reading or modifying Prompt Ola DBs, services, credentials, logs, deployment paths, or production directories;
+- using Prompt Ola secrets for AppCare;
+- placing the DeepSeek API key in a task packet or model-visible context.
 
 ## One-writer rule
 
@@ -71,13 +128,15 @@ Recommended flow:
 
 ```text
 Luna freezes task packet
-→ Spark or auxiliary worker receives write worktree
+→ Luna selects Spark or direct DeepSeek
+→ selected coder receives one write worktree
 → Terra reviews read-only
 → writer fixes findings
+→ deterministic scope and secret verification
 → Luna reviews final actual diff
 ```
 
-Do not run competing implementations unless Luna explicitly defines an A/B experiment.
+Do not run Spark and DeepSeek concurrently against the same files or branch. Do not run competing implementations unless Luna explicitly defines an A/B experiment.
 
 ## Mandatory task packet
 
@@ -88,6 +147,12 @@ Phase:
 Issue:
 Goal:
 TARGET=AppCare
+Coding lane:
+Worker host:
+Model provider:
+Codex Spark quota involved:
+OpenAI API involved:
+DeepSeek API involved:
 Repository root:
 Branch:
 Expected base SHA:
@@ -105,25 +170,37 @@ Forbidden commands/capabilities:
 Owner-only stop conditions:
 ```
 
+For the direct DeepSeek lane, the packet metadata must state:
+
+```text
+Coding lane=DIRECT_DEEPSEEK
+Worker host=PROMPT_OLA_VPS
+Model provider=DEEPSEEK_API
+Codex Spark quota involved=NO
+OpenAI API involved=NO
+DeepSeek API involved=YES
+```
+
 Broad prompts such as “continue the roadmap” are invalid task packets.
 
 ## Engineering and review loop
 
 1. Luna verifies current protected main and active PRs.
-2. Luna reads the blueprint, current scope, security gate, and relevant specs.
+2. Luna reads the blueprint, current scope, model routing policy, security gate, and relevant specs.
 3. Saveruflo and Graphify are used when available.
-4. Luna publishes the dependency-based task packet.
+4. Luna publishes the dependency-based task packet and chooses Spark or direct DeepSeek.
 5. Terra challenges the design before security-critical implementation.
-6. Spark or an auxiliary worker implements only the approved scope.
-7. Luna reads the actual diff.
-8. Terra reads the actual security-sensitive diff.
-9. Run deterministic, negative, adversarial, static, dependency, secret, and public-safety gates.
-10. Run Codex Security.
-11. Fix findings and rerun affected evidence.
-12. Require exact-head CI.
-13. Merge through protected main only after approvals.
-14. Update maturity and capability evidence.
-15. Continue only when the phase hard exit permits.
+6. The selected coder implements only the approved scope.
+7. Deterministic scope and secret scans verify worker output before promotion.
+8. Luna reads the actual diff.
+9. Terra reads the actual security-sensitive diff.
+10. Run deterministic, negative, adversarial, static, dependency, secret, and public-safety gates.
+11. Run Codex Security.
+12. Fix findings and rerun affected evidence.
+13. Require exact-head CI.
+14. Merge through protected main only after approvals.
+15. Update maturity and capability evidence.
+16. Continue only when the phase hard exit permits.
 
 ## Hard boundaries
 
@@ -141,7 +218,9 @@ Workers must not:
 - commit/push/merge unless the coordinator-controlled GitHub path explicitly assigns that routine repository operation;
 - override failed tests;
 - approve their own work;
-- label reference evidence as live evidence.
+- label reference evidence as live evidence;
+- silently route the direct DeepSeek lane through the OpenAI API or Spark quota;
+- claim the existing OpenCode-routed launcher is a qualified direct DeepSeek API worker.
 
 ## Current worker priority
 
@@ -154,6 +233,24 @@ P01 Blueprint/enforcement
 
 Spec 016 scanning may not displace the credential, baseline, backup, and recovery critical path.
 
-## Auxiliary DeepSeek sandbox
+## Direct DeepSeek runtime qualification
 
-The existing bounded DeepSeek launcher remains pinned to its audited OpenCode/model policy. Any pin or policy change requires separate review and exact-head CI. Auxiliary worker summaries are never proof; Luna must inspect the diff and tests.
+Before `DIRECT_DEEPSEEK_LAUNCHER` can advance beyond `DOCUMENTED`, AppCare must prove:
+
+- direct DeepSeek API invocation;
+- no OpenAI API call;
+- no Spark quota consumption;
+- server-side API-key custody;
+- sealed task packet;
+- isolated AppCare worktree on Prompt Ola VPS;
+- one-writer enforcement;
+- allowlisted writes;
+- scope verification;
+- secret scan;
+- timeout and cleanup;
+- Luna actual-diff review;
+- Terra security review;
+- Codex Security;
+- exact-head CI.
+
+Worker summaries are never proof.

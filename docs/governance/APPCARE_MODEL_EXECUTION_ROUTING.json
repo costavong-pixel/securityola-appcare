@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "status": "MANDATORY_PROTECTED_MAIN_ROUTING_POLICY",
+  "owner_decision_date": "2026-08-30",
+  "target": "AppCare",
+  "coordinator": {
+    "model": "GPT-5.6 Luna Max",
+    "owns": [
+      "dependency-planning",
+      "task-routing",
+      "architecture-integration",
+      "actual-diff-review",
+      "readiness-decisions",
+      "owner-facing-report"
+    ]
+  },
+  "coding_lanes": {
+    "preferred": {
+      "id": "SPARK",
+      "model": "GPT-5.3 Spark",
+      "worker_host": "Codex runtime",
+      "provider": "OpenAI included Codex usage",
+      "use_when": "included Spark quota is available and task is suitable"
+    },
+    "quota_fallback": {
+      "id": "DIRECT_DEEPSEEK",
+      "model": "DeepSeek",
+      "worker_host": "Prompt Ola VPS",
+      "provider": "DeepSeek API",
+      "codex_spark_quota_involved": false,
+      "openai_api_involved": false,
+      "deepseek_api_involved": true,
+      "credential_required": true,
+      "credential_presence": "NOT_VERIFIED",
+      "credential_custody": "server-side-only",
+      "required_when": "Spark quota is limited, exhausted, or unavailable after runtime qualification",
+      "current_maturity": "DOCUMENTED"
+    }
+  },
+  "review_lanes": {
+    "architecture_security": "GPT-5.6 Terra",
+    "independent_code_security": "Codex Security"
+  },
+  "worker_isolation": {
+    "one_writer_per_branch": true,
+    "dedicated_appcare_checkout": true,
+    "dedicated_appcare_state": true,
+    "sealed_task_packet": true,
+    "allowlisted_writes": true,
+    "scope_verification": true,
+    "secret_scan_before_promotion": true,
+    "temporary_state_cleanup": true,
+    "prompt_ola_production_access": false
+  },
+  "task_packet_enforcement": {
+    "required_fields": [
+      "Phase",
+      "Issue",
+      "Goal",
+      "TARGET=AppCare",
+      "Coding lane",
+      "Worker host",
+      "Model provider",
+      "Codex Spark quota involved",
+      "OpenAI API involved",
+      "DeepSeek API involved",
+      "Repository root",
+      "Expected base SHA"
+    ],
+    "direct_deepseek_exact_values": {
+      "Coding lane": "DIRECT_DEEPSEEK",
+      "Worker host": "PROMPT_OLA_VPS",
+      "Model provider": "DEEPSEEK_API",
+      "Codex Spark quota involved": "NO",
+      "OpenAI API involved": "NO",
+      "DeepSeek API involved": "YES"
+    },
+    "spark_exact_values": {
+      "Coding lane": "SPARK",
+      "Worker host": "CODEX_RUNTIME",
+      "Model provider": "OPENAI_INCLUDED_CODEX",
+      "Codex Spark quota involved": "YES",
+      "OpenAI API involved": "NO",
+      "DeepSeek API involved": "NO"
+    },
+    "sanitized_runtime_attestation": [
+      "REQUESTED_MODEL",
+      "ACTUAL_MODEL",
+      "MODEL_ATTESTED",
+      "ROUTING_METADATA_VALIDATED"
+    ]
+  },
+  "existing_launcher": {
+    "path": "scripts/deepseek-worker.sh",
+    "configured_model_route": "opencode/deepseek-v4-flash-free",
+    "direct_deepseek_api_compliant": false,
+    "may_be_claimed_runtime_integrated": false
+  },
+  "direct_route_acceptance": {
+    "must_call_deepseek_api_directly": true,
+    "must_not_call_openai_api": true,
+    "must_not_consume_spark_quota": true,
+    "must_preserve_sealed_task": true,
+    "must_preserve_isolated_worktree": true,
+    "must_preserve_scope_verification": true,
+    "must_preserve_secret_scan": true,
+    "must_preserve_timeout_and_cleanup": true,
+    "requires_luna_review": true,
+    "requires_terra_review": true,
+    "requires_codex_security": true,
+    "requires_exact_head_ci": true
+  }
+}
