@@ -442,6 +442,15 @@ def _fsync_directory(path: Path) -> None:
             os.close(descriptor)
 
 
+def _fsync_directory_if_present(path: Path) -> None:
+    if not path.exists():
+        return
+    try:
+        _fsync_directory(path)
+    except OSError as exc:
+        raise CredentialVaultError("directory durability check failed") from exc
+
+
 @dataclass(frozen=True, slots=True)
 class OffboardingReceipt:
     """Evidence for local custody destruction; remote key removal is separate."""
@@ -651,13 +660,12 @@ class EncryptedCredentialVault:
                 raise CredentialVaultError("runtime lease cleanup failed") from exc
             try:
                 path.parent.rmdir()
+            except FileNotFoundError:
+                _fsync_directory_if_present(path.parent.parent)
             except OSError:
                 pass
             else:
-                try:
-                    _fsync_directory(path.parent.parent)
-                except OSError as exc:
-                    raise CredentialVaultError("runtime custody cleanup is not durable") from exc
+                _fsync_directory_if_present(path.parent.parent)
 
     def revoke(
         self,
@@ -879,17 +887,20 @@ class EncryptedCredentialVault:
     def _remove_runtime_entry_unlocked(path: Path) -> None:
         try:
             path.unlink()
-            _fsync_directory(path.parent)
         except FileNotFoundError:
+            parent = path.parent if path.parent.exists() else path.parent.parent
+            _fsync_directory_if_present(parent)
             return
         except OSError as exc:
             raise CredentialVaultError("runtime material cleanup failed") from exc
+        _fsync_directory_if_present(path.parent)
 
     def _remove_runtime_materializations_unlocked(self, record: VaultCredentialRecord) -> bool:
         directory = self._runtime_scope(record.credential_reference)
         if directory.is_symlink():
             raise CredentialVaultError("runtime custody directory is a symlink")
         if not directory.exists():
+            _fsync_directory_if_present(directory.parent)
             return True
         if not directory.is_dir():
             raise CredentialVaultError("runtime custody directory is invalid")
@@ -910,10 +921,7 @@ class EncryptedCredentialVault:
             directory.rmdir()
         except OSError as exc:
             raise CredentialVaultError("runtime custody directory cleanup failed") from exc
-        try:
-            _fsync_directory(directory.parent)
-        except OSError as exc:
-            raise CredentialVaultError("runtime custody cleanup is not durable") from exc
+        _fsync_directory_if_present(directory.parent)
         return True
 
     def _recover_pending_rotations_unlocked(self) -> None:
@@ -1003,11 +1011,12 @@ class EncryptedCredentialVault:
             raise CredentialVaultError("rotation journal is a symlink")
         try:
             path.unlink()
-            _fsync_directory(path.parent)
         except FileNotFoundError:
+            _fsync_directory_if_present(path.parent)
             return
         except OSError as exc:
             raise CredentialVaultError("rotation journal cleanup failed") from exc
+        _fsync_directory_if_present(path.parent)
 
     def _resolve_private_key(self, record: VaultCredentialRecord) -> bytes:
         if record.status() != VaultCredentialStatus.ACTIVE:
@@ -1093,13 +1102,11 @@ class EncryptedCredentialVault:
         try:
             path.unlink()
         except FileNotFoundError:
+            _fsync_directory_if_present(path.parent)
             return False
         except OSError as exc:
             raise CredentialVaultError("credential blob cleanup failed") from exc
-        try:
-            _fsync_directory(path.parent)
-        except OSError as exc:
-            raise CredentialVaultError("credential blob cleanup is not durable") from exc
+        _fsync_directory_if_present(path.parent)
         return True
 
     def _record_path(self, reference: str) -> Path:
@@ -1284,6 +1291,7 @@ class EncryptedCredentialVault:
             raise CredentialVaultError("audit file is a symlink")
         if not path.exists():
             return False
+        _fsync_directory_if_present(path.parent)
         integrity_key = self._load_master_key()
         descriptor = -1
         try:

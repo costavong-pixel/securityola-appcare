@@ -12,6 +12,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+import appcare.connectors.credential_vault as credential_vault_module
 from appcare.connectors import (
     BootstrapStep,
     CredentialVaultError,
@@ -269,6 +270,180 @@ def test_offboarding_retries_missing_audit_receipt(
     receipt = vault.offboard(record.credential_reference)
     assert receipt.audit_recorded
     assert receipt.local_private_material_removed
+
+
+def test_runtime_entry_retry_refsyncs_when_entry_is_already_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault, keys = _vault(tmp_path)
+    record = keys.generate(
+        tenant_id="tenant-a",
+        application_id="application-a",
+        target_reference="target-a",
+    )
+    scope = (
+        vault.root
+        / "runtime"
+        / hashlib.sha256(record.credential_reference.encode("utf-8")).hexdigest()
+    )
+    scope.mkdir()
+    runtime_entry = scope / ("a" * 32 + ".key")
+    original_fsync = credential_vault_module._fsync_directory
+    calls: list[Path] = []
+    fail_once = True
+
+    def fsync_with_one_injected_failure(path: Path) -> None:
+        nonlocal fail_once
+        calls.append(path)
+        if path == scope and fail_once:
+            fail_once = False
+            raise OSError("simulated directory fsync failure")
+        original_fsync(path)
+
+    monkeypatch.setattr(
+        credential_vault_module,
+        "_fsync_directory",
+        fsync_with_one_injected_failure,
+    )
+    with pytest.raises(CredentialVaultError, match="directory durability"):
+        vault._remove_runtime_entry_unlocked(runtime_entry)
+    vault._remove_runtime_entry_unlocked(runtime_entry)
+    assert calls.count(scope) == 2
+
+
+def test_runtime_scope_retry_refsyncs_when_scope_is_already_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault, keys = _vault(tmp_path)
+    record = keys.generate(
+        tenant_id="tenant-a",
+        application_id="application-a",
+        target_reference="target-a",
+    )
+    runtime_root = vault.root / "runtime"
+    scope = vault._runtime_scope(record.credential_reference)
+    original_fsync = credential_vault_module._fsync_directory
+    calls: list[Path] = []
+    fail_once = True
+
+    def fsync_with_one_injected_failure(path: Path) -> None:
+        nonlocal fail_once
+        calls.append(path)
+        if path == runtime_root and fail_once:
+            fail_once = False
+            raise OSError("simulated directory fsync failure")
+        original_fsync(path)
+
+    monkeypatch.setattr(
+        credential_vault_module,
+        "_fsync_directory",
+        fsync_with_one_injected_failure,
+    )
+    scope.mkdir()
+    scope.rmdir()
+    with pytest.raises(CredentialVaultError, match="directory durability"):
+        vault._remove_runtime_materializations_unlocked(record)
+    vault._remove_runtime_materializations_unlocked(record)
+    assert calls.count(runtime_root) == 2
+
+
+def test_blob_cleanup_retry_refsyncs_when_blob_is_already_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault, keys = _vault(tmp_path)
+    record = keys.generate(
+        tenant_id="tenant-a",
+        application_id="application-a",
+        target_reference="target-a",
+    )
+    blob_root = vault.root / "blobs"
+    blob_path = vault._blob_path(record.credential_reference)
+    blob_path.unlink()
+    original_fsync = credential_vault_module._fsync_directory
+    calls: list[Path] = []
+    fail_once = True
+
+    def fsync_with_one_injected_failure(path: Path) -> None:
+        nonlocal fail_once
+        calls.append(path)
+        if path == blob_root and fail_once:
+            fail_once = False
+            raise OSError("simulated directory fsync failure")
+        original_fsync(path)
+
+    monkeypatch.setattr(
+        credential_vault_module,
+        "_fsync_directory",
+        fsync_with_one_injected_failure,
+    )
+    with pytest.raises(CredentialVaultError, match="directory durability"):
+        vault._remove_blob_unlocked(record)
+    assert not vault._remove_blob_unlocked(record)
+    assert calls.count(blob_root) == 2
+
+
+def test_rotation_journal_retry_refsyncs_when_journal_is_already_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault, _ = _vault(tmp_path)
+    journal = vault.root / "rotations" / ("a" * 32 + ".json")
+    rotations_root = vault.root / "rotations"
+    original_fsync = credential_vault_module._fsync_directory
+    calls: list[Path] = []
+    fail_once = True
+
+    def fsync_with_one_injected_failure(path: Path) -> None:
+        nonlocal fail_once
+        calls.append(path)
+        if path == rotations_root and fail_once:
+            fail_once = False
+            raise OSError("simulated directory fsync failure")
+        original_fsync(path)
+
+    monkeypatch.setattr(
+        credential_vault_module,
+        "_fsync_directory",
+        fsync_with_one_injected_failure,
+    )
+    with pytest.raises(CredentialVaultError, match="directory durability"):
+        vault._remove_rotation_journal_unlocked(journal)
+    vault._remove_rotation_journal_unlocked(journal)
+    assert calls.count(rotations_root) == 2
+
+
+def test_existing_audit_event_retry_refsyncs_after_directory_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault, keys = _vault(tmp_path)
+    record = keys.generate(
+        tenant_id="tenant-a",
+        application_id="application-a",
+        target_reference="target-a",
+    )
+    audit_root = vault.root / "audit"
+    operation_id = "a" * 32
+    original_fsync = credential_vault_module._fsync_directory
+    calls: list[Path] = []
+    audit_fsync_count = 0
+
+    def fsync_with_one_injected_failure(path: Path) -> None:
+        nonlocal audit_fsync_count
+        calls.append(path)
+        if path == audit_root:
+            audit_fsync_count += 1
+        if path == audit_root and audit_fsync_count == 2:
+            raise OSError("simulated directory fsync failure")
+        original_fsync(path)
+
+    monkeypatch.setattr(
+        credential_vault_module,
+        "_fsync_directory",
+        fsync_with_one_injected_failure,
+    )
+    with pytest.raises(CredentialVaultError, match="audit record could not be written"):
+        vault._append_audit_unlocked("offboarded", record, operation_id=operation_id)
+    assert vault._audit_event_exists_unlocked("offboarded", record, operation_id=operation_id)
+    assert calls.count(audit_root) == 3
 
 
 def test_rotation_audit_replay_is_idempotent(
