@@ -262,6 +262,22 @@ def test_git_status_distinguishes_ignored_untracked_and_real_changes(tmp_path: P
     assert worker._git_status(repo)[2] == "dirty"
 
 
+def test_systemd_units_use_worker_path_constants() -> None:
+    repository_root = Path(__file__).resolve().parents[2]
+    api_service = (
+        repository_root / "ops" / "worker" / "securityola-appcare-deepseek-api@.service"
+    ).read_text(encoding="utf-8")
+    worker_service = (
+        repository_root / "ops" / "worker" / "securityola-appcare-deepseek-worker@.service"
+    ).read_text(encoding="utf-8")
+
+    state_path = worker.WORKER_STATE_ROOT.as_posix()
+    key_directory = worker.DEEPSEEK_API_KEY_PATH.parent.as_posix()
+    assert f"ReadWritePaths={state_path}" in api_service
+    assert f"ReadWritePaths={state_path}" in worker_service
+    assert f"ReadOnlyPaths={key_directory}" in api_service
+
+
 def test_receipt_does_not_overstate_validation_or_model_attestation() -> None:
     unvalidated = worker._base_receipt(
         run_id="a" * 32,

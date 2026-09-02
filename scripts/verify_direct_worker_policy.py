@@ -53,8 +53,8 @@ REQUIRED_API_SERVICE_MARKERS = (
     "PrivateDevices=true",
     "ProtectSystem=strict",
     "ProtectHome=true",
-    "ReadOnlyPaths=/etc/securityola-appcare-deepseek-worker",
-    "ReadWritePaths=/var/lib/securityola-appcare-deepseek-worker",
+    "ReadOnlyPaths=/etc/securityola/appcare-deepseek-worker",
+    "ReadWritePaths=/var/lib/securityola/appcare-deepseek-worker",
     "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
     "CapabilityBoundingSet=",
 )

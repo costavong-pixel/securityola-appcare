@@ -23,8 +23,8 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 CapabilityBoundingSet=
 LockPersonality=true
 MemoryDenyWriteExecute=true
-ReadOnlyPaths=/etc/securityola-appcare-deepseek-worker
-ReadWritePaths=/var/lib/securityola-appcare-deepseek-worker
+ReadOnlyPaths=/etc/securityola/appcare-deepseek-worker
+ReadWritePaths=/var/lib/securityola/appcare-deepseek-worker
 UMask=0007
 TimeoutStartSec=5min
 
