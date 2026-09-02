@@ -843,7 +843,7 @@ def _git_status(repo_root: Path) -> tuple[str, str, str]:
         dirty = dirty or result.returncode == 1
     dirty = dirty or _git_has_output(
         repo_root,
-        ("ls-files", "--others", "--exclude-standard", "--directory", "-z"),
+        ("ls-files", "--others", "--exclude-standard", "-z"),
     )
     if (
         _FULL_SHA.fullmatch(head_text.casefold()) is None

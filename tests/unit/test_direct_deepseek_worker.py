@@ -212,6 +212,56 @@ def test_model_output_requires_all_contract_fields() -> None:
         )
 
 
+def test_git_status_distinguishes_ignored_untracked_and_real_changes(tmp_path: Path) -> None:
+    git = shutil.which("git")
+    if git is None:
+        pytest.skip("Git is required for the cleanliness regression test")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".gitignore").write_text(".codex/tasks/\n", encoding="utf-8")
+    (repo / "tracked.txt").write_text("clean\n", encoding="utf-8")
+    subprocess.run(  # noqa: S603 - Git is resolved before fixed test argv
+        [git, "init", "-q", "-b", "main"], cwd=repo, check=True
+    )
+    subprocess.run(  # noqa: S603 - Git is resolved before fixed test argv
+        [git, "add", ".gitignore", "tracked.txt"], cwd=repo, check=True
+    )
+    subprocess.run(  # noqa: S603 - Git is resolved before fixed test argv
+        [
+            git,
+            "-c",
+            "user.name=AppCare Test",
+            "-c",
+            "user.email=appcare-test@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "fixture",
+        ],
+        cwd=repo,
+        check=True,
+    )
+
+    assert worker._git_status(repo)[2] == ""
+
+    ignored_task = repo / ".codex" / "tasks" / "direct.md"
+    ignored_task.parent.mkdir(parents=True)
+    ignored_task.write_text("ignored\n", encoding="utf-8")
+    assert worker._git_status(repo)[2] == ""
+
+    (repo / "unexpected.txt").write_text("unexpected\n", encoding="utf-8")
+    assert worker._git_status(repo)[2] == "dirty"
+    (repo / "unexpected.txt").unlink()
+
+    (repo / "tracked.txt").write_text("modified\n", encoding="utf-8")
+    assert worker._git_status(repo)[2] == "dirty"
+
+    subprocess.run(  # noqa: S603 - Git is resolved before fixed test argv
+        [git, "add", "tracked.txt"], cwd=repo, check=True
+    )
+    assert worker._git_status(repo)[2] == "dirty"
+
+
 def test_receipt_does_not_overstate_validation_or_model_attestation() -> None:
     unvalidated = worker._base_receipt(
         run_id="a" * 32,
