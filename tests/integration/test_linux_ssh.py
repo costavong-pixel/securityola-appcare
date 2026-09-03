@@ -268,6 +268,34 @@ def test_keyscan_applies_record_limit_to_key_lines_after_comments() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("ssh_port", "expected_host_token"),
+    [(22, "192.0.2.10"), (22022, "[192.0.2.10]:22022")],
+)
+def test_known_hosts_serializes_default_and_nondefault_ports(
+    tmp_path: Path,
+    ssh_port: int,
+    expected_host_token: str,
+) -> None:
+    current = target(ssh_port=ssh_port)
+    runner = FakeRunner({})
+
+    verify_host_key(
+        current,
+        scanner=OpenSshHostKeyScanner(runner),
+        store=KnownHostsStore(tmp_path / "known-hosts"),
+        limits=BoundedLimits(),
+    )
+
+    known_hosts_files = tuple((tmp_path / "known-hosts").glob("*/known_hosts"))
+    assert len(known_hosts_files) == 1
+    assert (
+        known_hosts_files[0]
+        .read_text(encoding="ascii")
+        .startswith(f"{expected_host_token} ssh-ed25519 ")
+    )
+
+
 def test_connection_and_host_inventory_are_strict_and_scoped(tmp_path: Path) -> None:
     transport, runner = client(tmp_path)
     connection = transport.execute(ConnectionProbe("connect-1"))

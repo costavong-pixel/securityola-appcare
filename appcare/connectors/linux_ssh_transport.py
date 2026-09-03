@@ -73,6 +73,7 @@ _ALLOWED_LOCAL_BOUNDARY_ROOTS = tuple(
     )
 )
 _ALLOWED_EXECUTABLES = frozenset({"ssh", "ssh-keyscan"})
+_DEFAULT_SSH_PORT = 22
 _POLL_INTERVAL_SECONDS = 0.01
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
@@ -231,7 +232,11 @@ class KnownHostsStore:
         )
         self._ensure_directory(target_dir, mode=0o700)
         known_hosts_path = target_dir / "known_hosts"
-        host_token = f"[{target.host}]:{target.ssh_port}"
+        host_token = (
+            target.host
+            if target.ssh_port == _DEFAULT_SSH_PORT
+            else f"[{target.host}]:{target.ssh_port}"
+        )
         line = f"{host_token} {parsed.key_type} {parsed.key_data}\n".encode("ascii")
         existing = self._read_known_hosts(known_hosts_path)
         if existing is not None:
