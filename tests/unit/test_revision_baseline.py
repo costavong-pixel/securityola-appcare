@@ -159,7 +159,7 @@ def test_real_target_label_requires_live_transport_authorization(tmp_path: Path)
 
 def test_live_authorization_is_factory_only() -> None:
     with pytest.raises(TypeError, match="from_inventory"):
-        LiveCaptureAuthorization()  # type: ignore[call-arg]
+        LiveCaptureAuthorization()
 
 
 def test_sealed_revision_exposes_scoped_source_capability_evidence(tmp_path: Path) -> None:
