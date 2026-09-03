@@ -112,8 +112,10 @@ class ImmutableSourceMirror:
             baseline.root != revision.approved_root
             or baseline.source_type != revision.source_type
             or baseline.manifest_digest != revision.manifest_digest
+            or baseline.source_host_identity != revision._source_host_identity
+            or baseline.root_identity != revision._source_root_identity
         ):
-            raise MirrorCaptureError("source manifest does not match revision")
+            raise MirrorCaptureError("source identity or manifest does not match revision")
         final = self._scope_path(revision)
         with self._lock:
             if final.exists() or final.is_symlink():
@@ -244,10 +246,16 @@ class ImmutableSourceMirror:
                     raise MirrorCaptureError(
                         "source changed while mirror was being captured"
                     ) from None
-                if post.manifest_digest != revision.manifest_digest:
+                if (
+                    post.manifest_digest != revision.manifest_digest
+                    or post.source_host_identity != revision._source_host_identity
+                    or post.root_identity != revision._source_root_identity
+                ):
                     committed = False
                     self._remove_tree(final)
-                    raise MirrorCaptureError("source changed while mirror was being captured")
+                    raise MirrorCaptureError(
+                        "source identity or contents changed while mirror was being captured"
+                    )
                 return MirrorCaptureOutcome(
                     revision=revision.with_mirror(receipt=receipt),
                     receipt=receipt,

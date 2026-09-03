@@ -1271,6 +1271,50 @@ LIVE_INVENTORY_RECEIPT_ROOT: Final = Path("/var/lib/securityola/appcare/evidence
 _MAX_LIVE_RECEIPT_BYTES: Final = 64 * 1024
 
 
+def _live_source_binding_payload(
+    target: LinuxTarget,
+    records: Sequence[InventoryRecord],
+) -> dict[str, object]:
+    """Persist the typed target-host identity used by live revision capture."""
+
+    host_records = tuple(
+        record
+        for record in records
+        if record.source_reference == "linux-ssh/host_inventory/hostname"
+        and record.record_type == "host_identity"
+        and record.identity == target.expected_hostname
+    )
+    roots: list[dict[str, object]] = []
+    for approved_root in target.approved_application_roots:
+        matches = tuple(
+            record
+            for record in records
+            if record.source_reference == "linux-ssh/filesystem_metadata_read/metadata"
+            and record.record_type == "filesystem"
+            and record.identity == approved_root
+        )
+        if len(matches) != 1:
+            continue
+        record = matches[0]
+        device = record.metadata.get("device")
+        inode = record.metadata.get("inode")
+        roots.append(
+            {
+                "approved_root": approved_root,
+                "device": device,
+                "inode": inode,
+                "record_evidence_digest": record.evidence_digest,
+            }
+        )
+    return {
+        "host_identity": host_records[0].identity if len(host_records) == 1 else None,
+        "host_record_evidence_digest": (
+            host_records[0].evidence_digest if len(host_records) == 1 else None
+        ),
+        "roots": roots,
+    }
+
+
 def _live_snapshot_receipt_payload(
     target: LinuxTarget,
     connection: RemoteExecutionResult,
@@ -1303,6 +1347,7 @@ def _live_snapshot_receipt_payload(
         "inventory_operation_id": inventory.operation_id,
         "inventory_evidence_digest": inventory.evidence_digest,
         "record_evidence_digests": [record.evidence_digest for record in records],
+        "source_binding": _live_source_binding_payload(target, records),
         "evidence_reference": (
             f"live://{target.target_reference}/inventory/{inventory.evidence_digest}"
         ),
@@ -1445,6 +1490,8 @@ def verify_live_capture_receipt_reference(
     approved_root: str,
     inventory_evidence_digest: str | None,
     evidence_reference: str,
+    source_host_identity: str | None = None,
+    source_root_identity: tuple[int, int] | None = None,
 ) -> bool:
     """Validate a live revision's reference against the durable receipt."""
 
@@ -1465,6 +1512,67 @@ def verify_live_capture_receipt_reference(
     if not isinstance(target, dict):
         return False
     roots = target.get("approved_application_roots")
+    source_binding = payload.get("source_binding")
+    if (
+        source_host_identity is None
+        or source_root_identity is None
+        or not isinstance(source_binding, dict)
+        or source_binding.get("host_identity") != source_host_identity
+        or source_host_identity != host_identity
+    ):
+        return False
+    binding_roots = source_binding.get("roots")
+    record_digests = payload.get("record_evidence_digests")
+    host_record_digest = source_binding.get("host_record_evidence_digest")
+    if (
+        not isinstance(roots, (tuple, list))
+        or any(not isinstance(root, str) for root in roots)
+        or not isinstance(binding_roots, (tuple, list))
+        or len(binding_roots) != len(roots)
+        or not isinstance(record_digests, (tuple, list))
+        or not isinstance(host_record_digest, str)
+        or len(host_record_digest) != 64
+        or any(character not in "0123456789abcdef" for character in host_record_digest)
+        or host_record_digest not in record_digests
+    ):
+        return False
+    seen_roots: set[str] = set()
+    selected_root_binding: dict[str, object] | None = None
+    for binding in binding_roots:
+        if not isinstance(binding, dict):
+            return False
+        bound_root = binding.get("approved_root")
+        device = binding.get("device")
+        inode = binding.get("inode")
+        record_digest = binding.get("record_evidence_digest")
+        if (
+            not isinstance(bound_root, str)
+            or bound_root in seen_roots
+            or not isinstance(roots, (tuple, list))
+            or bound_root not in roots
+            or isinstance(device, bool)
+            or not isinstance(device, int)
+            or device < 0
+            or isinstance(inode, bool)
+            or not isinstance(inode, int)
+            or inode < 0
+            or not isinstance(record_digest, str)
+            or len(record_digest) != 64
+            or any(character not in "0123456789abcdef" for character in record_digest)
+            or record_digest not in record_digests
+        ):
+            return False
+        seen_roots.add(bound_root)
+        if bound_root == approved_root:
+            selected_root_binding = binding
+    if (
+        not isinstance(roots, (tuple, list))
+        or seen_roots != set(roots)
+        or selected_root_binding is None
+        or selected_root_binding.get("device") != source_root_identity[0]
+        or selected_root_binding.get("inode") != source_root_identity[1]
+    ):
+        return False
     return (
         payload.get("schema_version") == 1
         and payload.get("sealed") is True

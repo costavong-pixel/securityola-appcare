@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import socket
 import stat
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -154,6 +155,11 @@ def test_real_target_label_requires_live_transport_authorization(tmp_path: Path)
             object(),
             approved_root=baseline.root,
         )
+
+
+def test_live_authorization_is_factory_only() -> None:
+    with pytest.raises(TypeError, match="from_inventory"):
+        LiveCaptureAuthorization()  # type: ignore[call-arg]
 
 
 def test_sealed_revision_exposes_scoped_source_capability_evidence(tmp_path: Path) -> None:
@@ -410,6 +416,37 @@ def test_toctou_source_replacement_is_detected_and_staging_is_cleaned(
             revision,
             root,
         )
+    assert not tuple(mirror_root.rglob("*.staging-*"))
+
+
+def test_mirror_rejects_source_root_identity_replacement_after_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _root(tmp_path)
+    revision = _revision(root)
+    original_capture = FilesystemBaselineCapturer.capture
+    calls = 0
+
+    def replacing_capture(capturer: FilesystemBaselineCapturer, current: Path) -> FilesystemBaseline:
+        nonlocal calls
+        baseline = original_capture(capturer, current)
+        calls += 1
+        if calls == 2:
+            assert baseline.root_identity is not None
+            return replace(
+                baseline,
+                root_identity=(baseline.root_identity[0], baseline.root_identity[1] + 1),
+            )
+        return baseline
+
+    monkeypatch.setattr(FilesystemBaselineCapturer, "capture", replacing_capture)
+
+    mirror_root = tmp_path / "mirror"
+    with pytest.raises(MirrorCaptureError, match="identity|contents"):
+        ImmutableSourceMirror.for_test(mirror_root).capture(revision, root)
+    assert not (
+        mirror_root / "tenant-a" / "application-a" / "target-a" / revision.baseline_id
+    ).exists()
     assert not tuple(mirror_root.rglob("*.staging-*"))
 
 

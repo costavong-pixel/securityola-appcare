@@ -100,6 +100,8 @@ def _valid_live_authority(
     approved_root: str,
     inventory_evidence_digest: str,
     evidence_reference: str,
+    source_host_identity: str,
+    source_root_identity: tuple[int, int],
 ) -> bool:
     if not isinstance(receipt_path, str):
         return False
@@ -114,6 +116,8 @@ def _valid_live_authority(
         approved_root=approved_root,
         inventory_evidence_digest=inventory_evidence_digest,
         evidence_reference=evidence_reference,
+        source_host_identity=source_host_identity,
+        source_root_identity=source_root_identity,
     )
 
 
@@ -127,6 +131,8 @@ def _valid_live_revision_authority(
     approved_root: str,
     inventory_evidence_digest: object,
     evidence_reference: str,
+    source_host_identity: str,
+    source_root_identity: tuple[int, int],
 ) -> bool:
     if not isinstance(receipt_path, str) or not isinstance(inventory_evidence_digest, str):
         return False
@@ -141,6 +147,8 @@ def _valid_live_revision_authority(
         approved_root=approved_root,
         inventory_evidence_digest=inventory_evidence_digest,
         evidence_reference=evidence_reference,
+        source_host_identity=source_host_identity,
+        source_root_identity=source_root_identity,
     )
 
 
@@ -229,14 +237,14 @@ def _validate_source_root_identity(value: object) -> tuple[int, int]:
     return value
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class LiveCaptureAuthorization:
     """Opaque coordinator authorization for a completed live inventory.
 
     A caller-provided evidence class is never sufficient to create real-target
     revision evidence.  The authorization is minted only from a live SSH
-    snapshot produced by the live transport and is intentionally not
-    serializable into a baseline or receipt.
+    snapshot produced by the live transport.  It is factory-only: its source
+    identity is copied from, and checked against, the durable live receipt.
     """
 
     tenant_id: str
@@ -246,9 +254,13 @@ class LiveCaptureAuthorization:
     approved_root: str
     inventory_evidence_digest: str
     evidence_reference: str
-    source_host_identity: str | None = None
-    source_root_identity: tuple[int, int] | None = None
-    _live_receipt_path: str | None = field(default=None, repr=False, compare=False)
+    source_host_identity: str
+    source_root_identity: tuple[int, int]
+    _live_receipt_path: str = field(repr=False, compare=False)
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("use LiveCaptureAuthorization.from_inventory")
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -278,8 +290,6 @@ class LiveCaptureAuthorization:
             "evidence_reference",
             validate_reference(self.evidence_reference, field_name="evidence reference"),
         )
-        if self.source_host_identity is None or self.source_root_identity is None:
-            raise RevisionError("live capture source binding is required")
         object.__setattr__(
             self,
             "source_host_identity",
@@ -299,8 +309,39 @@ class LiveCaptureAuthorization:
             inventory_evidence_digest=self.inventory_evidence_digest,
             evidence_reference=self.evidence_reference,
             receipt_path=self._live_receipt_path,
+            source_host_identity=self.source_host_identity,
+            source_root_identity=self.source_root_identity,
         ):
             raise RevisionError("live capture authorization must come from live transport")
+
+    @classmethod
+    def _mint(
+        cls,
+        *,
+        tenant_id: str,
+        application_id: str,
+        target_reference: str,
+        host_identity: str,
+        approved_root: str,
+        inventory_evidence_digest: str,
+        evidence_reference: str,
+        source_host_identity: str,
+        source_root_identity: tuple[int, int],
+        live_receipt_path: str,
+    ) -> LiveCaptureAuthorization:
+        instance = object.__new__(cls)
+        object.__setattr__(instance, "tenant_id", tenant_id)
+        object.__setattr__(instance, "application_id", application_id)
+        object.__setattr__(instance, "target_reference", target_reference)
+        object.__setattr__(instance, "host_identity", host_identity)
+        object.__setattr__(instance, "approved_root", approved_root)
+        object.__setattr__(instance, "inventory_evidence_digest", inventory_evidence_digest)
+        object.__setattr__(instance, "evidence_reference", evidence_reference)
+        object.__setattr__(instance, "source_host_identity", source_host_identity)
+        object.__setattr__(instance, "source_root_identity", source_root_identity)
+        object.__setattr__(instance, "_live_receipt_path", live_receipt_path)
+        instance.__post_init__()
+        return instance
 
     @classmethod
     def from_inventory(
@@ -346,7 +387,7 @@ class LiveCaptureAuthorization:
             )
             if local_binding != source_binding:
                 raise BaselineCaptureError("source root does not match live target observation")
-        return cls(
+        return cls._mint(
             tenant_id=target.tenant_id,
             application_id=target.application_id,
             target_reference=target.target_reference,
@@ -356,7 +397,7 @@ class LiveCaptureAuthorization:
             evidence_reference=reference,
             source_host_identity=source_host_identity,
             source_root_identity=source_root_identity,
-            _live_receipt_path=receipt_path,
+            live_receipt_path=receipt_path,
         )
 
     def is_valid_for(
@@ -378,6 +419,8 @@ class LiveCaptureAuthorization:
                 approved_root=self.approved_root,
                 inventory_evidence_digest=self.inventory_evidence_digest,
                 evidence_reference=self.evidence_reference,
+                source_host_identity=self.source_host_identity,
+                source_root_identity=self.source_root_identity,
             )
             and self.tenant_id == tenant_id
             and self.application_id == application_id
@@ -886,6 +929,18 @@ class CapturedApplicationRevision:
             "evidence_reference",
             validate_reference(self.evidence_reference, field_name="evidence reference"),
         )
+        if self._source_host_identity is not None:
+            object.__setattr__(
+                self,
+                "_source_host_identity",
+                validate_host_identity(self._source_host_identity),
+            )
+        if self._source_root_identity is not None:
+            object.__setattr__(
+                self,
+                "_source_root_identity",
+                _validate_source_root_identity(self._source_root_identity),
+            )
         if self.evidence_class is EvidenceClass.REAL_TARGET:
             if (
                 self._source_host_identity != self.host_identity
@@ -901,6 +956,8 @@ class CapturedApplicationRevision:
                 inventory_evidence_digest=self._live_inventory_evidence_digest,
                 evidence_reference=self.evidence_reference,
                 receipt_path=self._live_receipt_path,
+                source_host_identity=self._source_host_identity,
+                source_root_identity=self._source_root_identity,
             ):
                 raise RevisionError("real-target evidence requires live capture authorization")
         elif (
