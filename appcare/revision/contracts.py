@@ -150,13 +150,18 @@ def _valid_live_revision_authority(
     if not isinstance(authority, _IssuedAuthority):
         return False
     payload = _LIVE_AUTHORITIES.get(authority)
-    return payload is not None and payload[:5] == (
-        tenant_id,
-        application_id,
-        target_reference,
-        host_identity,
-        approved_root,
-    ) and payload[6] == evidence_reference
+    return (
+        payload is not None
+        and payload[:5]
+        == (
+            tenant_id,
+            application_id,
+            target_reference,
+            host_identity,
+            approved_root,
+        )
+        and payload[6] == evidence_reference
+    )
 
 
 def _valid_verified_mirror_receipt(

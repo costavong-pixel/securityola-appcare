@@ -392,9 +392,7 @@ def test_toctou_source_replacement_is_detected_and_staging_is_cleaned(
     original_capture = FilesystemBaselineCapturer.capture
     calls = 0
 
-    def changing_capture(
-        capturer: FilesystemBaselineCapturer, current: Path
-    ) -> FilesystemBaseline:
+    def changing_capture(capturer: FilesystemBaselineCapturer, current: Path) -> FilesystemBaseline:
         nonlocal calls
         baseline = original_capture(capturer, current)
         calls += 1

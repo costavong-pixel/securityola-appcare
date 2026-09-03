@@ -1293,9 +1293,7 @@ class _LiveSnapshotAuthority:
 
     __slots__ = ("_binding",)
 
-    def __init__(
-        self, issuer: object, binding: tuple[object, ...] | None = None
-    ) -> None:
+    def __init__(self, issuer: object, binding: tuple[object, ...] | None = None) -> None:
         if issuer is not _LIVE_SNAPSHOT_ISSUER:
             raise TypeError("live snapshot authority is transport-issued")
         self._binding = binding
@@ -1329,9 +1327,7 @@ class _LiveSnapshotAuthority:
             or inventory.evidence_class is not EvidenceClass.REAL_TARGET
         ):
             return False
-        return self._binding == _live_snapshot_binding(
-            target, connection, inventory, records
-        )
+        return self._binding == _live_snapshot_binding(target, connection, inventory, records)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1364,11 +1360,10 @@ class LinuxInventorySnapshot:
     def live_attested(self) -> bool:
         """True only for snapshots emitted by the live transport boundary."""
 
-        return (
-            isinstance(self._live_authority, _LiveSnapshotAuthority)
-            and self._live_authority.matches(
-                self.target, self.connection, self.inventory, self.records
-            )
+        return isinstance(
+            self._live_authority, _LiveSnapshotAuthority
+        ) and self._live_authority.matches(
+            self.target, self.connection, self.inventory, self.records
         )
 
     @property

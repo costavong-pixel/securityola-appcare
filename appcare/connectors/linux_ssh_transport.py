@@ -562,9 +562,7 @@ class LinuxSSHClient:
             records=normalized_records,
         )
         live_authority = (
-            self._live_authority.bind(
-                self.target, connection, inventory, normalized_records
-            )
+            self._live_authority.bind(self.target, connection, inventory, normalized_records)
             if self._live_authority is not None
             else None
         )
