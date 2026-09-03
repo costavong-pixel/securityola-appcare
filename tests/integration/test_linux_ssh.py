@@ -106,7 +106,7 @@ class FakeRunner:
         self.calls.append(argv)
         if argv[0] == "ssh-keyscan":
             return ProcessResult(0, b"192.0.2.10 ssh-ed25519 " + KEY_DATA.encode() + b"\n", b"")
-        if argv[0] == "realpath":
+        if len(argv) >= 4 and argv[-4] == "realpath" and argv[-3] == "-e" and argv[-2] == "--":
             return ProcessResult(0, (argv[-1] + "\n").encode(), b"")
         if len(argv) >= 4 and argv[-4] == "stat" and argv[-3] == "--format=%n:%F:%U:%G:%a:%s":
             return ProcessResult(
