@@ -23,7 +23,6 @@ from appcare.connectors.linux_ssh_contracts import (
     InMemoryOperationLedger,
     LinuxCredentialMetadata,
     LinuxCredentialRegistry,
-    LinuxInventorySnapshot,
     LinuxTarget,
     OperationStatus,
     ProcessResult,
@@ -107,12 +106,14 @@ class FakeRunner:
         self.calls.append(argv)
         if argv[0] == "ssh-keyscan":
             return ProcessResult(0, b"192.0.2.10 ssh-ed25519 " + KEY_DATA.encode() + b"\n", b"")
-        if argv[0] == "realpath":
+        if len(argv) >= 4 and argv[-4] == "realpath" and argv[-3] == "-e" and argv[-2] == "--":
             return ProcessResult(0, (argv[-1] + "\n").encode(), b"")
-        if argv[0] == "stat" and argv[1] == "--format=%n:%F:%U:%G:%a:%s":
+        if len(argv) >= 4 and argv[-4] == "stat" and argv[-3] == "--format=%n:%F:%U:%G:%a:%s":
             return ProcessResult(
                 0, (argv[-1] + ":directory:appcare:appcare:700:42\n").encode(), b""
             )
+        if len(argv) >= 4 and argv[-4] == "stat" and argv[-3] == "--format=%n:%F:%U:%G:%a":
+            return ProcessResult(0, (argv[-1] + ":directory:appcare:appcare:700\n").encode(), b"")
         return self.responses.get(argv[-1], ProcessResult(0, b"", b""))
 
 
@@ -388,7 +389,7 @@ def test_approved_root_symlink_escape_is_rejected(tmp_path: Path) -> None:
             stdout_limit: int,
             stderr_limit: int,
         ) -> ProcessResult:
-            if argv[0] == "realpath":
+            if len(argv) >= 4 and argv[-4] == "realpath" and argv[-3] == "-e" and argv[-2] == "--":
                 self.calls.append(argv)
                 return ProcessResult(0, b"/outside/app\n", b"")
             return super().run(
@@ -404,6 +405,33 @@ def test_approved_root_symlink_escape_is_rejected(tmp_path: Path) -> None:
     assert any(call[0] == "ssh" for call in runner.calls)
 
 
+def test_collect_inventory_requires_filesystem_metadata_success(tmp_path: Path) -> None:
+    class MetadataFailureRunner(FakeRunner):
+        def run(
+            self,
+            argv: tuple[str, ...],
+            *,
+            timeout_seconds: float,
+            stdout_limit: int,
+            stderr_limit: int,
+        ) -> ProcessResult:
+            if len(argv) >= 4 and argv[-4] == "stat" and argv[-3] == "--format=%n:%F:%U:%G:%a:%s":
+                self.calls.append(argv)
+                return ProcessResult(1, b"", b"permission denied\n")
+            return super().run(
+                argv,
+                timeout_seconds=timeout_seconds,
+                stdout_limit=stdout_limit,
+                stderr_limit=stderr_limit,
+            )
+
+    transport, _ = client(tmp_path, runner=MetadataFailureRunner({}))
+    snapshot = transport.collect_inventory("inventory-required")
+
+    assert snapshot.inventory.status == OperationStatus.PARTIAL
+    assert not snapshot.complete
+
+
 def test_unapproved_service_is_rejected(tmp_path: Path) -> None:
     transport, _ = client(tmp_path)
     with pytest.raises(ValueError):
@@ -412,14 +440,7 @@ def test_unapproved_service_is_rejected(tmp_path: Path) -> None:
 
 def test_spec013_receives_only_connect_and_inventory_evidence(tmp_path: Path) -> None:
     transport, _ = client(tmp_path)
-    connection = transport.execute(ConnectionProbe("connect-1"))
-    inventory = transport.execute(HostInventory("inventory-1"))
-    snapshot = LinuxInventorySnapshot(
-        target(),
-        connection,
-        inventory,
-        connection.records + inventory.records,
-    )
+    snapshot = transport.collect_inventory("inventory-2")
     evidence = snapshot.capability_evidence(stack_id="generic-linux")
     registry = ApplicationCapabilityRegistry(
         tenant_id="tenant-a",

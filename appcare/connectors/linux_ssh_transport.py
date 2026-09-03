@@ -47,6 +47,7 @@ from .linux_ssh_contracts import (
     StorageMetadataRead,
     WebServerMetadataRead,
     parse_host_key_line,
+    required_inventory_records_complete,
     validate_operation_id,
     validate_string,
 )
@@ -512,6 +513,7 @@ class LinuxSSHClient:
             required_ok = required_ok and root_result.passed
             metadata_result = self.execute(FilesystemMetadataRead(f"{base}:metadata:{index}", root))
             records.extend(metadata_result.records)
+            required_ok = required_ok and metadata_result.passed
         optional_operations: list[LinuxOperation] = [
             WebServerMetadataRead(f"{base}:web"),
             RuntimeMetadataRead(f"{base}:runtime"),
@@ -528,18 +530,22 @@ class LinuxSSHClient:
         for optional in optional_operations:
             optional_result = self.execute(optional)
             records.extend(optional_result.records)
+        normalized_records = tuple(records[: self._limits.max_records])
+        required_ok = required_ok and required_inventory_records_complete(
+            self.target, normalized_records
+        )
         status = OperationStatus.PASSED if required_ok else OperationStatus.PARTIAL
         inventory = self._result(
             HostInventory(f"{base}:inventory"),
             status,
             "ok" if required_ok else "inventory_required_observation_failed",
-            records=tuple(records[: self._limits.max_records]),
+            records=normalized_records,
         )
         return LinuxInventorySnapshot(
             self.target,
             connection,
             inventory,
-            tuple(records[: self._limits.max_records]),
+            normalized_records,
         )
 
     def _execute_command(
@@ -737,7 +743,7 @@ class LinuxSSHClient:
     def _parse_filesystem_metadata(
         self, command: RemoteCommand, text: str
     ) -> tuple[InventoryRecord, ...]:
-        parts = text.strip().split(",")
+        parts = text.strip().split(":")
         expected = 6 if command.operation == OperationKind.FILESYSTEM_METADATA_READ else 5
         if len(parts) != expected:
             raise ValueError("filesystem metadata is malformed")

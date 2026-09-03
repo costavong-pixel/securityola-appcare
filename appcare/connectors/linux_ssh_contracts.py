@@ -1032,6 +1032,151 @@ class InventoryRecord:
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def required_inventory_records_complete(
+    target: LinuxTarget, records: Sequence[InventoryRecord]
+) -> bool:
+    """Verify the coordinator-owned minimum inventory observation set."""
+
+    if any(not isinstance(record, InventoryRecord) for record in records):
+        return False
+    if any(not isinstance(record.metadata, Mapping) for record in records):
+        return False
+    if any(
+        record.tenant_id != target.tenant_id
+        or record.application_id != target.application_id
+        or record.target_reference != target.target_reference
+        for record in records
+    ):
+        return False
+
+    required: list[tuple[str, str, str, Callable[[Mapping[str, object]], bool]]] = []
+
+    def add(
+        operation: OperationKind,
+        step: str,
+        record_type: str,
+        identity: str,
+        validator: Callable[[Mapping[str, object]], bool],
+    ) -> None:
+        required.append((f"linux-ssh/{operation.value}/{step}", record_type, identity, validator))
+
+    def non_empty_text(value: object) -> bool:
+        return isinstance(value, str) and bool(value.strip())
+
+    def host_identity(metadata: Mapping[str, object]) -> bool:
+        return metadata.get("hostname") == target.expected_hostname
+
+    def kernel(metadata: Mapping[str, object]) -> bool:
+        return non_empty_text(metadata.get("release"))
+
+    def os_id(metadata: Mapping[str, object]) -> bool:
+        return non_empty_text(metadata.get("id"))
+
+    def os_version(metadata: Mapping[str, object]) -> bool:
+        return non_empty_text(metadata.get("version_id"))
+
+    def resolved_root(metadata: Mapping[str, object]) -> bool:
+        return metadata.get("resolved") is True
+
+    def root_metadata(metadata: Mapping[str, object]) -> bool:
+        return all(
+            non_empty_text(metadata.get(key)) for key in ("file_type", "owner", "group", "mode")
+        )
+
+    def filesystem_metadata(metadata: Mapping[str, object]) -> bool:
+        bytes_value = metadata.get("bytes")
+        return (
+            root_metadata(metadata)
+            and isinstance(bytes_value, int)
+            and not isinstance(bytes_value, bool)
+            and bytes_value >= 0
+        )
+
+    add(
+        OperationKind.HOST_INVENTORY,
+        "hostname",
+        "host_identity",
+        target.expected_hostname,
+        host_identity,
+    )
+    add(OperationKind.HOST_INVENTORY, "kernel", "kernel", "kernel", kernel)
+    add(OperationKind.HOST_INVENTORY, "os_release", "operating_system", "id", os_id)
+    add(
+        OperationKind.HOST_INVENTORY,
+        "os_release",
+        "operating_system",
+        "version_id",
+        os_version,
+    )
+    for root in target.approved_application_roots:
+        add(
+            OperationKind.APPLICATION_ROOT_VERIFICATION,
+            "resolved_root",
+            "filesystem_root",
+            root,
+            resolved_root,
+        )
+        add(
+            OperationKind.APPLICATION_ROOT_VERIFICATION,
+            "root",
+            "filesystem",
+            root,
+            root_metadata,
+        )
+        add(
+            OperationKind.FILESYSTEM_METADATA_READ,
+            "resolved_root",
+            "filesystem_root",
+            root,
+            resolved_root,
+        )
+        add(
+            OperationKind.FILESYSTEM_METADATA_READ,
+            "metadata",
+            "filesystem",
+            root,
+            filesystem_metadata,
+        )
+
+    for source, record_type, identity, validator in required:
+        matches = tuple(
+            record
+            for record in records
+            if record.source_reference == source
+            and record.record_type == record_type
+            and record.identity == identity
+        )
+        if len(matches) != 1 or not validator(matches[0].metadata):
+            return False
+
+    # OS release may include optional NAME/PRETTY_NAME records. Every other
+    # required source must contain exactly the one typed observation expected.
+    allowed_by_source: dict[str, set[tuple[str, str]]] = {}
+    for source, record_type, identity, _ in required:
+        allowed_by_source.setdefault(source, set()).add((record_type, identity))
+    os_source = f"linux-ssh/{OperationKind.HOST_INVENTORY.value}/os_release"
+    allowed_by_source[os_source].update(
+        {
+            ("operating_system", "name"),
+            ("operating_system", "pretty_name"),
+        }
+    )
+    for source, allowed in allowed_by_source.items():
+        source_records = tuple(record for record in records if record.source_reference == source)
+        if any((record.record_type, record.identity) not in allowed for record in source_records):
+            return False
+        for record_type, identity in allowed:
+            if (
+                sum(
+                    record.record_type == record_type and record.identity == identity
+                    for record in source_records
+                )
+                > 1
+            ):
+                return False
+    return True
+
+
 @dataclass(frozen=True, slots=True)
 class RemoteExecutionResult:
     operation_id: str
@@ -1136,7 +1281,31 @@ class LinuxInventorySnapshot:
 
     @property
     def complete(self) -> bool:
-        return self.connection.passed and self.inventory.passed
+        return self._inventory_supported
+
+    @property
+    def _inventory_supported(self) -> bool:
+        return (
+            self._result_matches_target(self.connection)
+            and self._result_matches_target(self.inventory)
+            and self.connection.operation == OperationKind.CONNECTION_PROBE
+            and self.connection.passed
+            and self.inventory.operation == OperationKind.HOST_INVENTORY
+            and self.inventory.passed
+            and self.connection.evidence_class == self.inventory.evidence_class
+            and self.inventory.records == self.records
+            and all(
+                record.evidence_class == self.inventory.evidence_class for record in self.records
+            )
+            and required_inventory_records_complete(self.target, self.records)
+        )
+
+    def _result_matches_target(self, result: RemoteExecutionResult) -> bool:
+        return (
+            result.tenant_id == self.target.tenant_id
+            and result.application_id == self.target.application_id
+            and result.target_reference == self.target.target_reference
+        )
 
     @property
     def evidence_class(self) -> EvidenceClass:
@@ -1145,11 +1314,19 @@ class LinuxInventorySnapshot:
     def capability_evidence(self, *, stack_id: str) -> tuple[CapabilityEvidence, ...]:
         stack = validate_scope_segment(stack_id, field_name="stack_id")
         evidence: list[CapabilityEvidence] = []
+        inventory_supported = self._inventory_supported
+        connection_supported = (
+            self._result_matches_target(self.connection)
+            and self.connection.operation == OperationKind.CONNECTION_PROBE
+            and self.connection.passed
+            and self.connection.evidence_class == self.inventory.evidence_class
+        )
         for capability, result in (
             ("connect", self.connection),
             ("inventory", self.inventory),
         ):
-            status = CapabilityStatus.SUPPORTED if result.passed else CapabilityStatus.UNSUPPORTED
+            supported = connection_supported if capability == "connect" else inventory_supported
+            status = CapabilityStatus.SUPPORTED if supported else CapabilityStatus.UNSUPPORTED
             evidence.append(
                 CapabilityEvidence(
                     tenant_id=self.target.tenant_id,
@@ -1211,6 +1388,7 @@ __all__ = [
     "WebServerMetadataRead",
     "join_approved_path",
     "parse_host_key_line",
+    "required_inventory_records_complete",
     "validate_absolute_root",
     "validate_credential_reference",
     "validate_fingerprint",
