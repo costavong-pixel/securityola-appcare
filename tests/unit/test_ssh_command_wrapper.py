@@ -209,7 +209,7 @@ def test_wrapper_accepts_every_registry_command_shape(tmp_path: Path) -> None:
         ("realpath", "-e", "--", root),
         ("realpath", "--", f"{root}/config.json"),
         ("df", "-P", "-k", "--", root),
-        ("stat", "--format=%n:%F:%U:%G:%a:%s", "--", root),
+        ("stat", "--format=%n:%F:%U:%G:%a:%s:%d:%i", "--", root),
         ("stat", "--format=%n:%F:%U:%G:%a", "--", root),
         ("stat", "--format=%F:%s", "--", f"{root}/config.json"),
         (

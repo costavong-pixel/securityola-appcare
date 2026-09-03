@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
-from collections.abc import Mapping
+import stat
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Final, Literal
+from typing import Final, Literal, cast
 
 from ..connectors.linux_ssh_contracts import EvidenceClass
 from ..readiness.contracts import CapabilityEvidence, CapabilityStatus
@@ -31,6 +33,17 @@ _SAFE_DIGEST: Final = re.compile(r"^[0-9a-f]{64}$")
 _SAFE_REVISION: Final = re.compile(r"^[0-9a-f]{40,64}$")
 _SAFE_REFERENCE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,499}$")
 _SAFE_MIRROR_REFERENCE: Final = re.compile(r"^mirror://[A-Za-z0-9][A-Za-z0-9._:/-]{0,480}$")
+
+
+def _current_host_identity() -> str:
+    uname = cast(Callable[[], object], getattr(os, "uname"))  # noqa: B009
+    result = uname()
+    hostname = getattr(result, "nodename", None)  # noqa: B009
+    if not isinstance(hostname, str) or not hostname:
+        raise OSError("host identity is unavailable")
+    return hostname.casefold()
+
+
 _CONTROL: Final = re.compile(r"[\x00-\x1f\x7f]")
 _WINDOWS_ROOT: Final = re.compile(r"^[A-Za-z]:/[^/].*$")
 _MAX_BASELINE_ENTRIES: Final = 100_000
@@ -181,6 +194,41 @@ def _valid_verified_mirror_receipt(
         return False
 
 
+def _capture_source_binding(
+    source_root: Path,
+    *,
+    approved_root: str,
+    expected_hostname: str,
+) -> tuple[str, tuple[int, int]]:
+    if os.name != "posix" or not isinstance(source_root, Path) or not source_root.is_absolute():
+        raise BaselineCaptureError("live source capture requires a local POSIX source root")
+    try:
+        metadata = source_root.lstat()
+        resolved = source_root.resolve(strict=True)
+        local_hostname = _current_host_identity()
+    except (AttributeError, OSError, RuntimeError) as exc:
+        raise BaselineCaptureError("live source root identity is unavailable") from exc
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or resolved != source_root
+        or resolved.as_posix() != validate_root(approved_root)
+        or local_hostname != expected_hostname
+    ):
+        raise BaselineCaptureError("live source root is not bound to the target host")
+    return local_hostname, (metadata.st_dev, metadata.st_ino)
+
+
+def _validate_source_root_identity(value: object) -> tuple[int, int]:
+    if (
+        not isinstance(value, tuple)
+        or len(value) != 2
+        or any(isinstance(item, bool) or not isinstance(item, int) or item < 0 for item in value)
+    ):
+        raise BaselineCaptureError("source root identity is invalid")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class LiveCaptureAuthorization:
     """Opaque coordinator authorization for a completed live inventory.
@@ -198,6 +246,8 @@ class LiveCaptureAuthorization:
     approved_root: str
     inventory_evidence_digest: str
     evidence_reference: str
+    source_host_identity: str | None = None
+    source_root_identity: tuple[int, int] | None = None
     _live_receipt_path: str | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -228,6 +278,18 @@ class LiveCaptureAuthorization:
             "evidence_reference",
             validate_reference(self.evidence_reference, field_name="evidence reference"),
         )
+        if self.source_host_identity is None or self.source_root_identity is None:
+            raise RevisionError("live capture source binding is required")
+        object.__setattr__(
+            self,
+            "source_host_identity",
+            validate_host_identity(self.source_host_identity),
+        )
+        object.__setattr__(
+            self,
+            "source_root_identity",
+            _validate_source_root_identity(self.source_root_identity),
+        )
         if not _valid_live_authority(
             tenant_id=self.tenant_id,
             application_id=self.application_id,
@@ -246,6 +308,7 @@ class LiveCaptureAuthorization:
         snapshot: object,
         *,
         approved_root: str,
+        source_root: Path | None = None,
         evidence_reference: str | None = None,
     ) -> LiveCaptureAuthorization:
         """Mint authorization only from a complete, live-attested snapshot."""
@@ -271,6 +334,18 @@ class LiveCaptureAuthorization:
         )
         if reference != expected_reference:
             raise BaselineCaptureError("live capture reference must match durable receipt")
+        source_binding = snapshot.live_source_binding(normalized_root)
+        if source_binding is None:
+            raise BaselineCaptureError("live capture requires a bound target-host source root")
+        source_host_identity, source_root_identity = source_binding
+        if source_root is not None:
+            local_binding = _capture_source_binding(
+                source_root,
+                approved_root=normalized_root,
+                expected_hostname=target.expected_hostname,
+            )
+            if local_binding != source_binding:
+                raise BaselineCaptureError("source root does not match live target observation")
         return cls(
             tenant_id=target.tenant_id,
             application_id=target.application_id,
@@ -279,6 +354,8 @@ class LiveCaptureAuthorization:
             approved_root=normalized_root,
             inventory_evidence_digest=snapshot.inventory.evidence_digest,
             evidence_reference=reference,
+            source_host_identity=source_host_identity,
+            source_root_identity=source_root_identity,
             _live_receipt_path=receipt_path,
         )
 
@@ -611,6 +688,8 @@ class FilesystemBaseline:
     entries: tuple[BaselineEntry, ...]
     policy: BaselinePolicy = field(repr=False, compare=False)
     source_type: SourceType = "direct-filesystem"
+    source_host_identity: str | None = None
+    root_identity: tuple[int, int] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.policy, BaselinePolicy):
@@ -621,6 +700,18 @@ class FilesystemBaseline:
             raise RevisionError("filesystem baseline source type is invalid")
         if self.source_type == "git":
             raise RevisionError("Git-bound capture requires verified tree binding")
+        if self.source_host_identity is not None:
+            object.__setattr__(
+                self,
+                "source_host_identity",
+                validate_host_identity(self.source_host_identity),
+            )
+        if self.root_identity is not None:
+            object.__setattr__(
+                self,
+                "root_identity",
+                _validate_source_root_identity(self.root_identity),
+            )
         if not self.entries or len(self.entries) > self.policy.max_entries:
             raise BaselineCaptureError("filesystem baseline entry count is invalid")
         paths = tuple(entry.relative_path for entry in self.entries)
@@ -646,6 +737,8 @@ class FilesystemBaseline:
         return {
             "root": self.root,
             "source_type": self.source_type,
+            "source_host_identity": self.source_host_identity,
+            "root_identity": list(self.root_identity) if self.root_identity is not None else None,
             "entries": [entry.canonical_payload() for entry in self.entries],
         }
 
@@ -689,6 +782,8 @@ class CapturedApplicationRevision:
     snapshot_semantics: str = "observed-tree-merkle-race-checked"
     _live_receipt_path: str | None = field(default=None, repr=False, compare=False)
     _live_inventory_evidence_digest: str | None = field(default=None, repr=False, compare=False)
+    _source_host_identity: str | None = field(default=None, repr=False, compare=False)
+    _source_root_identity: tuple[int, int] | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         for value, name in (
@@ -786,6 +881,11 @@ class CapturedApplicationRevision:
             validate_reference(self.evidence_reference, field_name="evidence reference"),
         )
         if self.evidence_class is EvidenceClass.REAL_TARGET:
+            if (
+                self._source_host_identity != self.host_identity
+                or self._source_root_identity is None
+            ):
+                raise RevisionError("real-target evidence requires bound source capture")
             if not _valid_live_revision_authority(
                 tenant_id=self.tenant_id,
                 application_id=self.application_id,
@@ -798,7 +898,10 @@ class CapturedApplicationRevision:
             ):
                 raise RevisionError("real-target evidence requires live capture authorization")
         elif (
-            self._live_receipt_path is not None or self._live_inventory_evidence_digest is not None
+            self._live_receipt_path is not None
+            or self._live_inventory_evidence_digest is not None
+            or self._source_host_identity is not None
+            or self._source_root_identity is not None
         ):
             raise RevisionError("live capture authorization is not valid for fixture evidence")
         if self.snapshot_semantics not in {"git-bound", "observed-tree-merkle-race-checked"}:
@@ -878,6 +981,11 @@ class CapturedApplicationRevision:
                 approved_root=baseline.root,
             ):
                 raise BaselineCaptureError("live capture authorization does not match baseline")
+            if (
+                baseline.source_host_identity != live_authorization.source_host_identity
+                or baseline.root_identity != live_authorization.source_root_identity
+            ):
+                raise BaselineCaptureError("source capture is not bound to live target")
             final_evidence_class = EvidenceClass.REAL_TARGET
             normalized_ref = live_authorization.evidence_reference
         else:
@@ -905,6 +1013,10 @@ class CapturedApplicationRevision:
                 live_authorization.inventory_evidence_digest
                 if live_authorization is not None
                 else None
+            ),
+            "source_host_identity": baseline.source_host_identity,
+            "source_root_identity": (
+                list(baseline.root_identity) if baseline.root_identity is not None else None
             ),
         }
         digest = hashlib.sha256(
@@ -938,6 +1050,8 @@ class CapturedApplicationRevision:
                 if live_authorization is not None
                 else None
             ),
+            _source_host_identity=baseline.source_host_identity,
+            _source_root_identity=baseline.root_identity,
         )
 
     def _baseline_payload(self) -> dict[str, object]:
@@ -955,6 +1069,10 @@ class CapturedApplicationRevision:
             "source_revision": self.source_revision,
             "snapshot_semantics": self.snapshot_semantics,
             "live_inventory_evidence_digest": self._live_inventory_evidence_digest,
+            "source_host_identity": self._source_host_identity,
+            "source_root_identity": (
+                list(self._source_root_identity) if self._source_root_identity is not None else None
+            ),
         }
 
     def _compute_baseline_digest(self) -> str:
@@ -1069,6 +1187,8 @@ class CapturedApplicationRevision:
             snapshot_semantics=self.snapshot_semantics,
             _live_receipt_path=self._live_receipt_path,
             _live_inventory_evidence_digest=self._live_inventory_evidence_digest,
+            _source_host_identity=self._source_host_identity,
+            _source_root_identity=self._source_root_identity,
         )
 
 

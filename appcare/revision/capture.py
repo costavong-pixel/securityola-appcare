@@ -19,6 +19,7 @@ from .contracts import (
     FilesystemBaseline,
     LiveCaptureAuthorization,
     SourceType,
+    _current_host_identity,
     is_secret_path_name,
 )
 
@@ -84,6 +85,8 @@ class FilesystemBaselineCapturer:
             entries=tuple(entries),
             policy=self.policy,
             source_type=detect_source_type(canonical_root),
+            source_host_identity=_current_host_identity(),
+            root_identity=(root_metadata.st_dev, root_metadata.st_ino),
         )
 
     def capture_revision(

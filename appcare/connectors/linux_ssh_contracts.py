@@ -1085,11 +1085,19 @@ def required_inventory_records_complete(
 
     def filesystem_metadata(metadata: Mapping[str, object]) -> bool:
         bytes_value = metadata.get("bytes")
+        device = metadata.get("device")
+        inode = metadata.get("inode")
         return (
             root_metadata(metadata)
             and isinstance(bytes_value, int)
             and not isinstance(bytes_value, bool)
             and bytes_value >= 0
+            and isinstance(device, int)
+            and not isinstance(device, bool)
+            and device >= 0
+            and isinstance(inode, int)
+            and not isinstance(inode, bool)
+            and inode >= 0
         )
 
     add(
@@ -1511,6 +1519,50 @@ class LinuxInventorySnapshot:
     @property
     def live_receipt_path(self) -> str | None:
         return self._live_receipt_path
+
+    def live_source_binding(self, approved_root: str) -> tuple[str, tuple[int, int]] | None:
+        """Return the target-host identity bound to required live observations."""
+
+        if not self.complete or not self.live_attested:
+            return None
+        if approved_root not in self.target.approved_application_roots:
+            return None
+        host_records = tuple(
+            record
+            for record in self.records
+            if record.source_reference == "linux-ssh/host_inventory/hostname"
+            and record.record_type == "host_identity"
+            and record.identity == self.target.expected_hostname
+        )
+        root_records = tuple(
+            record
+            for record in self.records
+            if record.source_reference == "linux-ssh/filesystem_metadata_read/metadata"
+            and record.record_type == "filesystem"
+            and record.identity in self.target.approved_application_roots
+        )
+        if len(host_records) != 1 or len(root_records) != len(
+            self.target.approved_application_roots
+        ):
+            return None
+        root_record = next(
+            (record for record in root_records if record.identity == approved_root),
+            None,
+        )
+        if root_record is None:
+            return None
+        device = root_record.metadata.get("device")
+        inode = root_record.metadata.get("inode")
+        if (
+            isinstance(device, bool)
+            or not isinstance(device, int)
+            or device < 0
+            or isinstance(inode, bool)
+            or not isinstance(inode, int)
+            or inode < 0
+        ):
+            return None
+        return self.target.expected_hostname, (device, inode)
 
     @property
     def _inventory_supported(self) -> bool:

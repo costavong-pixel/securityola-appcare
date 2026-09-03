@@ -879,7 +879,7 @@ class LinuxSSHClient:
         self, command: RemoteCommand, text: str
     ) -> tuple[InventoryRecord, ...]:
         parts = text.strip().split(":")
-        expected = 6 if command.operation == OperationKind.FILESYSTEM_METADATA_READ else 5
+        expected = 8 if command.operation == OperationKind.FILESYSTEM_METADATA_READ else 5
         if len(parts) != expected:
             raise ValueError("filesystem metadata is malformed")
         expected_root = (
@@ -905,8 +905,10 @@ class LinuxSSHClient:
         metadata: dict[str, object] = {"file_type": kind}
         for key, value in zip(("owner", "group", "mode"), parts[2:5], strict=False):
             metadata[key] = validate_string(value, field_name=key, maximum=128)
-        if expected == 6:
+        if expected == 8:
             metadata["bytes"] = self._bounded_integer(parts[5], "bytes")
+            metadata["device"] = self._bounded_integer(parts[6], "device")
+            metadata["inode"] = self._bounded_integer(parts[7], "inode")
         return (self._record(command, "filesystem", expected_root, metadata),)
 
     def _parse_safe_file(
