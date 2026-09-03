@@ -825,7 +825,7 @@ class CapturedApplicationRevision:
                     "root": self.approved_root,
                     "source_type": self.source_type,
                     "source_host_identity": self._source_host_identity,
-                    "source_root_identity": (
+                    "root_identity": (
                         list(self._source_root_identity)
                         if self._source_root_identity is not None
                         else None
