@@ -145,6 +145,7 @@ _ALLOWED_KEY_TYPES = frozenset(
         "ecdsa-sha2-nistp521",
     }
 )
+_LIVE_SNAPSHOT_AUTHORITY: Final = object()
 SYSTEM_METADATA_PATHS: Final = frozenset({"/etc/os-release", "/etc/hostname"})
 READ_ONLY_CAPABILITY_CLASSES: Final = frozenset(
     {
@@ -1265,6 +1266,7 @@ class LinuxInventorySnapshot:
     connection: RemoteExecutionResult
     inventory: RemoteExecutionResult
     records: tuple[InventoryRecord, ...]
+    _live_authority: object | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if (
@@ -1282,6 +1284,16 @@ class LinuxInventorySnapshot:
     @property
     def complete(self) -> bool:
         return self._inventory_supported
+
+    @property
+    def live_attested(self) -> bool:
+        """True only for snapshots emitted by the live transport boundary."""
+
+        return (
+            self._live_authority is _LIVE_SNAPSHOT_AUTHORITY
+            and self.connection.evidence_class is EvidenceClass.REAL_TARGET
+            and self.inventory.evidence_class is EvidenceClass.REAL_TARGET
+        )
 
     @property
     def _inventory_supported(self) -> bool:

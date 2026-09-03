@@ -16,6 +16,7 @@ from typing import BinaryIO, cast
 
 from .linux_ssh_commands import CommandRegistry, RemoteCommand
 from .linux_ssh_contracts import (
+    _LIVE_SNAPSHOT_AUTHORITY,
     DEFAULT_OPERATION_LEDGER_PATH,
     ApplicationRootVerification,
     BoundedLimits,
@@ -507,7 +508,17 @@ class LinuxSSHClient:
                 OperationStatus.PARTIAL,
                 "connection_required",
             )
-            return LinuxInventorySnapshot(self.target, connection, inventory, ())
+            return LinuxInventorySnapshot(
+                self.target,
+                connection,
+                inventory,
+                (),
+                _live_authority=(
+                    _LIVE_SNAPSHOT_AUTHORITY
+                    if self._evidence_class is EvidenceClass.REAL_TARGET
+                    else None
+                ),
+            )
 
         host = self.execute(HostInventory(f"{base}:host"))
         records = list(host.records)
@@ -551,6 +562,11 @@ class LinuxSSHClient:
             connection,
             inventory,
             normalized_records,
+            _live_authority=(
+                _LIVE_SNAPSHOT_AUTHORITY
+                if self._evidence_class is EvidenceClass.REAL_TARGET
+                else None
+            ),
         )
 
     def _execute_command(
