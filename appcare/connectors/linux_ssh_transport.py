@@ -16,6 +16,7 @@ from typing import BinaryIO, cast
 
 from .linux_ssh_commands import CommandRegistry, RemoteCommand
 from .linux_ssh_contracts import (
+    _LIVE_SNAPSHOT_ISSUER,
     DEFAULT_OPERATION_LEDGER_PATH,
     ApplicationRootVerification,
     BoundedLimits,
@@ -46,7 +47,7 @@ from .linux_ssh_contracts import (
     SqliteOperationLedger,
     StorageMetadataRead,
     WebServerMetadataRead,
-    _mint_live_snapshot_attestation,
+    _LiveSnapshotAuthority,
     parse_host_key_line,
     required_inventory_records_complete,
     validate_operation_id,
@@ -369,6 +370,7 @@ class LinuxSSHClient:
         self._ledger = operation_ledger or InMemoryOperationLedger()
         self._commands = command_registry or CommandRegistry()
         self._evidence_class = EvidenceClass.FIXTURE
+        self._live_authority: _LiveSnapshotAuthority | None = None
 
     @classmethod
     def for_live(
@@ -405,6 +407,7 @@ class LinuxSSHClient:
         ):
             raise HostKeyVerificationError("live known-hosts root is outside AppCare")
         client._evidence_class = EvidenceClass.REAL_TARGET
+        client._live_authority = _LiveSnapshotAuthority(_LIVE_SNAPSHOT_ISSUER)
         return client
 
     def execute(self, operation: LinuxOperation) -> RemoteExecutionResult:
@@ -508,14 +511,17 @@ class LinuxSSHClient:
                 OperationStatus.PARTIAL,
                 "connection_required",
             )
+            live_authority = (
+                self._live_authority.bind(self.target, connection, inventory, ())
+                if self._live_authority is not None
+                else None
+            )
             return LinuxInventorySnapshot(
                 self.target,
                 connection,
                 inventory,
                 (),
-                _live_attestation=_mint_live_snapshot_attestation(
-                    self.target, connection, inventory, ()
-                ),
+                _live_authority=live_authority,
             )
 
         host = self.execute(HostInventory(f"{base}:host"))
@@ -555,14 +561,19 @@ class LinuxSSHClient:
             "ok" if required_ok else "inventory_required_observation_failed",
             records=normalized_records,
         )
+        live_authority = (
+            self._live_authority.bind(
+                self.target, connection, inventory, normalized_records
+            )
+            if self._live_authority is not None
+            else None
+        )
         return LinuxInventorySnapshot(
             self.target,
             connection,
             inventory,
             normalized_records,
-            _live_attestation=_mint_live_snapshot_attestation(
-                self.target, connection, inventory, normalized_records
-            ),
+            _live_authority=live_authority,
         )
 
     def _execute_command(

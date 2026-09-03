@@ -7,7 +7,6 @@ import socket
 import stat
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
 
 import pytest
 
@@ -115,12 +114,7 @@ def test_mirror_capability_cannot_be_forged_without_sealed_receipt_attestation(
 
     with pytest.raises(RevisionError, match="verified sealed receipt"):
         revision.with_mirror(
-            mirror_identity=(
-                f"mirror://{revision.tenant_id}/{revision.application_id}/"
-                f"{revision.target_reference}/{revision.baseline_id}"
-            ),
-            mirror_digest="0" * 64,
-            mirror_attestation="0" * 64,
+            receipt=object(),  # type: ignore[arg-type]
         )
 
 
@@ -390,30 +384,33 @@ def test_resource_limits_reject_oversized_file_and_entry_bomb(tmp_path: Path) ->
         ).capture(root)
 
 
-def test_toctou_source_replacement_is_detected_and_staging_is_cleaned(tmp_path: Path) -> None:
+def test_toctou_source_replacement_is_detected_and_staging_is_cleaned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root = _root(tmp_path)
     revision = _revision(root)
-    real_capturer = FilesystemBaselineCapturer()
+    original_capture = FilesystemBaselineCapturer.capture
+    calls = 0
 
-    class ChangingCapturer:
-        def __init__(self) -> None:
-            self.calls = 0
+    def changing_capture(
+        capturer: FilesystemBaselineCapturer, current: Path
+    ) -> FilesystemBaseline:
+        nonlocal calls
+        baseline = original_capture(capturer, current)
+        calls += 1
+        if calls == 1:
+            replacement = current / "public" / "index.php"
+            replacement.unlink()
+            replacement.write_text("replacement\n", encoding="utf-8")
+        return baseline
 
-        def capture(self, current: Path) -> FilesystemBaseline:
-            baseline = real_capturer.capture(current)
-            self.calls += 1
-            if self.calls == 1:
-                replacement = current / "public" / "index.php"
-                replacement.unlink()
-                replacement.write_text("replacement\n", encoding="utf-8")
-            return baseline
+    monkeypatch.setattr(FilesystemBaselineCapturer, "capture", changing_capture)
 
     mirror_root = tmp_path / "mirror"
     with pytest.raises((MirrorCaptureError, BaselineCaptureError), match="changed|match|metadata"):
         ImmutableSourceMirror.for_test(mirror_root).capture(
             revision,
             root,
-            capturer=cast(FilesystemBaselineCapturer, ChangingCapturer()),
         )
     assert not tuple(mirror_root.rglob("*.staging-*"))
 

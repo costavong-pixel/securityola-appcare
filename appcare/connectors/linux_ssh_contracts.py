@@ -9,12 +9,10 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
-import hmac
 import ipaddress
 import json
 import os
 import re
-import secrets
 import sqlite3
 import stat
 import threading
@@ -147,8 +145,6 @@ _ALLOWED_KEY_TYPES = frozenset(
         "ecdsa-sha2-nistp521",
     }
 )
-_LIVE_SNAPSHOT_ATTESTATION_KEY: Final = secrets.token_bytes(32)
-_SAFE_ATTESTATION: Final = re.compile(r"^[0-9a-f]{64}$")
 SYSTEM_METADATA_PATHS: Final = frozenset({"/etc/os-release", "/etc/hostname"})
 READ_ONLY_CAPABILITY_CLASSES: Final = frozenset(
     {
@@ -1263,65 +1259,79 @@ class RemoteExecutionResult:
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _live_snapshot_attestation_payload(
+_LIVE_SNAPSHOT_ISSUER: Final = object()
+
+
+def _live_snapshot_binding(
     target: LinuxTarget,
     connection: RemoteExecutionResult,
     inventory: RemoteExecutionResult,
     records: Sequence[InventoryRecord],
-) -> dict[str, object]:
-    return {
-        "target": {
-            "tenant_id": target.tenant_id,
-            "application_id": target.application_id,
-            "environment": target.environment,
-            "host": target.host,
-            "expected_hostname": target.expected_hostname,
-            "ssh_port": target.ssh_port,
-            "expected_host_key_fingerprint": target.expected_host_key_fingerprint,
-            "credential_reference": target.credential_reference,
-            "remote_user": target.remote_user,
-            "approved_application_roots": target.approved_application_roots,
-            "approved_service_names": target.approved_service_names,
-            "approved_database_identifiers": target.approved_database_identifiers,
-            "target_reference": target.target_reference,
-        },
-        "connection_evidence_digest": connection.evidence_digest,
-        "inventory_evidence_digest": inventory.evidence_digest,
-        "record_evidence_digests": tuple(record.evidence_digest for record in records),
-    }
+) -> tuple[object, ...]:
+    return (
+        target.tenant_id,
+        target.application_id,
+        target.environment,
+        target.host,
+        target.expected_hostname,
+        target.ssh_port,
+        target.expected_host_key_fingerprint,
+        target.credential_reference,
+        target.remote_user,
+        target.approved_application_roots,
+        target.approved_service_names,
+        target.approved_database_identifiers,
+        target.target_reference,
+        connection.evidence_digest,
+        inventory.evidence_digest,
+        tuple(record.evidence_digest for record in records),
+    )
 
 
-def _mint_live_snapshot_attestation(
-    target: LinuxTarget,
-    connection: RemoteExecutionResult,
-    inventory: RemoteExecutionResult,
-    records: Sequence[InventoryRecord],
-) -> str | None:
-    if (
-        connection.evidence_class is not EvidenceClass.REAL_TARGET
-        or inventory.evidence_class is not EvidenceClass.REAL_TARGET
-    ):
-        return None
-    payload = json.dumps(
-        _live_snapshot_attestation_payload(target, connection, inventory, records),
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-    ).encode("utf-8")
-    return hmac.new(_LIVE_SNAPSHOT_ATTESTATION_KEY, payload, hashlib.sha256).hexdigest()
+class _LiveSnapshotAuthority:
+    """Unserializable proof issued by the live SSH transport boundary."""
 
+    __slots__ = ("_binding",)
 
-def _valid_live_snapshot_attestation(
-    target: LinuxTarget,
-    connection: RemoteExecutionResult,
-    inventory: RemoteExecutionResult,
-    records: Sequence[InventoryRecord],
-    attestation: object,
-) -> bool:
-    if not isinstance(attestation, str) or _SAFE_ATTESTATION.fullmatch(attestation) is None:
-        return False
-    expected = _mint_live_snapshot_attestation(target, connection, inventory, records)
-    return expected is not None and hmac.compare_digest(attestation, expected)
+    def __init__(
+        self, issuer: object, binding: tuple[object, ...] | None = None
+    ) -> None:
+        if issuer is not _LIVE_SNAPSHOT_ISSUER:
+            raise TypeError("live snapshot authority is transport-issued")
+        self._binding = binding
+
+    def bind(
+        self,
+        target: LinuxTarget,
+        connection: RemoteExecutionResult,
+        inventory: RemoteExecutionResult,
+        records: Sequence[InventoryRecord],
+    ) -> _LiveSnapshotAuthority:
+        if (
+            connection.evidence_class is not EvidenceClass.REAL_TARGET
+            or inventory.evidence_class is not EvidenceClass.REAL_TARGET
+        ):
+            return _LiveSnapshotAuthority(_LIVE_SNAPSHOT_ISSUER)
+        return _LiveSnapshotAuthority(
+            _LIVE_SNAPSHOT_ISSUER,
+            _live_snapshot_binding(target, connection, inventory, records),
+        )
+
+    def matches(
+        self,
+        target: LinuxTarget,
+        connection: RemoteExecutionResult,
+        inventory: RemoteExecutionResult,
+        records: Sequence[InventoryRecord],
+    ) -> bool:
+        if (
+            connection.evidence_class is not EvidenceClass.REAL_TARGET
+            or inventory.evidence_class is not EvidenceClass.REAL_TARGET
+        ):
+            return False
+        return self._binding == _live_snapshot_binding(
+            target, connection, inventory, records
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1330,7 +1340,7 @@ class LinuxInventorySnapshot:
     connection: RemoteExecutionResult
     inventory: RemoteExecutionResult
     records: tuple[InventoryRecord, ...]
-    _live_attestation: str | None = field(default=None, repr=False, compare=False)
+    _live_authority: object | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if (
@@ -1354,12 +1364,11 @@ class LinuxInventorySnapshot:
     def live_attested(self) -> bool:
         """True only for snapshots emitted by the live transport boundary."""
 
-        return _valid_live_snapshot_attestation(
-            self.target,
-            self.connection,
-            self.inventory,
-            self.records,
-            self._live_attestation,
+        return (
+            isinstance(self._live_authority, _LiveSnapshotAuthority)
+            and self._live_authority.matches(
+                self.target, self.connection, self.inventory, self.records
+            )
         )
 
     @property

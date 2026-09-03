@@ -24,7 +24,7 @@ from .contracts import (
     MirrorCaptureOutcome,
     MirrorPolicy,
     MirrorReceipt,
-    _mint_mirror_attestation,
+    _record_verified_mirror_receipt,
     validate_digest,
     validate_identifier,
     validate_root,
@@ -97,8 +97,6 @@ class ImmutableSourceMirror:
         self,
         revision: CapturedApplicationRevision,
         source_root: Path,
-        *,
-        capturer: FilesystemBaselineCapturer | None = None,
     ) -> MirrorCaptureOutcome:
         if revision.source_type != "direct-filesystem":
             raise MirrorCaptureError("only direct filesystem revisions use this mirror")
@@ -109,7 +107,7 @@ class ImmutableSourceMirror:
             raise MirrorCaptureError("mirror root is unavailable") from exc
         if mirror_root == source or mirror_root in source.parents or source in mirror_root.parents:
             raise MirrorCaptureError("mirror root overlaps source root")
-        active_capturer = capturer or FilesystemBaselineCapturer()
+        active_capturer = FilesystemBaselineCapturer()
         baseline = active_capturer.capture(source)
         if (
             baseline.root != revision.approved_root
@@ -252,18 +250,7 @@ class ImmutableSourceMirror:
                     self._remove_tree(final)
                     raise MirrorCaptureError("source changed while mirror was being captured")
                 return MirrorCaptureOutcome(
-                    revision=revision.with_mirror(
-                        mirror_identity=receipt.mirror_identity,
-                        mirror_digest=receipt.mirror_digest,
-                        mirror_attestation=_mint_mirror_attestation(
-                            tenant_id=receipt.tenant_id,
-                            application_id=receipt.application_id,
-                            target_reference=receipt.target_reference,
-                            baseline_id=receipt.baseline_id,
-                            mirror_identity=receipt.mirror_identity,
-                            mirror_digest=receipt.mirror_digest,
-                        ),
-                    ),
+                    revision=revision.with_mirror(receipt=receipt),
                     receipt=receipt,
                 )
             except (MirrorCaptureError, BaselineCaptureError):
@@ -310,7 +297,10 @@ class ImmutableSourceMirror:
             if marker != _SEAL_MARKER or receipt_payload != receipt.as_dict():
                 return False
             copied = self._verified_manifest_entries(final, manifest_payload, receipt)
-            return self._verified_mirror_metadata(final, manifest_payload, copied, receipt)
+            verified = self._verified_mirror_metadata(final, manifest_payload, copied, receipt)
+            if verified:
+                _record_verified_mirror_receipt(receipt)
+            return verified
         except (OSError, ValueError, TypeError, UnicodeError, MirrorCaptureError):
             return False
 

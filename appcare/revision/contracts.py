@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
 import re
-import secrets
+import weakref
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -40,7 +39,6 @@ _MAX_BASELINE_TOTAL_BYTES: Final = 16 * 1024 * 1024 * 1024
 _MAX_BASELINE_FILE_BYTES: Final = 1024 * 1024 * 1024
 _MAX_CHUNK_BYTES: Final = 8 * 1024 * 1024
 _MAX_MIRROR_BYTES: Final = 2 * 1024 * 1024 * 1024
-_SAFE_ATTESTATION: Final = re.compile(r"^[0-9a-f]{64}$")
 _SECRET_FILE_NAMES: Final = frozenset(
     {
         ".env",
@@ -66,8 +64,6 @@ _SECRET_FILE_NAMES: Final = frozenset(
     }
 )
 _SECRET_SUFFIXES: Final = (".pem", ".p12", ".pfx", ".key")
-_LIVE_CAPTURE_ATTESTATION_KEY: Final = secrets.token_bytes(32)
-_MIRROR_ATTESTATION_KEY: Final = secrets.token_bytes(32)
 
 
 class RevisionError(ValueError):
@@ -82,13 +78,43 @@ class MirrorCaptureError(RevisionError):
     """An internal source mirror cannot be sealed safely."""
 
 
-def _attestation_bytes(payload: Mapping[str, object]) -> bytes:
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
-        "utf-8"
+class _IssuedAuthority:
+    """Non-serializable token issued only after a trusted boundary succeeds."""
+
+    __slots__ = ("__weakref__",)
+
+
+_LIVE_AUTHORITIES: weakref.WeakKeyDictionary[_IssuedAuthority, tuple[str, ...]] = (
+    weakref.WeakKeyDictionary()
+)
+_VERIFIED_MIRROR_RECEIPTS: weakref.WeakKeyDictionary[object, tuple[str, ...]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _live_authority_payload(
+    *,
+    tenant_id: str,
+    application_id: str,
+    target_reference: str,
+    host_identity: str,
+    approved_root: str,
+    inventory_evidence_digest: str,
+    evidence_reference: str,
+) -> tuple[str, ...]:
+    return (
+        tenant_id,
+        application_id,
+        target_reference,
+        host_identity,
+        approved_root,
+        inventory_evidence_digest,
+        evidence_reference,
     )
 
 
-def _live_capture_payload(
+def _valid_live_authority(
+    authority: object,
     *,
     tenant_id: str,
     application_id: str,
@@ -97,59 +123,10 @@ def _live_capture_payload(
     approved_root: str,
     inventory_evidence_digest: str,
     evidence_reference: str,
-) -> dict[str, object]:
-    return {
-        "tenant_id": tenant_id,
-        "application_id": application_id,
-        "target_reference": target_reference,
-        "host_identity": host_identity,
-        "approved_root": approved_root,
-        "inventory_evidence_digest": inventory_evidence_digest,
-        "evidence_reference": evidence_reference,
-    }
-
-
-def _mint_live_capture_attestation(
-    *,
-    tenant_id: str,
-    application_id: str,
-    target_reference: str,
-    host_identity: str,
-    approved_root: str,
-    inventory_evidence_digest: str,
-    evidence_reference: str,
-) -> str:
-    return hmac.new(
-        _LIVE_CAPTURE_ATTESTATION_KEY,
-        _attestation_bytes(
-            _live_capture_payload(
-                tenant_id=tenant_id,
-                application_id=application_id,
-                target_reference=target_reference,
-                host_identity=host_identity,
-                approved_root=approved_root,
-                inventory_evidence_digest=inventory_evidence_digest,
-                evidence_reference=evidence_reference,
-            )
-        ),
-        hashlib.sha256,
-    ).hexdigest()
-
-
-def _valid_live_capture_attestation(
-    *,
-    tenant_id: str,
-    application_id: str,
-    target_reference: str,
-    host_identity: str,
-    approved_root: str,
-    inventory_evidence_digest: str,
-    evidence_reference: str,
-    attestation: object,
 ) -> bool:
-    if not isinstance(attestation, str) or _SAFE_ATTESTATION.fullmatch(attestation) is None:
+    if not isinstance(authority, _IssuedAuthority):
         return False
-    expected = _mint_live_capture_attestation(
+    return _LIVE_AUTHORITIES.get(authority) == _live_authority_payload(
         tenant_id=tenant_id,
         application_id=application_id,
         target_reference=target_reference,
@@ -158,10 +135,10 @@ def _valid_live_capture_attestation(
         inventory_evidence_digest=inventory_evidence_digest,
         evidence_reference=evidence_reference,
     )
-    return hmac.compare_digest(attestation, expected)
 
 
-def _mint_live_capture_revision_attestation(
+def _valid_live_revision_authority(
+    authority: object,
     *,
     tenant_id: str,
     application_id: str,
@@ -169,112 +146,62 @@ def _mint_live_capture_revision_attestation(
     host_identity: str,
     approved_root: str,
     evidence_reference: str,
-) -> str:
-    return hmac.new(
-        _LIVE_CAPTURE_ATTESTATION_KEY,
-        _attestation_bytes(
-            {
-                "kind": "captured-application-revision",
-                "tenant_id": tenant_id,
-                "application_id": application_id,
-                "target_reference": target_reference,
-                "host_identity": host_identity,
-                "approved_root": approved_root,
-                "evidence_reference": evidence_reference,
-            }
-        ),
-        hashlib.sha256,
-    ).hexdigest()
-
-
-def _valid_live_capture_revision_attestation(
-    *,
-    tenant_id: str,
-    application_id: str,
-    target_reference: str,
-    host_identity: str,
-    approved_root: str,
-    evidence_reference: str,
-    attestation: object,
 ) -> bool:
-    if not isinstance(attestation, str) or _SAFE_ATTESTATION.fullmatch(attestation) is None:
+    if not isinstance(authority, _IssuedAuthority):
         return False
-    expected = _mint_live_capture_revision_attestation(
-        tenant_id=tenant_id,
-        application_id=application_id,
-        target_reference=target_reference,
-        host_identity=host_identity,
-        approved_root=approved_root,
-        evidence_reference=evidence_reference,
-    )
-    return hmac.compare_digest(attestation, expected)
+    payload = _LIVE_AUTHORITIES.get(authority)
+    return payload is not None and payload[:5] == (
+        tenant_id,
+        application_id,
+        target_reference,
+        host_identity,
+        approved_root,
+    ) and payload[6] == evidence_reference
 
 
-def _mirror_attestation_payload(
+def _valid_verified_mirror_receipt(
+    receipt: object,
     *,
     tenant_id: str,
     application_id: str,
     target_reference: str,
     baseline_id: str,
     mirror_identity: str,
+    mirror_path: str,
     mirror_digest: str,
-) -> dict[str, object]:
-    return {
-        "tenant_id": tenant_id,
-        "application_id": application_id,
-        "target_reference": target_reference,
-        "baseline_id": baseline_id,
-        "mirror_identity": mirror_identity,
-        "mirror_digest": mirror_digest,
-    }
-
-
-def _mint_mirror_attestation(
-    *,
-    tenant_id: str,
-    application_id: str,
-    target_reference: str,
-    baseline_id: str,
-    mirror_identity: str,
-    mirror_digest: str,
-) -> str:
-    return hmac.new(
-        _MIRROR_ATTESTATION_KEY,
-        _attestation_bytes(
-            _mirror_attestation_payload(
-                tenant_id=tenant_id,
-                application_id=application_id,
-                target_reference=target_reference,
-                baseline_id=baseline_id,
-                mirror_identity=mirror_identity,
-                mirror_digest=mirror_digest,
-            )
-        ),
-        hashlib.sha256,
-    ).hexdigest()
-
-
-def _valid_mirror_attestation(
-    *,
-    tenant_id: str,
-    application_id: str,
-    target_reference: str,
-    baseline_id: str,
-    mirror_identity: str,
-    mirror_digest: str,
-    attestation: object,
 ) -> bool:
-    if not isinstance(attestation, str) or _SAFE_ATTESTATION.fullmatch(attestation) is None:
+    """Accept mirror evidence only after durable receipt readback succeeded."""
+
+    if not isinstance(receipt, MirrorReceipt):
         return False
-    expected = _mint_mirror_attestation(
-        tenant_id=tenant_id,
-        application_id=application_id,
-        target_reference=target_reference,
-        baseline_id=baseline_id,
-        mirror_identity=mirror_identity,
-        mirror_digest=mirror_digest,
+    try:
+        payload = _VERIFIED_MIRROR_RECEIPTS.get(receipt)
+    except TypeError:
+        return False
+    return payload == (
+        tenant_id,
+        application_id,
+        target_reference,
+        baseline_id,
+        mirror_identity,
+        mirror_path,
+        mirror_digest,
     )
-    return hmac.compare_digest(attestation, expected)
+
+
+def _record_verified_mirror_receipt(receipt: object) -> None:
+    """Record only receipts that the mirror verifier read back successfully."""
+
+    if isinstance(receipt, MirrorReceipt):
+        _VERIFIED_MIRROR_RECEIPTS[receipt] = (
+            receipt.tenant_id,
+            receipt.application_id,
+            receipt.target_reference,
+            receipt.baseline_id,
+            receipt.mirror_identity,
+            receipt.mirror_path,
+            receipt.mirror_digest,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -294,7 +221,7 @@ class LiveCaptureAuthorization:
     approved_root: str
     inventory_evidence_digest: str
     evidence_reference: str
-    _authority: str | None = field(default=None, repr=False, compare=False)
+    _authority: object | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -324,7 +251,7 @@ class LiveCaptureAuthorization:
             "evidence_reference",
             validate_reference(self.evidence_reference, field_name="evidence reference"),
         )
-        if not _valid_live_capture_attestation(
+        if not _valid_live_authority(
             tenant_id=self.tenant_id,
             application_id=self.application_id,
             target_reference=self.target_reference,
@@ -332,7 +259,7 @@ class LiveCaptureAuthorization:
             approved_root=self.approved_root,
             inventory_evidence_digest=self.inventory_evidence_digest,
             evidence_reference=self.evidence_reference,
-            attestation=self._authority,
+            authority=self._authority,
         ):
             raise RevisionError("live capture authorization must come from live transport")
 
@@ -359,6 +286,16 @@ class LiveCaptureAuthorization:
         reference = evidence_reference or (
             f"live://{target.target_reference}/inventory/{snapshot.inventory.evidence_digest}"
         )
+        authority = _IssuedAuthority()
+        _LIVE_AUTHORITIES[authority] = _live_authority_payload(
+            tenant_id=target.tenant_id,
+            application_id=target.application_id,
+            target_reference=target.target_reference,
+            host_identity=target.expected_hostname,
+            approved_root=normalized_root,
+            inventory_evidence_digest=snapshot.inventory.evidence_digest,
+            evidence_reference=reference,
+        )
         return cls(
             tenant_id=target.tenant_id,
             application_id=target.application_id,
@@ -367,15 +304,7 @@ class LiveCaptureAuthorization:
             approved_root=normalized_root,
             inventory_evidence_digest=snapshot.inventory.evidence_digest,
             evidence_reference=reference,
-            _authority=_mint_live_capture_attestation(
-                tenant_id=target.tenant_id,
-                application_id=target.application_id,
-                target_reference=target.target_reference,
-                host_identity=target.expected_hostname,
-                approved_root=normalized_root,
-                inventory_evidence_digest=snapshot.inventory.evidence_digest,
-                evidence_reference=reference,
-            ),
+            _authority=authority,
         )
 
     def is_valid_for(
@@ -388,12 +317,8 @@ class LiveCaptureAuthorization:
         approved_root: str,
     ) -> bool:
         return (
-            self.tenant_id == tenant_id
-            and self.application_id == application_id
-            and self.target_reference == target_reference
-            and self.host_identity == host_identity
-            and self.approved_root == approved_root
-            and _valid_live_capture_attestation(
+            _valid_live_authority(
+                self._authority,
                 tenant_id=self.tenant_id,
                 application_id=self.application_id,
                 target_reference=self.target_reference,
@@ -401,8 +326,12 @@ class LiveCaptureAuthorization:
                 approved_root=self.approved_root,
                 inventory_evidence_digest=self.inventory_evidence_digest,
                 evidence_reference=self.evidence_reference,
-                attestation=self._authority,
             )
+            and self.tenant_id == tenant_id
+            and self.application_id == application_id
+            and self.target_reference == target_reference
+            and self.host_identity == host_identity
+            and self.approved_root == approved_root
         )
 
 
@@ -779,11 +708,11 @@ class CapturedApplicationRevision:
     source_revision: str | None = None
     mirror_identity: str | None = None
     mirror_digest: str | None = None
+    _mirror_receipt: object | None = field(default=None, repr=False, compare=False)
     evidence_class: EvidenceClass = EvidenceClass.FIXTURE
     evidence_reference: str = "revision://fixture/baseline"
     snapshot_semantics: str = "observed-tree-merkle-race-checked"
-    _live_authority: str | None = field(default=None, repr=False, compare=False)
-    _mirror_attestation: str | None = field(default=None, repr=False, compare=False)
+    _live_authority: object | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         for value, name in (
@@ -881,14 +810,14 @@ class CapturedApplicationRevision:
             validate_reference(self.evidence_reference, field_name="evidence reference"),
         )
         if self.evidence_class is EvidenceClass.REAL_TARGET:
-            if not _valid_live_capture_revision_attestation(
+            if not _valid_live_revision_authority(
                 tenant_id=self.tenant_id,
                 application_id=self.application_id,
                 target_reference=self.target_reference,
                 host_identity=self.host_identity,
                 approved_root=self.approved_root,
                 evidence_reference=self.evidence_reference,
-                attestation=self._live_authority,
+                authority=self._live_authority,
             ):
                 raise RevisionError("real-target evidence requires live capture authorization")
         elif self._live_authority is not None:
@@ -908,17 +837,20 @@ class CapturedApplicationRevision:
         if mirror_identity is None or mirror_digest is None:
             if mirror_identity is not None or mirror_digest is not None:
                 raise RevisionError("mirror identity and digest must be provided together")
-            if self._mirror_attestation is not None:
-                raise RevisionError("mirror attestation requires a mirror identity")
+            if self._mirror_receipt is not None:
+                raise RevisionError("mirror receipt requires a mirror identity")
         else:
-            if not _valid_mirror_attestation(
+            if not _valid_verified_mirror_receipt(
+                self._mirror_receipt,
                 tenant_id=self.tenant_id,
                 application_id=self.application_id,
                 target_reference=self.target_reference,
                 baseline_id=self.baseline_id,
                 mirror_identity=mirror_identity,
+                mirror_path=self._mirror_receipt.mirror_path
+                if isinstance(self._mirror_receipt, MirrorReceipt)
+                else "",
                 mirror_digest=mirror_digest,
-                attestation=self._mirror_attestation,
             ):
                 raise RevisionError("mirror evidence requires a verified sealed receipt")
 
@@ -995,18 +927,6 @@ class CapturedApplicationRevision:
                 digest_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
             ).encode("utf-8")
         ).hexdigest()
-        live_attestation = (
-            _mint_live_capture_revision_attestation(
-                tenant_id=tenant,
-                application_id=application,
-                target_reference=target,
-                host_identity=normalized_host,
-                approved_root=baseline.root,
-                evidence_reference=normalized_ref,
-            )
-            if live_authorization is not None
-            else None
-        )
         return cls(
             tenant_id=tenant,
             application_id=application,
@@ -1025,7 +945,9 @@ class CapturedApplicationRevision:
             evidence_class=final_evidence_class,
             evidence_reference=normalized_ref,
             snapshot_semantics=semantics,
-            _live_authority=live_attestation,
+            _live_authority=(
+                live_authorization._authority if live_authorization is not None else None
+            ),
         )
 
     def _baseline_payload(self) -> dict[str, object]:
@@ -1059,6 +981,11 @@ class CapturedApplicationRevision:
             "baseline_digest": self.baseline_digest,
             "mirror_identity": self.mirror_identity,
             "mirror_digest": self.mirror_digest,
+            "mirror_path": (
+                self._mirror_receipt.mirror_path
+                if isinstance(self._mirror_receipt, MirrorReceipt)
+                else None
+            ),
             "evidence_class": self.evidence_class.value,
             "evidence_reference": self.evidence_reference,
         }
@@ -1087,14 +1014,19 @@ class CapturedApplicationRevision:
         if (
             self.mirror_identity is None
             or self.mirror_digest is None
-            or not _valid_mirror_attestation(
+            or not _valid_verified_mirror_receipt(
+                self._mirror_receipt,
                 tenant_id=self.tenant_id,
                 application_id=self.application_id,
                 target_reference=self.target_reference,
                 baseline_id=self.baseline_id,
                 mirror_identity=self.mirror_identity,
+                mirror_path=(
+                    self._mirror_receipt.mirror_path
+                    if isinstance(self._mirror_receipt, MirrorReceipt)
+                    else ""
+                ),
                 mirror_digest=self.mirror_digest,
-                attestation=self._mirror_attestation,
             )
         ):
             status = CapabilityStatus.UNSUPPORTED
@@ -1118,9 +1050,7 @@ class CapturedApplicationRevision:
     def with_mirror(
         self,
         *,
-        mirror_identity: str,
-        mirror_digest: str,
-        mirror_attestation: str,
+        receipt: MirrorReceipt,
     ) -> CapturedApplicationRevision:
         return type(self)(
             tenant_id=self.tenant_id,
@@ -1137,17 +1067,17 @@ class CapturedApplicationRevision:
             runtime_metadata=self.runtime_metadata,
             database_metadata=self.database_metadata,
             source_revision=self.source_revision,
-            mirror_identity=mirror_identity,
-            mirror_digest=mirror_digest,
+            mirror_identity=receipt.mirror_identity,
+            mirror_digest=receipt.mirror_digest,
+            _mirror_receipt=receipt,
             evidence_class=self.evidence_class,
             evidence_reference=self.evidence_reference,
             snapshot_semantics=self.snapshot_semantics,
             _live_authority=self._live_authority,
-            _mirror_attestation=mirror_attestation,
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True)
 class MirrorReceipt:
     tenant_id: str
     application_id: str
@@ -1245,6 +1175,8 @@ class MirrorCaptureOutcome:
             or self.revision.application_id != self.receipt.application_id
             or self.revision.target_reference != self.receipt.target_reference
             or self.revision.baseline_id != self.receipt.baseline_id
+            or not isinstance(self.revision._mirror_receipt, MirrorReceipt)
+            or self.revision._mirror_receipt is not self.receipt
         ):
             raise MirrorCaptureError("mirror outcome is not scope-bound")
 
