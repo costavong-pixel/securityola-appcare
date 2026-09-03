@@ -72,7 +72,7 @@ Use direct DeepSeek when:
 
 DeepSeek does not approve itself, merge, authorize production, alter architecture independently, or promote readiness.
 
-The existing `scripts/deepseek-worker.sh` currently routes through `opencode/deepseek-v4-flash-free`. It is bounded, but it is not the owner-approved direct DeepSeek API path. Do not claim direct-runtime integration until the launcher/provider is safely adapted or replaced and independently qualified.
+The existing `scripts/deepseek-worker.sh` currently routes through `opencode/deepseek-v4-flash-free`. It is bounded, but it is not the owner-approved direct DeepSeek API path. The separate `scripts/direct_deepseek_worker.py` component is now `COMPONENT_IMPLEMENTED` with a fixed endpoint, isolated service policy, and deterministic local gates; it is not runtime-qualified or live-verified until the owner completes the server-side credential/model setup and the required host/API evidence is collected.
 
 ### GPT-5.6 Terra
 
@@ -235,12 +235,13 @@ Spec 016 scanning may not displace the credential, baseline, backup, and recover
 
 ## Direct DeepSeek runtime qualification
 
-Before `DIRECT_DEEPSEEK_LAUNCHER` can advance beyond `DOCUMENTED`, AppCare must prove:
+Before `DIRECT_DEEPSEEK_LAUNCHER` can advance beyond `COMPONENT_IMPLEMENTED`, AppCare must prove:
 
 - direct DeepSeek API invocation;
 - no OpenAI API call;
 - no Spark quota consumption;
 - server-side API-key custody;
+- separate API-request and no-network apply/test identities;
 - sealed task packet;
 - isolated AppCare worktree on Prompt Ola VPS;
 - one-writer enforcement;

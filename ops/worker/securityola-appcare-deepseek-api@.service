@@ -1,0 +1,33 @@
+[Unit]
+Description=SecurityOla AppCare direct DeepSeek API request (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+User=appcare-deepseek-api
+Group=appcare-deepseek-api
+SupplementaryGroups=appcare-deepseek-request appcare-deepseek-model
+WorkingDirectory=/opt/securityola/appcare-deepseek-worker/repository
+Environment=PATH=/opt/securityola/appcare-deepseek-worker/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/opt/securityola/appcare-deepseek-worker/venv/bin/python -I -B /opt/securityola/appcare-deepseek-worker/repository/scripts/direct_deepseek_worker.py request --task-file /opt/securityola/appcare-deepseek-worker/repository/.codex/tasks/%i.md --run-id %i
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadOnlyPaths=/etc/securityola/appcare-deepseek-worker
+ReadWritePaths=/var/lib/securityola/appcare-deepseek-worker
+UMask=0007
+TimeoutStartSec=5min
+
+[Install]
+WantedBy=multi-user.target
