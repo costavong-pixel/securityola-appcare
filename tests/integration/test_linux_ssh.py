@@ -389,7 +389,7 @@ def test_approved_root_symlink_escape_is_rejected(tmp_path: Path) -> None:
             stdout_limit: int,
             stderr_limit: int,
         ) -> ProcessResult:
-            if argv[0] == "realpath":
+            if len(argv) >= 4 and argv[-4] == "realpath" and argv[-3] == "-e" and argv[-2] == "--":
                 self.calls.append(argv)
                 return ProcessResult(0, b"/outside/app\n", b"")
             return super().run(
