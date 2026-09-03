@@ -176,17 +176,31 @@ Current maturity:
 
 ```text
 DIRECT_DEEPSEEK_ROUTING_POLICY=DOCUMENTED
-DIRECT_DEEPSEEK_LAUNCHER=NOT_RUNTIME_INTEGRATED
+DIRECT_DEEPSEEK_LAUNCHER=COMPONENT_IMPLEMENTED
 DIRECT_DEEPSEEK_LIVE_VERIFICATION=NO
 ```
 
-Before claiming the direct fallback is runtime-integrated, AppCare must build or safely adapt an audited launcher/provider configuration that:
+The repository-owned direct launcher is:
+
+```text
+scripts/direct_deepseek_worker.py
+ops/worker/securityola-appcare-deepseek-api@.service
+ops/worker/securityola-appcare-deepseek-worker@.service
+```
+
+The API and apply services are separate identities. The API service may reach
+only the fixed DeepSeek endpoint. The apply service has no API-key access and
+no network access while model output is applied and tested. The launcher is a
+bounded component, not live qualification. Before claiming
+the direct fallback is runtime-integrated, AppCare must prove that this
+launcher:
 
 - calls the DeepSeek API directly;
 - reads the API credential only from protected server-side custody;
 - makes no OpenAI API call;
 - consumes no Spark quota;
 - preserves the current sealed-task, isolated-worktree, scope-verification, secret-scan, timeout, and cleanup controls;
+- keeps model-controlled code out of the API-key process and offline during apply/tests;
 - passes deterministic and adversarial tests;
 - passes Luna, Terra, Codex Security, and exact-head CI review.
 

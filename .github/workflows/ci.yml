@@ -66,6 +66,9 @@ jobs:
       - name: Worker restriction tests
         run: python scripts/verify_worker_policy.py
 
+      - name: Direct worker restriction tests
+        run: python scripts/verify_direct_worker_policy.py
+
       - name: Dependency audit
         run: pip-audit --strict --requirement requirements-dev.lock
 
