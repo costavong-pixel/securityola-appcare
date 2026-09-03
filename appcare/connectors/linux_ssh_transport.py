@@ -16,7 +16,6 @@ from typing import BinaryIO, cast
 
 from .linux_ssh_commands import CommandRegistry, RemoteCommand
 from .linux_ssh_contracts import (
-    _LIVE_SNAPSHOT_AUTHORITY,
     DEFAULT_OPERATION_LEDGER_PATH,
     ApplicationRootVerification,
     BoundedLimits,
@@ -47,6 +46,7 @@ from .linux_ssh_contracts import (
     SqliteOperationLedger,
     StorageMetadataRead,
     WebServerMetadataRead,
+    _mint_live_snapshot_attestation,
     parse_host_key_line,
     required_inventory_records_complete,
     validate_operation_id,
@@ -513,10 +513,8 @@ class LinuxSSHClient:
                 connection,
                 inventory,
                 (),
-                _live_authority=(
-                    _LIVE_SNAPSHOT_AUTHORITY
-                    if self._evidence_class is EvidenceClass.REAL_TARGET
-                    else None
+                _live_attestation=_mint_live_snapshot_attestation(
+                    self.target, connection, inventory, ()
                 ),
             )
 
@@ -562,10 +560,8 @@ class LinuxSSHClient:
             connection,
             inventory,
             normalized_records,
-            _live_authority=(
-                _LIVE_SNAPSHOT_AUTHORITY
-                if self._evidence_class is EvidenceClass.REAL_TARGET
-                else None
+            _live_attestation=_mint_live_snapshot_attestation(
+                self.target, connection, inventory, normalized_records
             ),
         )
 

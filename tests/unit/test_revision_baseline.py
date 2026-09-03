@@ -84,7 +84,7 @@ def test_secret_paths_are_metadata_only_and_never_hashed(tmp_path: Path) -> None
     assert "must-not-be-read" not in str(revision.as_dict())
 
 
-def test_source_type_detection_and_git_revision_are_local_only(tmp_path: Path) -> None:
+def test_unverified_git_marker_is_treated_as_brownfield_filesystem(tmp_path: Path) -> None:
     root = _root(tmp_path)
     (root / ".git").mkdir()
     (root / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="ascii")
@@ -93,8 +93,8 @@ def test_source_type_detection_and_git_revision_are_local_only(tmp_path: Path) -
     git_revision = "a" * 40
     (root / ".git" / "refs" / "heads" / "main").write_text(git_revision + "\n", encoding="ascii")
 
-    assert detect_source_type(root) == "git"
-    assert read_git_revision(root) == git_revision
+    assert detect_source_type(root) == "direct-filesystem"
+    assert read_git_revision(root) is None
     captured = FilesystemBaselineCapturer().capture_revision(
         root,
         tenant_id="tenant-a",
@@ -103,9 +103,25 @@ def test_source_type_detection_and_git_revision_are_local_only(tmp_path: Path) -
         host_identity="slab-prompt-ola",
         captured_at=CAPTURED_AT,
     )
-    assert captured.source_type == "git"
-    assert captured.source_revision == git_revision
-    assert captured.snapshot_semantics == "git-bound"
+    assert captured.source_type == "direct-filesystem"
+    assert captured.source_revision is None
+    assert captured.snapshot_semantics == "observed-tree-merkle-race-checked"
+
+
+def test_mirror_capability_cannot_be_forged_without_sealed_receipt_attestation(
+    tmp_path: Path,
+) -> None:
+    revision = _revision(_root(tmp_path))
+
+    with pytest.raises(RevisionError, match="verified sealed receipt"):
+        revision.with_mirror(
+            mirror_identity=(
+                f"mirror://{revision.tenant_id}/{revision.application_id}/"
+                f"{revision.target_reference}/{revision.baseline_id}"
+            ),
+            mirror_digest="0" * 64,
+            mirror_attestation="0" * 64,
+        )
 
 
 def test_fixture_evidence_cannot_promote_real_target() -> None:
@@ -283,6 +299,12 @@ def test_secret_bearing_source_content_is_not_copied(tmp_path: Path) -> None:
     (root / "public" / "environment.ini").write_text(
         "DATABASE_URL=mysql://suspicious\n", encoding="utf-8"
     )
+    (root / "public" / "constants.php").write_text(
+        "<?php define('DB_PASSWORD', 'suspicious');\n", encoding="utf-8"
+    )
+    (root / "public" / "config-map.php").write_text(
+        "<?php return ['DB_PASSWORD' => 'suspicious'];\n", encoding="utf-8"
+    )
     revision = _revision(root)
     outcome = ImmutableSourceMirror.for_test(tmp_path / "mirror").capture(revision, root)
 
@@ -291,7 +313,9 @@ def test_secret_bearing_source_content_is_not_copied(tmp_path: Path) -> None:
     assert not (final / "public" / "helpers.php").exists()
     assert not (final / "public" / "settings.yaml").exists()
     assert not (final / "public" / "environment.ini").exists()
-    assert outcome.receipt.excluded_file_count >= 5
+    assert not (final / "public" / "constants.php").exists()
+    assert not (final / "public" / "config-map.php").exists()
+    assert outcome.receipt.excluded_file_count >= 7
 
 
 def test_symlink_escape_is_rejected_without_following_it(tmp_path: Path) -> None:

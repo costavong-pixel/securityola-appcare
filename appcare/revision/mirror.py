@@ -24,6 +24,7 @@ from .contracts import (
     MirrorCaptureOutcome,
     MirrorPolicy,
     MirrorReceipt,
+    _mint_mirror_attestation,
     validate_digest,
     validate_identifier,
     validate_root,
@@ -51,6 +52,18 @@ _SECRET_ASSIGNMENT = re.compile(
     rb"private[_-]?key|access[_-]?key|aws[_-]?access[_-]?key[_-]?id|"
     rb"aws[_-]?secret[_-]?access[_-]?key|database[_-]?url|connection[_-]?string|dsn)"
     rb"\$?(?:\s*[\"'])?\s*[:=]\s*(?:[\"'])?"
+)
+_SECRET_NAME = (
+    rb"(?:db[_-]?)?(?:password|passphrase|secret|token|api[_-]?key|"
+    rb"client[_-]?secret|private[_-]?key|access[_-]?key|auth[_-]?key|"
+    rb"security[_-]?key|encryption[_-]?key|signing[_-]?key|cookie[_-]?key|"
+    rb"aws[_-]?access[_-]?key[_-]?id|aws[_-]?secret[_-]?access[_-]?key|"
+    rb"database[_-]?url|connection[_-]?string|dsn)"
+)
+_PHP_SECRET_DEFINE = re.compile(rb"(?ix)\bdefine\s*\(\s*[\"']" + _SECRET_NAME + rb"[\"']\s*,")
+_SECRET_CONFIG_KEY = re.compile(
+    rb"(?ix)(?:[\"']" + _SECRET_NAME + rb"[\"']|\b" + _SECRET_NAME + rb")"
+    rb"\s*(?:=>|[:=])"
 )
 _SECRET_SCAN_CARRY = 8 * 1024
 _RESERVED_MIRROR_NAMES = frozenset({"manifest.json", "receipt.json", "SEALED"})
@@ -242,6 +255,14 @@ class ImmutableSourceMirror:
                     revision=revision.with_mirror(
                         mirror_identity=receipt.mirror_identity,
                         mirror_digest=receipt.mirror_digest,
+                        mirror_attestation=_mint_mirror_attestation(
+                            tenant_id=receipt.tenant_id,
+                            application_id=receipt.application_id,
+                            target_reference=receipt.target_reference,
+                            baseline_id=receipt.baseline_id,
+                            mirror_identity=receipt.mirror_identity,
+                            mirror_digest=receipt.mirror_digest,
+                        ),
                     ),
                     receipt=receipt,
                 )
@@ -844,8 +865,9 @@ def _source_stat_tuple(metadata: os.stat_result) -> tuple[int, int, int, int, in
 
 def _looks_secret(window: bytes) -> bool:
     lowered = window.lower()
-    return any(marker in lowered for marker in _SECRET_CONTENT_MARKERS) or bool(
-        _SECRET_ASSIGNMENT.search(window)
+    return any(marker in lowered for marker in _SECRET_CONTENT_MARKERS) or any(
+        pattern.search(window) is not None
+        for pattern in (_SECRET_ASSIGNMENT, _PHP_SECRET_DEFINE, _SECRET_CONFIG_KEY)
     )
 
 

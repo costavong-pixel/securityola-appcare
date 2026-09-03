@@ -25,91 +25,27 @@ from .contracts import (
 _O_NOFOLLOW: Final[int] = getattr(os, "O_NOFOLLOW", 0)
 _O_DIRECTORY: Final[int] = getattr(os, "O_DIRECTORY", 0)
 _O_BINARY: Final[int] = getattr(os, "O_BINARY", 0)
-_MAX_GIT_HEAD_BYTES: Final[int] = 4096
-_GIT_SHA_HEX: Final = frozenset("0123456789abcdef")
 
 
 def detect_source_type(root: Path) -> SourceType:
-    """Detect Git only from a local marker; never execute hooks or contact a remote."""
+    """Use direct-filesystem until a local Git tree can be bound authoritatively.
 
-    marker = root / ".git"
-    try:
-        metadata = marker.lstat()
-    except (FileNotFoundError, OSError):
-        return "direct-filesystem"
-    if stat.S_ISLNK(metadata.st_mode):
-        return "direct-filesystem"
-    return (
-        "git"
-        if stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode)
-        else "direct-filesystem"
-    )
+    A ``.git`` marker alone is not proof that the captured bytes belong to the
+    claimed commit.  The first beta profile therefore treats Git-looking
+    brownfield roots as direct filesystems rather than issuing forgeable
+    Git-bound evidence.  Git support can be enabled only with verified object,
+    worktree, and manifest binding.
+    """
+
+    del root
+    return "direct-filesystem"
 
 
 def read_git_revision(root: Path) -> str | None:
-    """Read a Git HEAD/ref without invoking Git or following an external worktree."""
+    """Never return a revision without an authoritative tree-binding adapter."""
 
-    if detect_source_type(root) != "git":
-        return None
-    marker = root / ".git"
-    try:
-        marker_metadata = marker.lstat()
-        if stat.S_ISDIR(marker_metadata.st_mode):
-            git_root = marker
-        elif stat.S_ISREG(marker_metadata.st_mode):
-            raw = marker.read_bytes()
-            if len(raw) > _MAX_GIT_HEAD_BYTES:
-                return None
-            line = raw.decode("utf-8").strip()
-            if not line.startswith("gitdir: "):
-                return None
-            candidate = Path(line[8:])
-            if not candidate.is_absolute():
-                candidate = marker.parent / candidate
-            git_root = candidate.resolve(strict=True)
-            if root.resolve(strict=True) not in git_root.parents:
-                return None
-        else:
-            return None
-        head = git_root / "HEAD"
-        head_raw = head.read_bytes()
-        if len(head_raw) > _MAX_GIT_HEAD_BYTES:
-            return None
-        head_value = head_raw.decode("ascii").strip()
-        if _is_git_revision(head_value):
-            return head_value
-        if not head_value.startswith("ref: refs/"):
-            return None
-        reference = head_value[5:]
-        ref_path = git_root / reference
-        if ref_path.resolve(strict=False).parent != ref_path.parent.resolve(strict=False):
-            return None
-        try:
-            ref_raw = ref_path.read_bytes()
-            revision = ref_raw.decode("ascii").strip()
-        except (FileNotFoundError, OSError, UnicodeDecodeError):
-            revision = ""
-        if _is_git_revision(revision):
-            return revision
-        packed = git_root / "packed-refs"
-        try:
-            packed_raw = packed.read_bytes()
-            if len(packed_raw) > 4 * 1024 * 1024:
-                return None
-            for line in packed_raw.decode("ascii").splitlines():
-                if line and not line.startswith("#") and not line.startswith("^"):
-                    candidate_revision, _, candidate_ref = line.partition(" ")
-                    if candidate_ref == reference and _is_git_revision(candidate_revision):
-                        return candidate_revision
-        except (FileNotFoundError, OSError, UnicodeDecodeError):
-            return None
-    except (FileNotFoundError, OSError, RuntimeError, UnicodeDecodeError):
-        return None
+    del root
     return None
-
-
-def _is_git_revision(value: str) -> bool:
-    return 40 <= len(value) <= 64 and set(value.casefold()) <= _GIT_SHA_HEX
 
 
 class FilesystemBaselineCapturer:
@@ -167,11 +103,6 @@ class FilesystemBaselineCapturer:
         live_authorization: LiveCaptureAuthorization | None = None,
     ) -> CapturedApplicationRevision:
         baseline = self.capture(root)
-        source_revision = (
-            read_git_revision(Path(baseline.root)) if baseline.source_type == "git" else None
-        )
-        if baseline.source_type == "git" and source_revision is None:
-            raise BaselineCaptureError("Git source revision is unavailable")
         return CapturedApplicationRevision.from_filesystem_baseline(
             baseline,
             tenant_id=tenant_id,
@@ -181,7 +112,6 @@ class FilesystemBaselineCapturer:
             captured_at=captured_at,
             runtime_metadata=runtime_metadata,
             database_metadata=database_metadata,
-            source_revision=source_revision,
             evidence_class=evidence_class,
             evidence_reference=evidence_reference,
             baseline_id=baseline_id,

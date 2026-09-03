@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import re
+import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -38,6 +40,7 @@ _MAX_BASELINE_TOTAL_BYTES: Final = 16 * 1024 * 1024 * 1024
 _MAX_BASELINE_FILE_BYTES: Final = 1024 * 1024 * 1024
 _MAX_CHUNK_BYTES: Final = 8 * 1024 * 1024
 _MAX_MIRROR_BYTES: Final = 2 * 1024 * 1024 * 1024
+_SAFE_ATTESTATION: Final = re.compile(r"^[0-9a-f]{64}$")
 _SECRET_FILE_NAMES: Final = frozenset(
     {
         ".env",
@@ -63,7 +66,8 @@ _SECRET_FILE_NAMES: Final = frozenset(
     }
 )
 _SECRET_SUFFIXES: Final = (".pem", ".p12", ".pfx", ".key")
-_LIVE_CAPTURE_AUTHORITY: Final = object()
+_LIVE_CAPTURE_ATTESTATION_KEY: Final = secrets.token_bytes(32)
+_MIRROR_ATTESTATION_KEY: Final = secrets.token_bytes(32)
 
 
 class RevisionError(ValueError):
@@ -76,6 +80,201 @@ class BaselineCaptureError(RevisionError):
 
 class MirrorCaptureError(RevisionError):
     """An internal source mirror cannot be sealed safely."""
+
+
+def _attestation_bytes(payload: Mapping[str, object]) -> bytes:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+        "utf-8"
+    )
+
+
+def _live_capture_payload(
+    *,
+    tenant_id: str,
+    application_id: str,
+    target_reference: str,
+    host_identity: str,
+    approved_root: str,
+    inventory_evidence_digest: str,
+    evidence_reference: str,
+) -> dict[str, object]:
+    return {
+        "tenant_id": tenant_id,
+        "application_id": application_id,
+        "target_reference": target_reference,
+        "host_identity": host_identity,
+        "approved_root": approved_root,
+        "inventory_evidence_digest": inventory_evidence_digest,
+        "evidence_reference": evidence_reference,
+    }
+
+
+def _mint_live_capture_attestation(
+    *,
+    tenant_id: str,
+    application_id: str,
+    target_reference: str,
+    host_identity: str,
+    approved_root: str,
+    inventory_evidence_digest: str,
+    evidence_reference: str,
+) -> str:
+    return hmac.new(
+        _LIVE_CAPTURE_ATTESTATION_KEY,
+        _attestation_bytes(
+            _live_capture_payload(
+                tenant_id=tenant_id,
+                application_id=application_id,
+                target_reference=target_reference,
+                host_identity=host_identity,
+                approved_root=approved_root,
+                inventory_evidence_digest=inventory_evidence_digest,
+                evidence_reference=evidence_reference,
+            )
+        ),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _valid_live_capture_attestation(
+    *,
+    tenant_id: str,
+    application_id: str,
+    target_reference: str,
+    host_identity: str,
+    approved_root: str,
+    inventory_evidence_digest: str,
+    evidence_reference: str,
+    attestation: object,
+) -> bool:
+    if not isinstance(attestation, str) or _SAFE_ATTESTATION.fullmatch(attestation) is None:
+        return False
+    expected = _mint_live_capture_attestation(
+        tenant_id=tenant_id,
+        application_id=application_id,
+        target_reference=target_reference,
+        host_identity=host_identity,
+        approved_root=approved_root,
+        inventory_evidence_digest=inventory_evidence_digest,
+        evidence_reference=evidence_reference,
+    )
+    return hmac.compare_digest(attestation, expected)
+
+
+def _mint_live_capture_revision_attestation(
+    *,
+    tenant_id: str,
+    application_id: str,
+    target_reference: str,
+    host_identity: str,
+    approved_root: str,
+    evidence_reference: str,
+) -> str:
+    return hmac.new(
+        _LIVE_CAPTURE_ATTESTATION_KEY,
+        _attestation_bytes(
+            {
+                "kind": "captured-application-revision",
+                "tenant_id": tenant_id,
+                "application_id": application_id,
+                "target_reference": target_reference,
+                "host_identity": host_identity,
+                "approved_root": approved_root,
+                "evidence_reference": evidence_reference,
+            }
+        ),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _valid_live_capture_revision_attestation(
+    *,
+    tenant_id: str,
+    application_id: str,
+    target_reference: str,
+    host_identity: str,
+    approved_root: str,
+    evidence_reference: str,
+    attestation: object,
+) -> bool:
+    if not isinstance(attestation, str) or _SAFE_ATTESTATION.fullmatch(attestation) is None:
+        return False
+    expected = _mint_live_capture_revision_attestation(
+        tenant_id=tenant_id,
+        application_id=application_id,
+        target_reference=target_reference,
+        host_identity=host_identity,
+        approved_root=approved_root,
+        evidence_reference=evidence_reference,
+    )
+    return hmac.compare_digest(attestation, expected)
+
+
+def _mirror_attestation_payload(
+    *,
+    tenant_id: str,
+    application_id: str,
+    target_reference: str,
+    baseline_id: str,
+    mirror_identity: str,
+    mirror_digest: str,
+) -> dict[str, object]:
+    return {
+        "tenant_id": tenant_id,
+        "application_id": application_id,
+        "target_reference": target_reference,
+        "baseline_id": baseline_id,
+        "mirror_identity": mirror_identity,
+        "mirror_digest": mirror_digest,
+    }
+
+
+def _mint_mirror_attestation(
+    *,
+    tenant_id: str,
+    application_id: str,
+    target_reference: str,
+    baseline_id: str,
+    mirror_identity: str,
+    mirror_digest: str,
+) -> str:
+    return hmac.new(
+        _MIRROR_ATTESTATION_KEY,
+        _attestation_bytes(
+            _mirror_attestation_payload(
+                tenant_id=tenant_id,
+                application_id=application_id,
+                target_reference=target_reference,
+                baseline_id=baseline_id,
+                mirror_identity=mirror_identity,
+                mirror_digest=mirror_digest,
+            )
+        ),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _valid_mirror_attestation(
+    *,
+    tenant_id: str,
+    application_id: str,
+    target_reference: str,
+    baseline_id: str,
+    mirror_identity: str,
+    mirror_digest: str,
+    attestation: object,
+) -> bool:
+    if not isinstance(attestation, str) or _SAFE_ATTESTATION.fullmatch(attestation) is None:
+        return False
+    expected = _mint_mirror_attestation(
+        tenant_id=tenant_id,
+        application_id=application_id,
+        target_reference=target_reference,
+        baseline_id=baseline_id,
+        mirror_identity=mirror_identity,
+        mirror_digest=mirror_digest,
+    )
+    return hmac.compare_digest(attestation, expected)
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,11 +294,9 @@ class LiveCaptureAuthorization:
     approved_root: str
     inventory_evidence_digest: str
     evidence_reference: str
-    _authority: object = field(default=None, repr=False, compare=False)
+    _authority: str | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        if self._authority is not _LIVE_CAPTURE_AUTHORITY:
-            raise RevisionError("live capture authorization must come from live transport")
         object.__setattr__(
             self, "tenant_id", validate_identifier(self.tenant_id, field_name="tenant_id")
         )
@@ -127,6 +324,17 @@ class LiveCaptureAuthorization:
             "evidence_reference",
             validate_reference(self.evidence_reference, field_name="evidence reference"),
         )
+        if not _valid_live_capture_attestation(
+            tenant_id=self.tenant_id,
+            application_id=self.application_id,
+            target_reference=self.target_reference,
+            host_identity=self.host_identity,
+            approved_root=self.approved_root,
+            inventory_evidence_digest=self.inventory_evidence_digest,
+            evidence_reference=self.evidence_reference,
+            attestation=self._authority,
+        ):
+            raise RevisionError("live capture authorization must come from live transport")
 
     @classmethod
     def from_inventory(
@@ -159,7 +367,15 @@ class LiveCaptureAuthorization:
             approved_root=normalized_root,
             inventory_evidence_digest=snapshot.inventory.evidence_digest,
             evidence_reference=reference,
-            _authority=_LIVE_CAPTURE_AUTHORITY,
+            _authority=_mint_live_capture_attestation(
+                tenant_id=target.tenant_id,
+                application_id=target.application_id,
+                target_reference=target.target_reference,
+                host_identity=target.expected_hostname,
+                approved_root=normalized_root,
+                inventory_evidence_digest=snapshot.inventory.evidence_digest,
+                evidence_reference=reference,
+            ),
         )
 
     def is_valid_for(
@@ -172,12 +388,21 @@ class LiveCaptureAuthorization:
         approved_root: str,
     ) -> bool:
         return (
-            self._authority is _LIVE_CAPTURE_AUTHORITY
-            and self.tenant_id == tenant_id
+            self.tenant_id == tenant_id
             and self.application_id == application_id
             and self.target_reference == target_reference
             and self.host_identity == host_identity
             and self.approved_root == approved_root
+            and _valid_live_capture_attestation(
+                tenant_id=self.tenant_id,
+                application_id=self.application_id,
+                target_reference=self.target_reference,
+                host_identity=self.host_identity,
+                approved_root=self.approved_root,
+                inventory_evidence_digest=self.inventory_evidence_digest,
+                evidence_reference=self.evidence_reference,
+                attestation=self._authority,
+            )
         )
 
 
@@ -490,6 +715,8 @@ class FilesystemBaseline:
         object.__setattr__(self, "entries", tuple(self.entries))
         if self.source_type not in {"git", "direct-filesystem"}:
             raise RevisionError("filesystem baseline source type is invalid")
+        if self.source_type == "git":
+            raise RevisionError("Git-bound capture requires verified tree binding")
         if not self.entries or len(self.entries) > self.policy.max_entries:
             raise BaselineCaptureError("filesystem baseline entry count is invalid")
         paths = tuple(entry.relative_path for entry in self.entries)
@@ -555,7 +782,8 @@ class CapturedApplicationRevision:
     evidence_class: EvidenceClass = EvidenceClass.FIXTURE
     evidence_reference: str = "revision://fixture/baseline"
     snapshot_semantics: str = "observed-tree-merkle-race-checked"
-    _live_authority: object = field(default=None, repr=False, compare=False)
+    _live_authority: str | None = field(default=None, repr=False, compare=False)
+    _mirror_attestation: str | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         for value, name in (
@@ -576,6 +804,8 @@ class CapturedApplicationRevision:
             raise RevisionError("capture timestamp must be timezone-aware")
         if self.source_type not in {"git", "direct-filesystem"}:
             raise RevisionError("source type is invalid")
+        if self.source_type == "git":
+            raise RevisionError("Git-bound capture requires verified tree binding")
         object.__setattr__(
             self, "baseline_id", validate_identifier(self.baseline_id, field_name="baseline_id")
         )
@@ -645,16 +875,24 @@ class CapturedApplicationRevision:
                 object.__setattr__(self, "evidence_class", EvidenceClass(str(self.evidence_class)))
             except ValueError as exc:
                 raise RevisionError("evidence class is invalid") from exc
-        if self.evidence_class is EvidenceClass.REAL_TARGET:
-            if self._live_authority is not _LIVE_CAPTURE_AUTHORITY:
-                raise RevisionError("real-target evidence requires live capture authorization")
-        elif self._live_authority is not None:
-            raise RevisionError("live capture authorization is not valid for fixture evidence")
         object.__setattr__(
             self,
             "evidence_reference",
             validate_reference(self.evidence_reference, field_name="evidence reference"),
         )
+        if self.evidence_class is EvidenceClass.REAL_TARGET:
+            if not _valid_live_capture_revision_attestation(
+                tenant_id=self.tenant_id,
+                application_id=self.application_id,
+                target_reference=self.target_reference,
+                host_identity=self.host_identity,
+                approved_root=self.approved_root,
+                evidence_reference=self.evidence_reference,
+                attestation=self._live_authority,
+            ):
+                raise RevisionError("real-target evidence requires live capture authorization")
+        elif self._live_authority is not None:
+            raise RevisionError("live capture authorization is not valid for fixture evidence")
         if self.snapshot_semantics not in {"git-bound", "observed-tree-merkle-race-checked"}:
             raise RevisionError("snapshot semantics are invalid")
         if (
@@ -662,15 +900,27 @@ class CapturedApplicationRevision:
             and self.snapshot_semantics != "observed-tree-merkle-race-checked"
         ):
             raise RevisionError("direct filesystem captures require race-checked semantics")
-        if self.source_type == "git" and self.snapshot_semantics != "git-bound":
-            raise RevisionError("Git captures require Git-bound semantics")
-        if self.source_type == "git" and self.source_revision is None:
-            raise RevisionError("Git captures require an exact source revision")
         expected = self._compute_baseline_digest()
         if expected != self.baseline_digest:
             raise RevisionError("baseline digest does not match its content")
-        if self.mirror_identity is None and self.mirror_digest is not None:
-            raise RevisionError("mirror digest requires mirror identity")
+        mirror_identity = self.mirror_identity
+        mirror_digest = self.mirror_digest
+        if mirror_identity is None or mirror_digest is None:
+            if mirror_identity is not None or mirror_digest is not None:
+                raise RevisionError("mirror identity and digest must be provided together")
+            if self._mirror_attestation is not None:
+                raise RevisionError("mirror attestation requires a mirror identity")
+        else:
+            if not _valid_mirror_attestation(
+                tenant_id=self.tenant_id,
+                application_id=self.application_id,
+                target_reference=self.target_reference,
+                baseline_id=self.baseline_id,
+                mirror_identity=mirror_identity,
+                mirror_digest=mirror_digest,
+                attestation=self._mirror_attestation,
+            ):
+                raise RevisionError("mirror evidence requires a verified sealed receipt")
 
     @classmethod
     def from_filesystem_baseline(
@@ -703,7 +953,9 @@ class CapturedApplicationRevision:
         runtime = normalize_metadata(runtime_metadata or {}, field_name="runtime metadata")
         database = normalize_metadata(database_metadata or {}, field_name="database metadata")
         source = baseline.source_type
-        semantics = "git-bound" if source == "git" else "observed-tree-merkle-race-checked"
+        if source == "git":
+            raise BaselineCaptureError("Git-bound capture requires verified tree binding")
+        semantics = "observed-tree-merkle-race-checked"
         normalized_host = validate_host_identity(host_identity)
         if live_authorization is not None:
             if not live_authorization.is_valid_for(
@@ -723,9 +975,7 @@ class CapturedApplicationRevision:
                 )
             final_evidence_class = evidence_class
         if source_revision is not None:
-            source_revision = validate_git_revision(source_revision)
-        if source == "git" and source_revision is None:
-            raise RevisionError("Git captures require an exact source revision")
+            raise RevisionError("direct filesystem captures cannot claim a Git revision")
         digest_payload = {
             "tenant_id": tenant,
             "application_id": application,
@@ -745,6 +995,18 @@ class CapturedApplicationRevision:
                 digest_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
             ).encode("utf-8")
         ).hexdigest()
+        live_attestation = (
+            _mint_live_capture_revision_attestation(
+                tenant_id=tenant,
+                application_id=application,
+                target_reference=target,
+                host_identity=normalized_host,
+                approved_root=baseline.root,
+                evidence_reference=normalized_ref,
+            )
+            if live_authorization is not None
+            else None
+        )
         return cls(
             tenant_id=tenant,
             application_id=application,
@@ -763,7 +1025,7 @@ class CapturedApplicationRevision:
             evidence_class=final_evidence_class,
             evidence_reference=normalized_ref,
             snapshot_semantics=semantics,
-            _live_authority=(_LIVE_CAPTURE_AUTHORITY if live_authorization is not None else None),
+            _live_authority=live_attestation,
         )
 
     def _baseline_payload(self) -> dict[str, object]:
@@ -822,7 +1084,19 @@ class CapturedApplicationRevision:
         supported.
         """
 
-        if self.mirror_identity is None or self.mirror_digest is None:
+        if (
+            self.mirror_identity is None
+            or self.mirror_digest is None
+            or not _valid_mirror_attestation(
+                tenant_id=self.tenant_id,
+                application_id=self.application_id,
+                target_reference=self.target_reference,
+                baseline_id=self.baseline_id,
+                mirror_identity=self.mirror_identity,
+                mirror_digest=self.mirror_digest,
+                attestation=self._mirror_attestation,
+            )
+        ):
             status = CapabilityStatus.UNSUPPORTED
             artifact_digest = self.evidence_digest
         else:
@@ -842,7 +1116,11 @@ class CapturedApplicationRevision:
         )
 
     def with_mirror(
-        self, *, mirror_identity: str, mirror_digest: str
+        self,
+        *,
+        mirror_identity: str,
+        mirror_digest: str,
+        mirror_attestation: str,
     ) -> CapturedApplicationRevision:
         return type(self)(
             tenant_id=self.tenant_id,
@@ -865,6 +1143,7 @@ class CapturedApplicationRevision:
             evidence_reference=self.evidence_reference,
             snapshot_semantics=self.snapshot_semantics,
             _live_authority=self._live_authority,
+            _mirror_attestation=mirror_attestation,
         )
 
 
