@@ -28,6 +28,12 @@ REQUIRED_SOURCE_MARKERS = (
     "temporary_worker_state_removed",
     "api_key_logged",
     "production_touched",
+    "_claim_run_id",
+    "_atomic_create",
+    "_TEST_IDENTITY_USER",
+    "_TEST_IDENTITY_GROUP",
+    "isolate_to_test_identity",
+    "test_root",
 )
 FORBIDDEN_SOURCE_MARKERS = (
     "api.openai.com",
@@ -74,7 +80,9 @@ REQUIRED_WORKER_SERVICE_MARKERS = (
     "ProcSubset=pid",
     "ReadWritePaths=/var/lib/securityola/appcare-deepseek-worker",
     "RestrictAddressFamilies=AF_UNIX",
-    "CapabilityBoundingSet=",
+    "CapabilityBoundingSet=CAP_SETUID CAP_SETGID",
+    "AmbientCapabilities=CAP_SETUID CAP_SETGID",
+    "InaccessiblePaths=/etc/securityola/appcare-deepseek-worker/deepseek-api-key",
     "TasksMax=64",
     "MemoryMax=1G",
     "CPUQuota=100%",
@@ -108,6 +116,20 @@ def _ast_findings(tree: ast.AST) -> list[str]:
     return findings
 
 
+def _systemd_path_values(service: str, directive: str) -> tuple[str, ...]:
+    values: list[str] = []
+    prefix = f"{directive}="
+    for raw_line in service.splitlines():
+        line = raw_line.strip()
+        if line.startswith(prefix):
+            values.extend(line[len(prefix) :].split())
+    return tuple(values)
+
+
+def _exact_paths(actual: tuple[str, ...], expected: tuple[str, ...]) -> bool:
+    return len(actual) == len(expected) and set(actual) == set(expected)
+
+
 def verify(root: Path) -> list[str]:
     source_path = root / "scripts" / "direct_deepseek_worker.py"
     api_service_path = root / "ops" / "worker" / "securityola-appcare-deepseek-api@.service"
@@ -133,13 +155,44 @@ def verify(root: Path) -> list[str]:
     for marker in REQUIRED_WORKER_SERVICE_MARKERS:
         if marker not in worker_service:
             findings.append(f"missing direct worker service guard: {marker}")
+    if not _exact_paths(
+        _systemd_path_values(api_service, "ReadOnlyPaths"),
+        ("/etc/securityola/appcare-deepseek-worker",),
+    ):
+        findings.append("direct API service ReadOnlyPaths must match the key directory exactly")
+    if not _exact_paths(
+        _systemd_path_values(api_service, "ReadWritePaths"),
+        ("/var/lib/securityola/appcare-deepseek-worker",),
+    ):
+        findings.append("direct API service ReadWritePaths must match the state root exactly")
+    if not _exact_paths(
+        _systemd_path_values(worker_service, "ReadOnlyPaths"),
+        (),
+    ):
+        findings.append("apply worker ReadOnlyPaths must be empty")
+    if not _exact_paths(
+        _systemd_path_values(worker_service, "ReadWritePaths"),
+        ("/var/lib/securityola/appcare-deepseek-worker",),
+    ):
+        findings.append("apply worker ReadWritePaths must match the state root exactly")
+    if not _exact_paths(
+        _systemd_path_values(
+            worker_service,
+            "InaccessiblePaths",
+        ),
+        ("/etc/securityola/appcare-deepseek-worker/deepseek-api-key",),
+    ):
+        findings.append("apply worker InaccessiblePaths must hide the API key exactly")
     if "DEEPSEEK_API_KEY" in api_service or "Authorization=" in api_service:
         findings.append("API service unit must not contain credential material")
+    worker_access_lines = "\n".join(
+        line for line in worker_service.splitlines() if not line.startswith("InaccessiblePaths=")
+    )
     if (
-        "deepseek-api-key" in worker_service.casefold()
-        or "Authorization=" in worker_service
-        or "AF_INET" in worker_service
-        or "request --task-file" in worker_service
+        "deepseek-api-key" in worker_access_lines.casefold()
+        or "Authorization=" in worker_access_lines
+        or "AF_INET" in worker_access_lines
+        or "request --task-file" in worker_access_lines
     ):
         findings.append("apply worker service must not access the API or credential")
     return findings

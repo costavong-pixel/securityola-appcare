@@ -84,10 +84,14 @@ _FORBIDDEN_PATH_MARKERS = (
 )
 _WORKTREE_PREFIX = "securityola-appcare-worker."
 _REQUESTS_DIRECTORY = "requests"
+_CONSUMED_DIRECTORY = "consumed"
 _RESULTS_DIRECTORY = "results"
 _TASK_FILENAME = "task.md"
 _COMPLETION_FILENAME = "completion.json"
 _RUN_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+_TEST_IDENTITY_USER = "appcare-deepseek-test"
+_TEST_IDENTITY_GROUP = "appcare-deepseek-test"
+_TEST_TEMP_ROOT = Path("/tmp")  # noqa: S108 - fixed path inside systemd PrivateTmp
 
 _OUTPUT_KEYS = frozenset(
     {
@@ -162,6 +166,7 @@ class WorkerWorkspace:
     run_id: str
     run_root: Path
     worktree: Path
+    test_root: Path | None = None
     cleanup_status: str = "NOT_RUN"
 
 
@@ -705,6 +710,68 @@ def _git_path() -> str:
     return str(Path(executable).resolve(strict=True))
 
 
+def _test_identity_ids() -> tuple[int, int]:
+    if os.name == "nt":
+        raise _failure("test_isolation_unavailable")
+    try:
+        import grp
+        import pwd
+
+        user = pwd.getpwnam(_TEST_IDENTITY_USER)
+        group = grp.getgrnam(_TEST_IDENTITY_GROUP)
+    except (ImportError, KeyError) as exc:
+        raise _failure("test_identity_unavailable") from exc
+    if (
+        user.pw_uid <= 0
+        or group.gr_gid <= 0
+        or user.pw_uid == os.getuid()
+        or group.gr_gid == os.getgid()
+        or group.gr_gid in os.getgroups()
+    ):
+        raise _failure("test_identity_invalid")
+    return user.pw_uid, group.gr_gid
+
+
+def _apply_child_resource_limits() -> None:
+    try:
+        import resource
+
+        resource_api = cast(Any, resource)
+        limits = (
+            (resource_api.RLIMIT_CPU, 900),
+            (resource_api.RLIMIT_AS, 1_073_741_824),
+            (resource_api.RLIMIT_FSIZE, 16 * 1024 * 1024),
+        )
+        for resource_kind, maximum in limits:
+            resource_api.setrlimit(resource_kind, (maximum, maximum))
+    except (ImportError, OSError, ValueError):
+        os._exit(125)
+
+
+def _drop_to_test_identity(uid: int, gid: int) -> None:
+    try:
+        # The service has only CAP_SETUID/CAP_SETGID so this transition can be
+        # performed by the fixed worker launcher, not by model-modified code.
+        # Passing through uid/gid 0 makes the kernel clear those capabilities
+        # before the test process starts.
+        os.setresgid(0, 0, 0)
+        os.setresuid(0, 0, 0)
+        os.setgroups([gid])
+        os.setresgid(gid, gid, gid)
+        os.setresuid(uid, uid, uid)
+        os.umask(0o022)
+    except OSError:
+        os._exit(125)
+    if os.getuid() != uid or os.geteuid() != uid or os.getgid() != gid:
+        os._exit(125)
+
+
+def _prepare_test_process(uid: int, gid: int, *, limit_resources: bool) -> None:
+    if limit_resources:
+        _apply_child_resource_limits()
+    _drop_to_test_identity(uid, gid)
+
+
 def _run_process(
     command: Sequence[str],
     *,
@@ -712,9 +779,18 @@ def _run_process(
     timeout_seconds: int,
     environment: Mapping[str, str] | None = None,
     limit_resources: bool = False,
+    isolate_to_test_identity: bool = False,
 ) -> ProcessStatus:
     if not command or any(not isinstance(item, str) or not item for item in command):
         raise _failure("fixed_command_invalid")
+    preexec_fn: Callable[[], None] | None = None
+    if isolate_to_test_identity:
+        uid, gid = _test_identity_ids()
+
+        def prepare_test_process() -> None:
+            _prepare_test_process(uid, gid, limit_resources=limit_resources)
+
+        preexec_fn = prepare_test_process
     try:
         process = subprocess.Popen(  # noqa: S603 - command is created by fixed worker code
             list(command),
@@ -725,6 +801,7 @@ def _run_process(
             stderr=subprocess.PIPE,
             shell=False,
             start_new_session=os.name != "nt",
+            preexec_fn=preexec_fn,
         )
     except OSError as exc:
         raise _failure("fixed_command_unavailable") from exc
@@ -751,7 +828,7 @@ def _run_process(
     for reader in readers:
         reader.start()
     resource_limits_applied = True
-    if limit_resources:
+    if limit_resources and not isolate_to_test_identity:
         resource_limits_applied = _apply_resource_limits(process.pid)
         if not resource_limits_applied:
             _terminate_process(process)
@@ -976,14 +1053,15 @@ def _ensure_directory(path: Path, *, mode: int, code: str) -> None:
 
 
 def _ensure_shared_state(state_root: Path) -> None:
-    directory = state_root / _REQUESTS_DIRECTORY
-    _ensure_directory(directory, mode=0o770, code="worker_state_invalid")
-    try:
-        directory_mode = stat.S_IMODE(os.lstat(directory).st_mode)
-    except OSError as exc:
-        raise _failure("worker_state_invalid") from exc
-    if directory_mode & 0o007 or directory_mode & 0o070 != 0o070:
-        raise _failure("worker_state_permissions_invalid")
+    for directory_name in (_REQUESTS_DIRECTORY, _CONSUMED_DIRECTORY):
+        directory = state_root / directory_name
+        _ensure_directory(directory, mode=0o770, code="worker_state_invalid")
+        try:
+            directory_mode = stat.S_IMODE(os.lstat(directory).st_mode)
+        except OSError as exc:
+            raise _failure("worker_state_invalid") from exc
+        if directory_mode & 0o007 or directory_mode & 0o070 != 0o070:
+            raise _failure("worker_state_permissions_invalid")
 
 
 def _validate_run_id(run_id: str) -> str:
@@ -1048,12 +1126,42 @@ def _new_run_root(state_root: Path) -> tuple[str, Path]:
     return run_id, run_root
 
 
+def _new_test_root(run_id: str) -> Path:
+    _validate_run_id(run_id)
+    if _TEST_TEMP_ROOT.is_symlink() or not _TEST_TEMP_ROOT.is_dir():
+        raise _failure("test_isolation_unavailable")
+    test_root = _TEST_TEMP_ROOT / f"{_WORKTREE_PREFIX}{run_id}"
+    if test_root.is_symlink() or test_root.exists():
+        raise _failure("test_worktree_already_exists")
+    try:
+        test_root.mkdir(mode=0o711)
+        os.chmod(test_root, 0o711)  # noqa: S103 - disposable test namespace boundary
+    except OSError as exc:
+        if test_root.exists() and not test_root.is_symlink():
+            try:
+                test_root.rmdir()
+            except OSError:
+                pass
+        raise _failure("test_worktree_create_failed") from exc
+    if test_root.is_symlink() or not test_root.is_dir():
+        raise _failure("test_worktree_invalid")
+    return test_root
+
+
 def _new_request_root(state_root: Path, run_id: str) -> Path:
     _validate_run_id(run_id)
     requests = state_root / _REQUESTS_DIRECTORY
     _ensure_directory(requests, mode=0o770, code="worker_state_invalid")
     request_root = requests / run_id
-    if request_root.is_symlink() or request_root.exists():
+    consumed_root = state_root / _CONSUMED_DIRECTORY
+    if (
+        request_root.is_symlink()
+        or request_root.exists()
+        or consumed_root.is_symlink()
+        or not consumed_root.is_dir()
+        or (consumed_root / run_id).is_symlink()
+        or (consumed_root / run_id).exists()
+    ):
         raise _failure("worker_request_already_exists")
     try:
         request_root.mkdir(mode=0o770)
@@ -1062,6 +1170,32 @@ def _new_request_root(state_root: Path, run_id: str) -> Path:
     if request_root.is_symlink() or not request_root.is_dir():
         raise _failure("worker_request_invalid")
     return request_root
+
+
+def _claim_run_id(state_root: Path, run_id: str) -> None:
+    _validate_run_id(run_id)
+    consumed_root = state_root / _CONSUMED_DIRECTORY
+    _ensure_directory(consumed_root, mode=0o770, code="worker_state_invalid")
+    marker = consumed_root / run_id
+    if marker.is_symlink() or marker.exists():
+        raise _failure("worker_run_already_consumed")
+    try:
+        marker.mkdir(mode=0o770)
+    except OSError as exc:
+        raise _failure("worker_run_claim_failed") from exc
+    if marker.is_symlink() or not marker.is_dir():
+        raise _failure("worker_run_claim_failed")
+
+
+def _run_id_is_consumed(state_root: Path, run_id: str) -> bool:
+    _validate_run_id(run_id)
+    consumed_root = state_root / _CONSUMED_DIRECTORY
+    if consumed_root.is_symlink() or not consumed_root.is_dir():
+        raise _failure("worker_state_invalid")
+    marker = consumed_root / run_id
+    if marker.is_symlink():
+        raise _failure("worker_state_invalid")
+    return marker.exists()
 
 
 def _read_shared_file(path: Path, *, maximum_bytes: int, code: str) -> bytes:
@@ -1146,7 +1280,7 @@ def _cleanup_request_root(state_root: Path, run_id: str) -> bool:
 def _remove_worktree(repo_root: Path, workspace: WorkerWorkspace) -> bool:
     del repo_root
     worktree = workspace.worktree
-    if worktree.parent != workspace.run_root:
+    if workspace.test_root is None or worktree.parent != workspace.test_root:
         return False
     if worktree.is_symlink():
         return False
@@ -1159,6 +1293,23 @@ def _remove_worktree(repo_root: Path, workspace: WorkerWorkspace) -> bool:
     except OSError:
         return False
     return not worktree.exists() and not worktree.is_symlink()
+
+
+def _cleanup_test_root(workspace: WorkerWorkspace) -> bool:
+    root = workspace.test_root
+    if root is None:
+        return True
+    if (
+        root.parent != _TEST_TEMP_ROOT
+        or root.name != f"{_WORKTREE_PREFIX}{workspace.run_id}"
+        or root.is_symlink()
+    ):
+        return False
+    try:
+        shutil.rmtree(root)
+    except OSError:
+        return False
+    return not root.exists() and not root.is_symlink()
 
 
 def _cleanup_run_root(workspace: WorkerWorkspace) -> bool:
@@ -1218,6 +1369,14 @@ def _create_worktree(repo_root: Path, workspace: WorkerWorkspace, expected_head:
     )
     if checkout.returncode != 0 or checkout.timed_out or checkout.output_limited:
         raise _failure("worker_worktree_create_failed")
+    try:
+        # The test identity gets only this disposable tree; the trusted run
+        # root and shared state remain inaccessible to it by filesystem mode.
+        os.chmod(workspace.worktree, 0o777)  # noqa: S103
+    except OSError as exc:
+        raise _failure("test_worktree_permissions_failed") from exc
+    if workspace.worktree.is_symlink() or not workspace.worktree.is_dir():
+        raise _failure("worker_worktree_invalid")
 
 
 def _copy_sealed_packet(worktree: Path, packet: TaskPacket) -> Path:
@@ -1356,6 +1515,7 @@ def run_deterministic_tests(
             timeout_seconds=timeout_seconds,
             environment=environment,
             limit_resources=True,
+            isolate_to_test_identity=True,
         )
         if (
             result.returncode != 0
@@ -1404,6 +1564,61 @@ def _atomic_write(
                 pass
 
 
+def _atomic_create(
+    path: Path,
+    payload: bytes,
+    *,
+    directory_mode: int = 0o700,
+    file_mode: int = 0o600,
+) -> None:
+    """Create an immutable result file without replacing an earlier result."""
+
+    if path.is_symlink():
+        raise _failure("worker_result_path_invalid")
+    if path.exists():
+        if path.is_file():
+            raise _failure("worker_result_already_exists")
+        raise _failure("worker_result_path_invalid")
+    if path.parent.exists() and path.parent.is_symlink():
+        raise _failure("worker_result_path_invalid")
+    path.parent.mkdir(parents=True, exist_ok=True, mode=directory_mode)
+    if path.parent.is_symlink() or not path.parent.is_dir():
+        raise _failure("worker_result_path_invalid")
+    descriptor = -1
+    created_path = False
+    success = False
+    try:
+        descriptor = os.open(
+            path,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            file_mode,
+        )
+        created_path = True
+        with os.fdopen(descriptor, "wb", closefd=True) as stream:
+            descriptor = -1
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(path, file_mode)
+        success = True
+    except FileExistsError as exc:
+        raise _failure("worker_result_already_exists") from exc
+    except OSError as exc:
+        raise _failure("worker_result_write_failed") from exc
+    finally:
+        if descriptor != -1:
+            os.close(descriptor)
+        if created_path and not success and path.exists() and path.is_file():
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+
 def _receipt_bytes(receipt: WorkerReceipt) -> bytes:
     payload = {
         key: (list(value) if isinstance(value, tuple) else value)
@@ -1426,10 +1641,21 @@ def _write_result_bundle(
         raise _failure("worker_result_path_invalid")
     os.chmod(result_directory, 0o700)
     receipt_path = result_directory / f"{receipt.run_id}.json"
+    patch_path: Path | None = None
+    patch_created = False
     if patch is not None:
         patch_path = result_directory / f"{receipt.run_id}.patch"
-        _atomic_write(patch_path, patch.encode("utf-8"))
-    _atomic_write(receipt_path, _receipt_bytes(receipt))
+        _atomic_create(patch_path, patch.encode("utf-8"))
+        patch_created = True
+    try:
+        _atomic_create(receipt_path, _receipt_bytes(receipt))
+    except BaseException:
+        if patch_created and patch_path is not None:
+            try:
+                patch_path.unlink()
+            except OSError:
+                pass
+        raise
     return receipt_path
 
 
@@ -1554,6 +1780,8 @@ def request_completion(
     repo, state = _validate_worker_roots(repo_root, state_root)
     _validate_run_id(run_id)
     _ensure_shared_state(state)
+    if _run_id_is_consumed(state, run_id):
+        raise _failure("worker_run_already_consumed")
     base_sha, branch, status = _git_status(repo)
     if status:
         raise _failure("coordinator_checkout_not_clean")
@@ -1616,6 +1844,8 @@ def execute_stored_worker(
     repo, state = _validate_worker_roots(repo_root, state_root)
     _validate_run_id(run_id)
     _ensure_shared_state(state)
+    if _run_id_is_consumed(state, run_id):
+        raise _failure("worker_run_already_consumed")
     base_sha, branch, status = _git_status(repo)
     if status:
         raise _failure("coordinator_checkout_not_clean")
@@ -1637,6 +1867,8 @@ def execute_stored_worker(
             if current_sha != base_sha or current_branch != branch or current_status:
                 raise _failure("coordinator_checkout_changed")
             model = load_model()
+            if _run_id_is_consumed(state, run_id):
+                raise _failure("worker_run_already_consumed")
             stored = _load_stored_request(
                 state,
                 run_id,
@@ -1646,6 +1878,9 @@ def execute_stored_worker(
             actual_model = stored.actual_model
             if actual_model != model:
                 raise _failure("worker_model_attestation_failed")
+            _claim_run_id(state, run_id)
+            workspace.test_root = _new_test_root(workspace.run_id)
+            workspace.worktree = workspace.test_root / "worktree"
             _create_worktree(repo, workspace, base_sha)
             task_in_worktree = _copy_sealed_packet(workspace.worktree, stored.packet)
             before = verify_task_scope.snapshot(workspace.worktree)
@@ -1677,6 +1912,8 @@ def execute_stored_worker(
                 api_response=stored.api_response,
             )
     except WorkerError as exc:
+        if exc.code == "worker_run_already_consumed":
+            raise
         receipt = _base_receipt(
             run_id=run_id,
             base_sha=base_sha,
@@ -1704,10 +1941,13 @@ def execute_stored_worker(
                 removed_worktree = False
         else:
             removed_worktree = True
+        removed_test_root = _cleanup_test_root(workspace) if removed_worktree else False
         removed_root = _cleanup_run_root(workspace) if removed_worktree else False
         removed_request = _cleanup_request_root(state, run_id) if request_existed else True
         workspace.cleanup_status = (
-            "PASS" if removed_worktree and removed_root and removed_request else "FAIL"
+            "PASS"
+            if removed_worktree and removed_test_root and removed_root and removed_request
+            else "FAIL"
         )
         if receipt is not None:
             cleanup_failed = workspace.cleanup_status != "PASS"

@@ -186,12 +186,14 @@ def test_model_tests_are_metadata_only_and_runner_uses_fixed_commands(
         timeout_seconds: int,
         environment: dict[str, str],
         limit_resources: bool,
+        isolate_to_test_identity: bool,
     ) -> worker.ProcessStatus:
         calls.append(command)
         assert cwd == tmp_path
         assert timeout_seconds == 30
         assert environment["TARGET"] == "AppCare"
         assert limit_resources is True
+        assert isolate_to_test_identity is True
         return worker.ProcessStatus(0, False, False, True)
 
     monkeypatch.setattr(worker, "_run_process", fake_run)
@@ -273,9 +275,23 @@ def test_systemd_units_use_worker_path_constants() -> None:
 
     state_path = worker.WORKER_STATE_ROOT.as_posix()
     key_directory = worker.DEEPSEEK_API_KEY_PATH.parent.as_posix()
-    assert f"ReadWritePaths={state_path}" in api_service
-    assert f"ReadWritePaths={state_path}" in worker_service
-    assert f"ReadOnlyPaths={key_directory}" in api_service
+
+    def path_values(service: str, directive: str) -> tuple[str, ...]:
+        prefix = f"{directive}="
+        return tuple(
+            value
+            for line in service.splitlines()
+            if line.startswith(prefix)
+            for value in line[len(prefix) :].split()
+        )
+
+    assert path_values(api_service, "ReadWritePaths") == (state_path,)
+    assert path_values(api_service, "ReadOnlyPaths") == (key_directory,)
+    assert path_values(worker_service, "ReadWritePaths") == (state_path,)
+    assert path_values(worker_service, "ReadOnlyPaths") == ()
+    assert path_values(worker_service, "InaccessiblePaths") == (
+        worker.DEEPSEEK_API_KEY_PATH.as_posix(),
+    )
 
 
 def test_receipt_does_not_overstate_validation_or_model_attestation() -> None:
@@ -442,3 +458,15 @@ def test_worker_lifecycle_uses_disposable_worktree_and_sanitized_receipt(
     assert (receipt_path.parent / f"{run_id}.patch").is_file()
     assert not list((state / "runs").iterdir())
     assert not list((state / "requests").iterdir())
+    assert (state / "consumed" / run_id).is_dir()
+    receipt_bytes = receipt_path.read_bytes()
+
+    with pytest.raises(worker.WorkerError, match="worker_run_already_consumed"):
+        worker.execute_stored_worker(
+            run_id,
+            repo_root=repo,
+            state_root=state,
+            test_runner=lambda _worktree: pytest.fail("replayed run must not execute tests"),
+            secret_scanner=lambda _worktree, _before: pytest.fail("replayed run must not scan"),
+        )
+    assert receipt_path.read_bytes() == receipt_bytes

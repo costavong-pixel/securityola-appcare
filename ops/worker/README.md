@@ -31,6 +31,13 @@ The API request service uses a separate non-login account:
 appcare-deepseek-api
 ```
 
+The apply service launches fixed repository checks under a third non-login
+account that is not a member of the worker group:
+
+```text
+appcare-deepseek-test
+```
+
 The service uses these fixed boundaries:
 
 ```text
@@ -43,11 +50,20 @@ The service uses these fixed boundaries:
 
 The state root is root-owned and group-accessible only to the dedicated worker
 group. Its `requests/` directory is group-readable/writable by the API and
-worker identities; `runs/` and `results/` are worker-controlled. The API key
-file is root-owned and readable only by the `appcare-deepseek-api` group. The
-model file is root-controlled and readable by the worker group. Both files
-are checked for ownership, permissions, symlinks, size, and changes during
-read. The apply identity cannot read the API-key file.
+worker identities; `consumed/` retains a run-id tombstone, and `runs/` and
+`results/` are worker-controlled. Result files are create-once and are never
+replaced. The API key file is root-owned and readable only by the
+`appcare-deepseek-api` group. The model file is root-controlled and readable
+by the worker group. Both files are checked for ownership, permissions,
+symlinks, size, and changes during read. The apply identity cannot read the
+API-key file.
+
+Provision `appcare-deepseek-test` with a dedicated primary group, no login
+shell, and no membership in `appcare-deepseek-worker`. The apply unit grants
+only the fixed `CAP_SETUID`/`CAP_SETGID` transition needed to launch checks as
+that account. `PrivateTmp=true` supplies the private mount namespace; each
+check runs from a disposable `/tmp` clone, while the trusted worker retains
+the state root and writes the receipt after the test process exits.
 
 The owner must enter or rotate the API key directly on the verified worker
 host. It must not be pasted into Codex, a task packet, Git, GitHub, a report,
