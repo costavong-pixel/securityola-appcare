@@ -86,6 +86,7 @@ _WORKTREE_PREFIX = "securityola-appcare-worker."
 _REQUESTS_DIRECTORY = "requests"
 _CONSUMED_DIRECTORY = "consumed"
 _RESULTS_DIRECTORY = "results"
+_WORKER_LOCK_FILENAME = ".worker.lock"
 _TASK_FILENAME = "task.md"
 _COMPLETION_FILENAME = "completion.json"
 _RUN_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
@@ -1015,10 +1016,10 @@ def _validate_worker_roots(repo_root: Path, state_root: Path) -> tuple[Path, Pat
     if state != WORKER_STATE_ROOT:
         raise _failure("worker_state_boundary")
     state_created = not state.exists()
-    state.mkdir(parents=True, exist_ok=True, mode=0o770)
+    state.mkdir(parents=True, exist_ok=True, mode=0o771)
     if state_created:
         try:
-            os.chmod(state, 0o770)  # noqa: S103 - shared state is group-restricted
+            os.chmod(state, 0o771)  # noqa: S103 - shared state is group-restricted
         except OSError as exc:
             raise _failure("worker_state_invalid") from exc
     if state.is_symlink() or not state.is_dir():
@@ -1027,12 +1028,12 @@ def _validate_worker_roots(repo_root: Path, state_root: Path) -> tuple[Path, Pat
         state_mode = stat.S_IMODE(os.lstat(state).st_mode)
     except OSError as exc:
         raise _failure("worker_state_invalid") from exc
-    if state_mode & 0o007 or state_mode & 0o070 != 0o070:
+    if state_mode & 0o007 != 0o001 or state_mode & 0o070 != 0o070:
         raise _failure("worker_state_permissions_invalid")
     return repo, state
 
 
-def _ensure_directory(path: Path, *, mode: int, code: str) -> None:
+def _ensure_directory(path: Path, *, mode: int, code: str, allowed_other_bits: int = 0) -> None:
     if path.is_symlink() or path.exists() and not path.is_dir():
         raise _failure(code)
     created = not path.exists()
@@ -1048,20 +1049,34 @@ def _ensure_directory(path: Path, *, mode: int, code: str) -> None:
         directory_mode = stat.S_IMODE(os.lstat(path).st_mode)
     except OSError as exc:
         raise _failure(code) from exc
-    if directory_mode & 0o007:
+    if directory_mode & (0o007 & ~allowed_other_bits):
         raise _failure(code)
 
 
-def _ensure_shared_state(state_root: Path) -> None:
-    for directory_name in (_REQUESTS_DIRECTORY, _CONSUMED_DIRECTORY):
+def _check_shared_directory_mode(path: Path, *, expected_other_bits: int) -> None:
+    try:
+        directory_mode = stat.S_IMODE(os.lstat(path).st_mode)
+    except OSError as exc:
+        raise _failure("worker_state_invalid") from exc
+    if directory_mode & 0o007 != expected_other_bits or directory_mode & 0o070 != 0o070:
+        raise _failure("worker_state_permissions_invalid")
+
+
+def _ensure_shared_state(state_root: Path, *, include_worker_state: bool = False) -> None:
+    directory_names = [_REQUESTS_DIRECTORY]
+    if include_worker_state:
+        directory_names.append(_CONSUMED_DIRECTORY)
+    for directory_name in directory_names:
         directory = state_root / directory_name
-        _ensure_directory(directory, mode=0o770, code="worker_state_invalid")
-        try:
-            directory_mode = stat.S_IMODE(os.lstat(directory).st_mode)
-        except OSError as exc:
-            raise _failure("worker_state_invalid") from exc
-        if directory_mode & 0o007 or directory_mode & 0o070 != 0o070:
-            raise _failure("worker_state_permissions_invalid")
+        mode = 0o771 if directory_name == _CONSUMED_DIRECTORY else 0o770
+        allowed_other_bits = 0o001 if directory_name == _CONSUMED_DIRECTORY else 0
+        _ensure_directory(
+            directory,
+            mode=mode,
+            code="worker_state_invalid",
+            allowed_other_bits=allowed_other_bits,
+        )
+        _check_shared_directory_mode(directory, expected_other_bits=allowed_other_bits)
 
 
 def _validate_run_id(run_id: str) -> str:
@@ -1152,17 +1167,19 @@ def _new_request_root(state_root: Path, run_id: str) -> Path:
     _validate_run_id(run_id)
     requests = state_root / _REQUESTS_DIRECTORY
     _ensure_directory(requests, mode=0o770, code="worker_state_invalid")
+    _check_shared_directory_mode(requests, expected_other_bits=0)
     request_root = requests / run_id
     consumed_root = state_root / _CONSUMED_DIRECTORY
-    if (
-        request_root.is_symlink()
-        or request_root.exists()
-        or consumed_root.is_symlink()
-        or not consumed_root.is_dir()
-        or (consumed_root / run_id).is_symlink()
-        or (consumed_root / run_id).exists()
-    ):
+    if request_root.is_symlink() or request_root.exists():
         raise _failure("worker_request_already_exists")
+    if consumed_root.is_symlink():
+        raise _failure("worker_state_invalid")
+    if consumed_root.exists():
+        if not consumed_root.is_dir():
+            raise _failure("worker_state_invalid")
+        _check_shared_directory_mode(consumed_root, expected_other_bits=0o001)
+        if (consumed_root / run_id).is_symlink() or (consumed_root / run_id).exists():
+            raise _failure("worker_request_already_exists")
     try:
         request_root.mkdir(mode=0o770)
     except OSError as exc:
@@ -1175,12 +1192,18 @@ def _new_request_root(state_root: Path, run_id: str) -> Path:
 def _claim_run_id(state_root: Path, run_id: str) -> None:
     _validate_run_id(run_id)
     consumed_root = state_root / _CONSUMED_DIRECTORY
-    _ensure_directory(consumed_root, mode=0o770, code="worker_state_invalid")
+    _ensure_directory(
+        consumed_root,
+        mode=0o771,
+        code="worker_state_invalid",
+        allowed_other_bits=0o001,
+    )
+    _check_shared_directory_mode(consumed_root, expected_other_bits=0o001)
     marker = consumed_root / run_id
     if marker.is_symlink() or marker.exists():
         raise _failure("worker_run_already_consumed")
     try:
-        marker.mkdir(mode=0o770)
+        marker.mkdir(mode=0o700)
     except OSError as exc:
         raise _failure("worker_run_claim_failed") from exc
     if marker.is_symlink() or not marker.is_dir():
@@ -1190,8 +1213,13 @@ def _claim_run_id(state_root: Path, run_id: str) -> None:
 def _run_id_is_consumed(state_root: Path, run_id: str) -> bool:
     _validate_run_id(run_id)
     consumed_root = state_root / _CONSUMED_DIRECTORY
-    if consumed_root.is_symlink() or not consumed_root.is_dir():
+    if consumed_root.is_symlink():
         raise _failure("worker_state_invalid")
+    if not consumed_root.exists():
+        return False
+    if not consumed_root.is_dir():
+        raise _failure("worker_state_invalid")
+    _check_shared_directory_mode(consumed_root, expected_other_bits=0o001)
     marker = consumed_root / run_id
     if marker.is_symlink():
         raise _failure("worker_state_invalid")
@@ -1788,7 +1816,7 @@ def request_completion(
     model = load_model()
     request_root: Path | None = None
     try:
-        with _one_writer_lock(state / "worker.lock"):
+        with _one_writer_lock(state / _REQUESTS_DIRECTORY / _WORKER_LOCK_FILENAME):
             current_sha, current_branch, current_status = _git_status(repo)
             if current_sha != base_sha or current_branch != branch or current_status:
                 raise _failure("coordinator_checkout_changed")
@@ -1843,7 +1871,7 @@ def execute_stored_worker(
     _assert_virtualenv()
     repo, state = _validate_worker_roots(repo_root, state_root)
     _validate_run_id(run_id)
-    _ensure_shared_state(state)
+    _ensure_shared_state(state, include_worker_state=True)
     if _run_id_is_consumed(state, run_id):
         raise _failure("worker_run_already_consumed")
     base_sha, branch, status = _git_status(repo)
@@ -1861,14 +1889,14 @@ def execute_stored_worker(
     actual_model: str | None = None
     request_existed = False
     try:
-        request_existed = (state / _REQUESTS_DIRECTORY / run_id).exists()
-        with _one_writer_lock(state / "worker.lock"):
+        with _one_writer_lock(state / _REQUESTS_DIRECTORY / _WORKER_LOCK_FILENAME):
             current_sha, current_branch, current_status = _git_status(repo)
             if current_sha != base_sha or current_branch != branch or current_status:
                 raise _failure("coordinator_checkout_changed")
             model = load_model()
             if _run_id_is_consumed(state, run_id):
                 raise _failure("worker_run_already_consumed")
+            request_existed = (state / _REQUESTS_DIRECTORY / run_id).exists()
             stored = _load_stored_request(
                 state,
                 run_id,

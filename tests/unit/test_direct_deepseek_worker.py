@@ -220,13 +220,14 @@ def test_git_status_distinguishes_ignored_untracked_and_real_changes(tmp_path: P
         pytest.skip("Git is required for the cleanliness regression test")
     repo = tmp_path / "repo"
     repo.mkdir()
+    git_environment = worker._git_environment(repo)
     (repo / ".gitignore").write_text(".codex/tasks/\n", encoding="utf-8")
     (repo / "tracked.txt").write_text("clean\n", encoding="utf-8")
     subprocess.run(  # noqa: S603 - Git is resolved before fixed test argv
-        [git, "init", "-q", "-b", "main"], cwd=repo, check=True
+        [git, "init", "-q", "-b", "main"], cwd=repo, env=git_environment, check=True
     )
     subprocess.run(  # noqa: S603 - Git is resolved before fixed test argv
-        [git, "add", ".gitignore", "tracked.txt"], cwd=repo, check=True
+        [git, "add", ".gitignore", "tracked.txt"], cwd=repo, env=git_environment, check=True
     )
     subprocess.run(  # noqa: S603 - Git is resolved before fixed test argv
         [
@@ -241,6 +242,7 @@ def test_git_status_distinguishes_ignored_untracked_and_real_changes(tmp_path: P
             "fixture",
         ],
         cwd=repo,
+        env=git_environment,
         check=True,
     )
 
@@ -292,6 +294,12 @@ def test_systemd_units_use_worker_path_constants() -> None:
     assert path_values(worker_service, "InaccessiblePaths") == (
         worker.DEEPSEEK_API_KEY_PATH.as_posix(),
     )
+    assert "RemainAfterExit=true" in api_service
+    assert "Group=appcare-deepseek-api" in api_service
+    assert "Group=appcare-deepseek-worker" not in api_service
+    assert "SupplementaryGroups=appcare-deepseek-request appcare-deepseek-model" in api_service
+    assert "SupplementaryGroups=appcare-deepseek-request appcare-deepseek-model" in worker_service
+    assert "RestrictSUIDSGID=true" not in worker_service
 
 
 def test_receipt_does_not_overstate_validation_or_model_attestation() -> None:
@@ -457,7 +465,11 @@ def test_worker_lifecycle_uses_disposable_worktree_and_sanitized_receipt(
     run_id = receipt["run_id"]
     assert (receipt_path.parent / f"{run_id}.patch").is_file()
     assert not list((state / "runs").iterdir())
-    assert not list((state / "requests").iterdir())
+    assert [
+        path.name
+        for path in (state / "requests").iterdir()
+        if path.name != worker._WORKER_LOCK_FILENAME
+    ] == []
     assert (state / "consumed" / run_id).is_dir()
     receipt_bytes = receipt_path.read_bytes()
 

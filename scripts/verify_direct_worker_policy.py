@@ -34,6 +34,10 @@ REQUIRED_SOURCE_MARKERS = (
     "_TEST_IDENTITY_GROUP",
     "isolate_to_test_identity",
     "test_root",
+    "_CONSUMED_DIRECTORY",
+    "_WORKER_LOCK_FILENAME",
+    "include_worker_state",
+    "0o771",
 )
 FORBIDDEN_SOURCE_MARKERS = (
     "api.openai.com",
@@ -47,9 +51,10 @@ FORBIDDEN_SOURCE_MARKERS = (
     "execute_worker(",
 )
 REQUIRED_API_SERVICE_MARKERS = (
+    "RemainAfterExit=true",
     "User=appcare-deepseek-api",
-    "Group=appcare-deepseek-worker",
-    "SupplementaryGroups=appcare-deepseek-api",
+    "Group=appcare-deepseek-api",
+    "SupplementaryGroups=appcare-deepseek-request appcare-deepseek-model",
     "WorkingDirectory=/opt/securityola/appcare-deepseek-worker/repository",
     "/opt/securityola/appcare-deepseek-worker/venv/bin/python",
     "request --task-file",
@@ -88,7 +93,6 @@ REQUIRED_WORKER_SERVICE_MARKERS = (
     "CPUQuota=100%",
     "LimitNOFILE=256",
     "LimitNPROC=64",
-    "RestrictSUIDSGID=true",
 )
 
 
@@ -155,6 +159,10 @@ def verify(root: Path) -> list[str]:
     for marker in REQUIRED_WORKER_SERVICE_MARKERS:
         if marker not in worker_service:
             findings.append(f"missing direct worker service guard: {marker}")
+    if any(line.strip() == "Group=appcare-deepseek-worker" for line in api_service.splitlines()):
+        findings.append("API service must not use the apply worker group")
+    if "RestrictSUIDSGID=true" in worker_service:
+        findings.append("apply worker must permit its fixed test-identity transition")
     if not _exact_paths(
         _systemd_path_values(api_service, "ReadOnlyPaths"),
         ("/etc/securityola/appcare-deepseek-worker",),

@@ -31,6 +31,14 @@ The API request service uses a separate non-login account:
 appcare-deepseek-api
 ```
 
+The API and apply identities share only these two non-login supplemental
+groups:
+
+```text
+appcare-deepseek-request
+appcare-deepseek-model
+```
+
 The apply service launches fixed repository checks under a third non-login
 account that is not a member of the worker group:
 
@@ -48,15 +56,23 @@ The service uses these fixed boundaries:
 /etc/securityola/appcare-deepseek-worker/model
 ```
 
-The state root is root-owned and group-accessible only to the dedicated worker
-group. Its `requests/` directory is group-readable/writable by the API and
-worker identities; `consumed/` retains a run-id tombstone, and `runs/` and
+The state root is `root:appcare-deepseek-worker` mode `0771`: the apply group
+has full access, and the API identity has traverse-only access. Provision
+`requests/` as
+`root:appcare-deepseek-request` mode `02770`, and provision `consumed/` as
+`root:appcare-deepseek-worker` mode `0771`; the API can test a fixed tombstone
+name but cannot list, create, remove, or modify it. The persistent
+`requests/.worker.lock` file is shared by the request group. `runs/` and
 `results/` are worker-controlled. Result files are create-once and are never
 replaced. The API key file is root-owned and readable only by the
-`appcare-deepseek-api` group. The model file is root-controlled and readable
-by the worker group. Both files are checked for ownership, permissions,
-symlinks, size, and changes during read. The apply identity cannot read the
-API-key file.
+`appcare-deepseek-api`
+group. The model file is root-controlled and readable only by the dedicated
+model group. Both files are checked for ownership, permissions, symlinks, size,
+and changes during read. The apply identity cannot read the API-key file.
+
+The owner or host setup procedure must create the shared groups and fixed
+directories before starting the units; the worker intentionally fails closed
+if these group/mode boundaries are absent.
 
 Provision `appcare-deepseek-test` with a dedicated primary group, no login
 shell, and no membership in `appcare-deepseek-worker`. The apply unit grants
