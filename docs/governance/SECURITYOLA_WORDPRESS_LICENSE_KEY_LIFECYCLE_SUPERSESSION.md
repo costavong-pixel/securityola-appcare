@@ -4,8 +4,9 @@ Status: **OWNER-APPROVED SUPERSESSION**
 
 Recorded: 2026-09-02
 
-This file supersedes the `## Key replacement` subsection in
-`docs/governance/SECURITYOLA_OWNER_DECISIONS.md` where that subsection says a
+This file records the owner decision that superseded the former
+`## Key replacement` subsection in
+`docs/governance/SECURITYOLA_OWNER_DECISIONS.md`, which had said a
 compromised/stolen WordPress license key costs `$25` to replace.
 
 The current owner decision is:
@@ -16,8 +17,10 @@ ACTIVE_SITE_LIMIT=1
 OLD_LICENSE_KEY_AFTER_ROTATION=REVOKED
 ```
 
-Until the main owner register is updated, this file has later-date precedence
-for the SecurityOla WordPress key-replacement decision.
+The canonical owner register is now synchronized with this decision in
+`docs/governance/SECURITYOLA_OWNER_DECISIONS.md`. This file remains historical
+and audit evidence; it no longer supplies temporary precedence over the
+canonical current-decision register.
 
 ## Credential model
 

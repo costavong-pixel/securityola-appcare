@@ -60,9 +60,37 @@ Not included as ordinary WordPress-plugin support:
 
 ## Key replacement
 
-- A compromised/stolen key may be replaced for **$25**.
-- Issuing a replacement key must deactivate the previous key.
+Status: `DECIDED` / `DOCUMENTED`. This section is a product decision only;
+implementation evidence is still required before any behavior is represented as
+live.
+
+```text
+LICENSE_KEY_REPLACEMENT_PRICE=$0
+ACTIVE_SITE_LIMIT=1
+OLD_LICENSE_KEY_AFTER_ROTATION=REVOKED
+PADDLE_REPLACEMENT_PAYMENT=NOT_REQUIRED
+```
+
+- License-key replacement/rotation is free; no Paddle replacement transaction
+  is required.
+- Issuing a new activation key revokes the old activation key. Old revoked
+  credentials must fail.
+- Lost-key rotation preserves the legitimate current site's `site_id` and
+  `site_token` while keeping exactly one active paid site.
+- Suspected activation-key compromise may additionally rotate site credentials
+  when the site credentials may also be compromised.
+- A site move revokes the old site's paid cloud/update authorization and permits
+  exactly one replacement site, which receives new `site_id` and `site_token`
+  credentials.
+- Paid cloud/update authorization fails closed after revocation, while
+  local-first scanner and local security functionality remain available within
+  the product design.
 - Key sharing/reuse across sites is not authorized.
+
+Until implementation evidence exists, report this lifecycle as
+`IMPLEMENTATION_GAP`, `PARTIAL`, `IMPLEMENTED_NOT_TESTED`, or
+`IMPLEMENTED_AND_TESTED` according to the actual evidence; do not claim it is
+implemented merely because it is decided/documented.
 
 ## Voluntary refund policy
 

@@ -16,6 +16,13 @@ Before any AppCare implementation work, read:
 
 The blueprint is the authoritative current-branch dependency plan. The model-execution routing policy controls coder-lane selection. Older roadmaps remain historical or broad backlog where they conflict.
 
+## SecurityOla-family commercial decision mandatory reading
+
+Before any SecurityOla-family commercial decision work, read:
+
+1. `docs/governance/SECURITYOLA_OWNER_DECISIONS.md`
+2. `docs/governance/SECURITYOLA_WORDPRESS_LICENSE_KEY_LIFECYCLE_SUPERSESSION.md`
+
 ## Product boundary
 
 AppCare provides **Scan -> Fix -> Backup -> Monitor -> Recover** for supported websites and applications.
