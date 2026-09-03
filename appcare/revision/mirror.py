@@ -24,7 +24,6 @@ from .contracts import (
     MirrorCaptureOutcome,
     MirrorPolicy,
     MirrorReceipt,
-    _record_verified_mirror_receipt,
     validate_digest,
     validate_identifier,
     validate_root,
@@ -297,10 +296,7 @@ class ImmutableSourceMirror:
             if marker != _SEAL_MARKER or receipt_payload != receipt.as_dict():
                 return False
             copied = self._verified_manifest_entries(final, manifest_payload, receipt)
-            verified = self._verified_mirror_metadata(final, manifest_payload, copied, receipt)
-            if verified:
-                _record_verified_mirror_receipt(receipt)
-            return verified
+            return self._verified_mirror_metadata(final, manifest_payload, copied, receipt)
         except (OSError, ValueError, TypeError, UnicodeError, MirrorCaptureError):
             return False
 

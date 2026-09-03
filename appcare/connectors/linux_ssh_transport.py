@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import stat
 import subprocess
@@ -16,8 +17,8 @@ from typing import BinaryIO, cast
 
 from .linux_ssh_commands import CommandRegistry, RemoteCommand
 from .linux_ssh_contracts import (
-    _LIVE_SNAPSHOT_ISSUER,
     DEFAULT_OPERATION_LEDGER_PATH,
+    LIVE_INVENTORY_RECEIPT_ROOT,
     ApplicationRootVerification,
     BoundedLimits,
     ConnectionProbe,
@@ -47,7 +48,9 @@ from .linux_ssh_contracts import (
     SqliteOperationLedger,
     StorageMetadataRead,
     WebServerMetadataRead,
-    _LiveSnapshotAuthority,
+    _live_snapshot_receipt_payload,
+    _receipt_digest,
+    live_snapshot_receipt_path,
     parse_host_key_line,
     required_inventory_records_complete,
     validate_operation_id,
@@ -370,7 +373,6 @@ class LinuxSSHClient:
         self._ledger = operation_ledger or InMemoryOperationLedger()
         self._commands = command_registry or CommandRegistry()
         self._evidence_class = EvidenceClass.FIXTURE
-        self._live_authority: _LiveSnapshotAuthority | None = None
 
     @classmethod
     def for_live(
@@ -407,7 +409,6 @@ class LinuxSSHClient:
         ):
             raise HostKeyVerificationError("live known-hosts root is outside AppCare")
         client._evidence_class = EvidenceClass.REAL_TARGET
-        client._live_authority = _LiveSnapshotAuthority(_LIVE_SNAPSHOT_ISSUER)
         return client
 
     def execute(self, operation: LinuxOperation) -> RemoteExecutionResult:
@@ -511,18 +512,13 @@ class LinuxSSHClient:
                 OperationStatus.PARTIAL,
                 "connection_required",
             )
-            live_authority = (
-                self._live_authority.bind(self.target, connection, inventory, ())
-                if self._live_authority is not None
-                else None
-            )
-            return LinuxInventorySnapshot(
+            snapshot = LinuxInventorySnapshot(
                 self.target,
                 connection,
                 inventory,
                 (),
-                _live_authority=live_authority,
             )
+            return self._seal_live_snapshot(base, snapshot)
 
         host = self.execute(HostInventory(f"{base}:host"))
         records = list(host.records)
@@ -561,18 +557,115 @@ class LinuxSSHClient:
             "ok" if required_ok else "inventory_required_observation_failed",
             records=normalized_records,
         )
-        live_authority = (
-            self._live_authority.bind(self.target, connection, inventory, normalized_records)
-            if self._live_authority is not None
-            else None
-        )
-        return LinuxInventorySnapshot(
+        snapshot = LinuxInventorySnapshot(
             self.target,
             connection,
             inventory,
             normalized_records,
-            _live_authority=live_authority,
         )
+        return self._seal_live_snapshot(base, snapshot)
+
+    def _seal_live_snapshot(
+        self, operation_id: str, snapshot: LinuxInventorySnapshot
+    ) -> LinuxInventorySnapshot:
+        if self._evidence_class is not EvidenceClass.REAL_TARGET:
+            return snapshot
+        receipt_path = live_snapshot_receipt_path(self.target, operation_id)
+        payload = _live_snapshot_receipt_payload(
+            snapshot.target,
+            snapshot.connection,
+            snapshot.inventory,
+            snapshot.records,
+            receipt_path=receipt_path.as_posix(),
+        )
+        payload["receipt_digest"] = _receipt_digest(payload)
+        encoded = json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode("utf-8")
+        if len(encoded) > 64 * 1024:
+            raise HostKeyVerificationError("live inventory receipt is too large")
+        self._mkdir_live_receipt_parent(receipt_path.parent)
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        try:
+            descriptor = os.open(receipt_path, flags, 0o400)
+        except FileExistsError as exc:
+            raise HostKeyVerificationError("live inventory receipt replayed") from exc
+        except OSError as exc:
+            raise HostKeyVerificationError("live inventory receipt cannot be created") from exc
+        try:
+            view = memoryview(encoded)
+            while view:
+                written = os.write(descriptor, view)
+                if written <= 0:
+                    raise OSError("live inventory receipt write made no progress")
+                view = view[written:]
+            os.fsync(descriptor)
+        except OSError as exc:
+            raise HostKeyVerificationError("live inventory receipt write failed") from exc
+        finally:
+            os.close(descriptor)
+        try:
+            os.chmod(receipt_path, 0o400)
+            descriptor = os.open(
+                receipt_path,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            )
+            os.fsync(descriptor)
+            os.close(descriptor)
+            directory_descriptor = os.open(
+                receipt_path.parent,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+            )
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+        except OSError as exc:
+            raise HostKeyVerificationError("live inventory receipt durability failed") from exc
+        sealed = LinuxInventorySnapshot(
+            snapshot.target,
+            snapshot.connection,
+            snapshot.inventory,
+            snapshot.records,
+            _live_receipt_path=receipt_path.as_posix(),
+        )
+        if not sealed.live_attested:
+            raise HostKeyVerificationError("live inventory receipt readback failed")
+        return sealed
+
+    @staticmethod
+    def _mkdir_live_receipt_parent(path: Path) -> None:
+        root = LIVE_INVENTORY_RECEIPT_ROOT
+        if path == root:
+            if path.is_symlink() or (path.exists() and not path.is_dir()):
+                raise HostKeyVerificationError("live inventory receipt directory is unsafe")
+            if not path.exists():
+                try:
+                    path.mkdir(mode=0o700)
+                except OSError as exc:
+                    raise HostKeyVerificationError(
+                        "live inventory receipt directory cannot be created"
+                    ) from exc
+            os.chmod(path, 0o700)
+            return
+        if root not in path.parents:
+            raise HostKeyVerificationError("live inventory receipt directory escaped AppCare")
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            raise HostKeyVerificationError("live inventory receipt directory is unsafe")
+        try:
+            path.mkdir(mode=0o700)
+        except FileExistsError:
+            if path.is_symlink() or not path.is_dir():
+                raise HostKeyVerificationError(
+                    "live inventory receipt directory is unsafe"
+                ) from None
+        os.chmod(path, 0o700)
 
     def _execute_command(
         self,

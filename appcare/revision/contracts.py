@@ -5,11 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import weakref
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Final, Literal
 
@@ -78,43 +77,8 @@ class MirrorCaptureError(RevisionError):
     """An internal source mirror cannot be sealed safely."""
 
 
-class _IssuedAuthority:
-    """Non-serializable token issued only after a trusted boundary succeeds."""
-
-    __slots__ = ("__weakref__",)
-
-
-_LIVE_AUTHORITIES: weakref.WeakKeyDictionary[_IssuedAuthority, tuple[str, ...]] = (
-    weakref.WeakKeyDictionary()
-)
-_VERIFIED_MIRROR_RECEIPTS: weakref.WeakKeyDictionary[object, tuple[str, ...]] = (
-    weakref.WeakKeyDictionary()
-)
-
-
-def _live_authority_payload(
-    *,
-    tenant_id: str,
-    application_id: str,
-    target_reference: str,
-    host_identity: str,
-    approved_root: str,
-    inventory_evidence_digest: str,
-    evidence_reference: str,
-) -> tuple[str, ...]:
-    return (
-        tenant_id,
-        application_id,
-        target_reference,
-        host_identity,
-        approved_root,
-        inventory_evidence_digest,
-        evidence_reference,
-    )
-
-
 def _valid_live_authority(
-    authority: object,
+    receipt_path: object,
     *,
     tenant_id: str,
     application_id: str,
@@ -124,9 +88,12 @@ def _valid_live_authority(
     inventory_evidence_digest: str,
     evidence_reference: str,
 ) -> bool:
-    if not isinstance(authority, _IssuedAuthority):
+    if not isinstance(receipt_path, str):
         return False
-    return _LIVE_AUTHORITIES.get(authority) == _live_authority_payload(
+    from ..connectors.linux_ssh_contracts import verify_live_capture_receipt_reference
+
+    return verify_live_capture_receipt_reference(
+        receipt_path,
         tenant_id=tenant_id,
         application_id=application_id,
         target_reference=target_reference,
@@ -138,7 +105,7 @@ def _valid_live_authority(
 
 
 def _valid_live_revision_authority(
-    authority: object,
+    receipt_path: object,
     *,
     tenant_id: str,
     application_id: str,
@@ -147,20 +114,19 @@ def _valid_live_revision_authority(
     approved_root: str,
     evidence_reference: str,
 ) -> bool:
-    if not isinstance(authority, _IssuedAuthority):
+    if not isinstance(receipt_path, str):
         return False
-    payload = _LIVE_AUTHORITIES.get(authority)
-    return (
-        payload is not None
-        and payload[:5]
-        == (
-            tenant_id,
-            application_id,
-            target_reference,
-            host_identity,
-            approved_root,
-        )
-        and payload[6] == evidence_reference
+    from ..connectors.linux_ssh_contracts import verify_live_capture_receipt_reference
+
+    return verify_live_capture_receipt_reference(
+        receipt_path,
+        tenant_id=tenant_id,
+        application_id=application_id,
+        target_reference=target_reference,
+        host_identity=host_identity,
+        approved_root=approved_root,
+        inventory_evidence_digest=None,
+        evidence_reference=evidence_reference,
     )
 
 
@@ -175,38 +141,30 @@ def _valid_verified_mirror_receipt(
     mirror_path: str,
     mirror_digest: str,
 ) -> bool:
-    """Accept mirror evidence only after durable receipt readback succeeded."""
+    """Accept mirror evidence only after durable sealed-artifact readback."""
 
     if not isinstance(receipt, MirrorReceipt):
         return False
-    try:
-        payload = _VERIFIED_MIRROR_RECEIPTS.get(receipt)
-    except TypeError:
+    if (
+        receipt.tenant_id != tenant_id
+        or receipt.application_id != application_id
+        or receipt.target_reference != target_reference
+        or receipt.baseline_id != baseline_id
+        or receipt.mirror_identity != mirror_identity
+        or receipt.mirror_path != mirror_path
+        or receipt.mirror_digest != mirror_digest
+    ):
         return False
-    return payload == (
-        tenant_id,
-        application_id,
-        target_reference,
-        baseline_id,
-        mirror_identity,
-        mirror_path,
-        mirror_digest,
-    )
+    try:
+        from .mirror import ImmutableSourceMirror
 
-
-def _record_verified_mirror_receipt(receipt: object) -> None:
-    """Record only receipts that the mirror verifier read back successfully."""
-
-    if isinstance(receipt, MirrorReceipt):
-        _VERIFIED_MIRROR_RECEIPTS[receipt] = (
-            receipt.tenant_id,
-            receipt.application_id,
-            receipt.target_reference,
-            receipt.baseline_id,
-            receipt.mirror_identity,
-            receipt.mirror_path,
-            receipt.mirror_digest,
-        )
+        mirror_path_value = Path(receipt.mirror_path)
+        if len(mirror_path_value.parents) < 4:
+            return False
+        mirror = ImmutableSourceMirror.for_test(mirror_path_value.parents[3])
+        return mirror.verify(receipt)
+    except (OSError, RuntimeError, RevisionError, ValueError, TypeError):
+        return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,7 +184,7 @@ class LiveCaptureAuthorization:
     approved_root: str
     inventory_evidence_digest: str
     evidence_reference: str
-    _authority: object | None = field(default=None, repr=False, compare=False)
+    _live_receipt_path: str | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -264,7 +222,7 @@ class LiveCaptureAuthorization:
             approved_root=self.approved_root,
             inventory_evidence_digest=self.inventory_evidence_digest,
             evidence_reference=self.evidence_reference,
-            authority=self._authority,
+            receipt_path=self._live_receipt_path,
         ):
             raise RevisionError("live capture authorization must come from live transport")
 
@@ -291,16 +249,14 @@ class LiveCaptureAuthorization:
         reference = evidence_reference or (
             f"live://{target.target_reference}/inventory/{snapshot.inventory.evidence_digest}"
         )
-        authority = _IssuedAuthority()
-        _LIVE_AUTHORITIES[authority] = _live_authority_payload(
-            tenant_id=target.tenant_id,
-            application_id=target.application_id,
-            target_reference=target.target_reference,
-            host_identity=target.expected_hostname,
-            approved_root=normalized_root,
-            inventory_evidence_digest=snapshot.inventory.evidence_digest,
-            evidence_reference=reference,
+        receipt_path = snapshot.live_receipt_path
+        if receipt_path is None:
+            raise BaselineCaptureError("live capture requires a durable receipt")
+        expected_reference = (
+            f"live://{target.target_reference}/inventory/{snapshot.inventory.evidence_digest}"
         )
+        if reference != expected_reference:
+            raise BaselineCaptureError("live capture reference must match durable receipt")
         return cls(
             tenant_id=target.tenant_id,
             application_id=target.application_id,
@@ -309,7 +265,7 @@ class LiveCaptureAuthorization:
             approved_root=normalized_root,
             inventory_evidence_digest=snapshot.inventory.evidence_digest,
             evidence_reference=reference,
-            _authority=authority,
+            _live_receipt_path=receipt_path,
         )
 
     def is_valid_for(
@@ -323,7 +279,7 @@ class LiveCaptureAuthorization:
     ) -> bool:
         return (
             _valid_live_authority(
-                self._authority,
+                self._live_receipt_path,
                 tenant_id=self.tenant_id,
                 application_id=self.application_id,
                 target_reference=self.target_reference,
@@ -717,7 +673,7 @@ class CapturedApplicationRevision:
     evidence_class: EvidenceClass = EvidenceClass.FIXTURE
     evidence_reference: str = "revision://fixture/baseline"
     snapshot_semantics: str = "observed-tree-merkle-race-checked"
-    _live_authority: object | None = field(default=None, repr=False, compare=False)
+    _live_receipt_path: str | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         for value, name in (
@@ -822,10 +778,10 @@ class CapturedApplicationRevision:
                 host_identity=self.host_identity,
                 approved_root=self.approved_root,
                 evidence_reference=self.evidence_reference,
-                authority=self._live_authority,
+                receipt_path=self._live_receipt_path,
             ):
                 raise RevisionError("real-target evidence requires live capture authorization")
-        elif self._live_authority is not None:
+        elif self._live_receipt_path is not None:
             raise RevisionError("live capture authorization is not valid for fixture evidence")
         if self.snapshot_semantics not in {"git-bound", "observed-tree-merkle-race-checked"}:
             raise RevisionError("snapshot semantics are invalid")
@@ -950,8 +906,8 @@ class CapturedApplicationRevision:
             evidence_class=final_evidence_class,
             evidence_reference=normalized_ref,
             snapshot_semantics=semantics,
-            _live_authority=(
-                live_authorization._authority if live_authorization is not None else None
+            _live_receipt_path=(
+                live_authorization._live_receipt_path if live_authorization is not None else None
             ),
         )
 
@@ -1080,11 +1036,11 @@ class CapturedApplicationRevision:
             evidence_class=self.evidence_class,
             evidence_reference=self.evidence_reference,
             snapshot_semantics=self.snapshot_semantics,
-            _live_authority=self._live_authority,
+            _live_receipt_path=self._live_receipt_path,
         )
 
 
-@dataclass(frozen=True, slots=True, weakref_slot=True)
+@dataclass(frozen=True, slots=True)
 class MirrorReceipt:
     tenant_id: str
     application_id: str

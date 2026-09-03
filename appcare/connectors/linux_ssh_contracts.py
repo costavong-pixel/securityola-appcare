@@ -1259,75 +1259,181 @@ class RemoteExecutionResult:
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-_LIVE_SNAPSHOT_ISSUER: Final = object()
+LIVE_INVENTORY_RECEIPT_ROOT: Final = Path("/var/lib/securityola/appcare/evidence/live-inventory")
+_MAX_LIVE_RECEIPT_BYTES: Final = 64 * 1024
 
 
-def _live_snapshot_binding(
+def _live_snapshot_receipt_payload(
     target: LinuxTarget,
     connection: RemoteExecutionResult,
     inventory: RemoteExecutionResult,
     records: Sequence[InventoryRecord],
-) -> tuple[object, ...]:
-    return (
-        target.tenant_id,
-        target.application_id,
-        target.environment,
-        target.host,
-        target.expected_hostname,
-        target.ssh_port,
-        target.expected_host_key_fingerprint,
-        target.credential_reference,
-        target.remote_user,
-        target.approved_application_roots,
-        target.approved_service_names,
-        target.approved_database_identifiers,
-        target.target_reference,
-        connection.evidence_digest,
-        inventory.evidence_digest,
-        tuple(record.evidence_digest for record in records),
-    )
+    *,
+    receipt_path: str,
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "sealed": True,
+        "receipt_path": receipt_path,
+        "target": {
+            "tenant_id": target.tenant_id,
+            "application_id": target.application_id,
+            "environment": target.environment,
+            "host": target.host,
+            "expected_hostname": target.expected_hostname,
+            "ssh_port": target.ssh_port,
+            "expected_host_key_fingerprint": target.expected_host_key_fingerprint,
+            "credential_reference": target.credential_reference,
+            "remote_user": target.remote_user,
+            "approved_application_roots": list(target.approved_application_roots),
+            "approved_service_names": list(target.approved_service_names),
+            "approved_database_identifiers": list(target.approved_database_identifiers),
+            "target_reference": target.target_reference,
+        },
+        "connection_operation_id": connection.operation_id,
+        "connection_evidence_digest": connection.evidence_digest,
+        "inventory_operation_id": inventory.operation_id,
+        "inventory_evidence_digest": inventory.evidence_digest,
+        "record_evidence_digests": [record.evidence_digest for record in records],
+        "evidence_reference": (
+            f"live://{target.target_reference}/inventory/{inventory.evidence_digest}"
+        ),
+    }
 
 
-class _LiveSnapshotAuthority:
-    """Unserializable proof issued by the live SSH transport boundary."""
+def live_snapshot_receipt_path(target: LinuxTarget, operation_id: str) -> Path:
+    operation = validate_operation_id(operation_id)
+    return LIVE_INVENTORY_RECEIPT_ROOT / target.target_reference / f"{operation}.json"
 
-    __slots__ = ("_binding",)
 
-    def __init__(self, issuer: object, binding: tuple[object, ...] | None = None) -> None:
-        if issuer is not _LIVE_SNAPSHOT_ISSUER:
-            raise TypeError("live snapshot authority is transport-issued")
-        self._binding = binding
-
-    def bind(
-        self,
-        target: LinuxTarget,
-        connection: RemoteExecutionResult,
-        inventory: RemoteExecutionResult,
-        records: Sequence[InventoryRecord],
-    ) -> _LiveSnapshotAuthority:
+def _read_live_receipt(path: Path) -> dict[str, object] | None:
+    if not _is_safe_live_receipt_path(path):
+        return None
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        metadata = os.fstat(descriptor)
         if (
-            connection.evidence_class is not EvidenceClass.REAL_TARGET
-            or inventory.evidence_class is not EvidenceClass.REAL_TARGET
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or metadata.st_mode & 0o077
+            or metadata.st_size > _MAX_LIVE_RECEIPT_BYTES
         ):
-            return _LiveSnapshotAuthority(_LIVE_SNAPSHOT_ISSUER)
-        return _LiveSnapshotAuthority(
-            _LIVE_SNAPSHOT_ISSUER,
-            _live_snapshot_binding(target, connection, inventory, records),
+            return None
+        content = bytearray()
+        while len(content) <= _MAX_LIVE_RECEIPT_BYTES:
+            chunk = os.read(descriptor, _MAX_LIVE_RECEIPT_BYTES + 1 - len(content))
+            if not chunk:
+                break
+            content.extend(chunk)
+        if len(content) > _MAX_LIVE_RECEIPT_BYTES:
+            return None
+    except OSError:
+        return None
+    finally:
+        os.close(descriptor)
+    try:
+        payload = json.loads(bytes(content).decode("utf-8"))
+    except (UnicodeError, ValueError, TypeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _is_safe_live_receipt_path(path: Path) -> bool:
+    if not path.is_absolute() or path.is_symlink():
+        return False
+    try:
+        root = LIVE_INVENTORY_RECEIPT_ROOT
+        return (
+            root == path.parents[1]
+            and root.resolve(strict=True) == root
+            and path.parent.resolve(strict=True) == path.parent
         )
+    except (IndexError, OSError, RuntimeError):
+        return False
 
-    def matches(
-        self,
-        target: LinuxTarget,
-        connection: RemoteExecutionResult,
-        inventory: RemoteExecutionResult,
-        records: Sequence[InventoryRecord],
-    ) -> bool:
-        if (
-            connection.evidence_class is not EvidenceClass.REAL_TARGET
-            or inventory.evidence_class is not EvidenceClass.REAL_TARGET
-        ):
-            return False
-        return self._binding == _live_snapshot_binding(target, connection, inventory, records)
+
+def _receipt_digest(payload: Mapping[str, object]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def verify_live_snapshot_receipt(snapshot: LinuxInventorySnapshot) -> bool:
+    """Validate the durable, sanitized receipt emitted by live transport."""
+
+    if snapshot._live_receipt_path is None:
+        return False
+    expected_path = live_snapshot_receipt_path(snapshot.target, snapshot.inventory.operation_id)
+    if Path(snapshot._live_receipt_path) != expected_path:
+        return False
+    payload = _read_live_receipt(expected_path)
+    if payload is None:
+        return False
+    supplied_digest = payload.pop("receipt_digest", None)
+    if (
+        not isinstance(supplied_digest, str)
+        or len(supplied_digest) != 64
+        or any(character not in "0123456789abcdef" for character in supplied_digest)
+    ):
+        return False
+    expected = _live_snapshot_receipt_payload(
+        snapshot.target,
+        snapshot.connection,
+        snapshot.inventory,
+        snapshot.records,
+        receipt_path=expected_path.as_posix(),
+    )
+    return payload == expected and supplied_digest == _receipt_digest(expected)
+
+
+def verify_live_capture_receipt_reference(
+    path: str,
+    *,
+    tenant_id: str,
+    application_id: str,
+    target_reference: str,
+    host_identity: str,
+    approved_root: str,
+    inventory_evidence_digest: str | None,
+    evidence_reference: str,
+) -> bool:
+    """Validate a live revision's reference against the durable receipt."""
+
+    receipt_path = Path(path)
+    try:
+        validate_operation_id(receipt_path.stem)
+    except (LinuxSSHError, ValueError):
+        return False
+    if receipt_path.parent != LIVE_INVENTORY_RECEIPT_ROOT / target_reference:
+        return False
+    payload = _read_live_receipt(receipt_path)
+    if payload is None:
+        return False
+    supplied_digest = payload.pop("receipt_digest", None)
+    target = payload.get("target")
+    if not isinstance(target, dict):
+        return False
+    roots = target.get("approved_application_roots")
+    return (
+        payload.get("schema_version") == 1
+        and payload.get("sealed") is True
+        and supplied_digest == _receipt_digest(payload)
+        and payload.get("receipt_path") == receipt_path.as_posix()
+        and target.get("tenant_id") == tenant_id
+        and target.get("application_id") == application_id
+        and target.get("target_reference") == target_reference
+        and target.get("expected_hostname") == host_identity
+        and isinstance(roots, (tuple, list))
+        and approved_root in roots
+        and (
+            inventory_evidence_digest is None
+            or payload.get("inventory_evidence_digest") == inventory_evidence_digest
+        )
+        and payload.get("evidence_reference") == evidence_reference
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1336,7 +1442,7 @@ class LinuxInventorySnapshot:
     connection: RemoteExecutionResult
     inventory: RemoteExecutionResult
     records: tuple[InventoryRecord, ...]
-    _live_authority: object | None = field(default=None, repr=False, compare=False)
+    _live_receipt_path: str | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if (
@@ -1360,11 +1466,11 @@ class LinuxInventorySnapshot:
     def live_attested(self) -> bool:
         """True only for snapshots emitted by the live transport boundary."""
 
-        return isinstance(
-            self._live_authority, _LiveSnapshotAuthority
-        ) and self._live_authority.matches(
-            self.target, self.connection, self.inventory, self.records
-        )
+        return verify_live_snapshot_receipt(self)
+
+    @property
+    def live_receipt_path(self) -> str | None:
+        return self._live_receipt_path
 
     @property
     def _inventory_supported(self) -> bool:
