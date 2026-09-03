@@ -824,6 +824,12 @@ class CapturedApplicationRevision:
                 {
                     "root": self.approved_root,
                     "source_type": self.source_type,
+                    "source_host_identity": self._source_host_identity,
+                    "source_root_identity": (
+                        list(self._source_root_identity)
+                        if self._source_root_identity is not None
+                        else None
+                    ),
                     "entries": [entry.canonical_payload() for entry in self.manifest],
                 },
                 sort_keys=True,
@@ -898,10 +904,7 @@ class CapturedApplicationRevision:
             ):
                 raise RevisionError("real-target evidence requires live capture authorization")
         elif (
-            self._live_receipt_path is not None
-            or self._live_inventory_evidence_digest is not None
-            or self._source_host_identity is not None
-            or self._source_root_identity is not None
+            self._live_receipt_path is not None or self._live_inventory_evidence_digest is not None
         ):
             raise RevisionError("live capture authorization is not valid for fixture evidence")
         if self.snapshot_semantics not in {"git-bound", "observed-tree-merkle-race-checked"}:
