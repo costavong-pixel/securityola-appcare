@@ -108,11 +108,11 @@ class FakeRunner:
             return ProcessResult(0, b"192.0.2.10 ssh-ed25519 " + KEY_DATA.encode() + b"\n", b"")
         if argv[0] == "realpath":
             return ProcessResult(0, (argv[-1] + "\n").encode(), b"")
-        if argv[0] == "stat" and argv[1] == "--format=%n:%F:%U:%G:%a:%s":
+        if len(argv) >= 4 and argv[-4] == "stat" and argv[-3] == "--format=%n:%F:%U:%G:%a:%s":
             return ProcessResult(
                 0, (argv[-1] + ":directory:appcare:appcare:700:42\n").encode(), b""
             )
-        if argv[0] == "stat" and argv[1] == "--format=%n:%F:%U:%G:%a":
+        if len(argv) >= 4 and argv[-4] == "stat" and argv[-3] == "--format=%n:%F:%U:%G:%a":
             return ProcessResult(0, (argv[-1] + ":directory:appcare:appcare:700\n").encode(), b"")
         return self.responses.get(argv[-1], ProcessResult(0, b"", b""))
 
@@ -415,7 +415,7 @@ def test_collect_inventory_requires_filesystem_metadata_success(tmp_path: Path) 
             stdout_limit: int,
             stderr_limit: int,
         ) -> ProcessResult:
-            if argv[0] == "stat" and argv[1] == "--format=%n:%F:%U:%G:%a:%s":
+            if len(argv) >= 4 and argv[-4] == "stat" and argv[-3] == "--format=%n:%F:%U:%G:%a:%s":
                 self.calls.append(argv)
                 return ProcessResult(1, b"", b"permission denied\n")
             return super().run(
