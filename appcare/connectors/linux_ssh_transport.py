@@ -743,7 +743,7 @@ class LinuxSSHClient:
     def _parse_filesystem_metadata(
         self, command: RemoteCommand, text: str
     ) -> tuple[InventoryRecord, ...]:
-        parts = text.strip().split(",")
+        parts = text.strip().split(":")
         expected = 6 if command.operation == OperationKind.FILESYSTEM_METADATA_READ else 5
         if len(parts) != expected:
             raise ValueError("filesystem metadata is malformed")
