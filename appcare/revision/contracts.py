@@ -1057,6 +1057,8 @@ class CapturedApplicationRevision:
         *,
         receipt: MirrorReceipt,
     ) -> CapturedApplicationRevision:
+        if not isinstance(receipt, MirrorReceipt):
+            raise RevisionError("mirror evidence requires a verified sealed receipt")
         return type(self)(
             tenant_id=self.tenant_id,
             application_id=self.application_id,
