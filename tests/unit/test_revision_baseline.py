@@ -427,7 +427,9 @@ def test_mirror_rejects_source_root_identity_replacement_after_copy(
     original_capture = FilesystemBaselineCapturer.capture
     calls = 0
 
-    def replacing_capture(capturer: FilesystemBaselineCapturer, current: Path) -> FilesystemBaseline:
+    def replacing_capture(
+        capturer: FilesystemBaselineCapturer, current: Path
+    ) -> FilesystemBaseline:
         nonlocal calls
         baseline = original_capture(capturer, current)
         calls += 1
