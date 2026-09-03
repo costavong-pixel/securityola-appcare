@@ -1309,6 +1309,8 @@ def live_snapshot_receipt_path(target: LinuxTarget, operation_id: str) -> Path:
 def _read_live_receipt(path: Path) -> dict[str, object] | None:
     if not _is_safe_live_receipt_path(path):
         return None
+    if not _trusted_receipt_ancestry(path.parent):
+        return None
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
     try:
         descriptor = os.open(path, flags)
@@ -1317,9 +1319,7 @@ def _read_live_receipt(path: Path) -> dict[str, object] | None:
     try:
         metadata = os.fstat(descriptor)
         if (
-            not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_nlink != 1
-            or metadata.st_mode & 0o077
+            not _trusted_receipt_file_metadata(metadata)
             or metadata.st_size > _MAX_LIVE_RECEIPT_BYTES
         ):
             return None
@@ -1354,6 +1354,44 @@ def _is_safe_live_receipt_path(path: Path) -> bool:
         )
     except (IndexError, OSError, RuntimeError):
         return False
+
+
+def _trusted_receipt_directory(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    if not stat.S_ISDIR(metadata.st_mode) or (
+        metadata.st_mode & 0o022 and not metadata.st_mode & stat.S_ISVTX
+    ):
+        return False
+    return os.name != "posix" or metadata.st_uid in {0, _current_uid()}
+
+
+def _trusted_receipt_file_metadata(metadata: os.stat_result) -> bool:
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1 or metadata.st_mode & 0o077:
+        return False
+    return os.name != "posix" or metadata.st_uid in {0, _current_uid()}
+
+
+def _trusted_receipt_file(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    return _trusted_receipt_file_metadata(metadata)
+
+
+def _trusted_receipt_ancestry(path: Path) -> bool:
+    if not path.is_absolute():
+        return False
+    current = path
+    while True:
+        if not _trusted_receipt_directory(current):
+            return False
+        if current == Path(current.anchor):
+            return True
+        current = current.parent
 
 
 def _receipt_digest(payload: Mapping[str, object]) -> str:
@@ -1408,6 +1446,8 @@ def verify_live_capture_receipt_reference(
     except (LinuxSSHError, ValueError):
         return False
     if receipt_path.parent != LIVE_INVENTORY_RECEIPT_ROOT / target_reference:
+        return False
+    if not _trusted_receipt_directory(LIVE_INVENTORY_RECEIPT_ROOT):
         return False
     payload = _read_live_receipt(receipt_path)
     if payload is None:

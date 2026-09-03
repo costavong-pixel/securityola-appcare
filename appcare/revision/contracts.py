@@ -112,9 +112,10 @@ def _valid_live_revision_authority(
     target_reference: str,
     host_identity: str,
     approved_root: str,
+    inventory_evidence_digest: object,
     evidence_reference: str,
 ) -> bool:
-    if not isinstance(receipt_path, str):
+    if not isinstance(receipt_path, str) or not isinstance(inventory_evidence_digest, str):
         return False
     from ..connectors.linux_ssh_contracts import verify_live_capture_receipt_reference
 
@@ -125,7 +126,7 @@ def _valid_live_revision_authority(
         target_reference=target_reference,
         host_identity=host_identity,
         approved_root=approved_root,
-        inventory_evidence_digest=None,
+        inventory_evidence_digest=inventory_evidence_digest,
         evidence_reference=evidence_reference,
     )
 
@@ -140,6 +141,7 @@ def _valid_verified_mirror_receipt(
     mirror_identity: str,
     mirror_path: str,
     mirror_digest: str,
+    evidence_class: EvidenceClass,
 ) -> bool:
     """Accept mirror evidence only after durable sealed-artifact readback."""
 
@@ -156,12 +158,24 @@ def _valid_verified_mirror_receipt(
     ):
         return False
     try:
-        from .mirror import ImmutableSourceMirror
+        from .mirror import INTERNAL_MIRROR_ROOT, ImmutableSourceMirror
 
         mirror_path_value = Path(receipt.mirror_path)
         if len(mirror_path_value.parents) < 4:
             return False
-        mirror = ImmutableSourceMirror.for_test(mirror_path_value.parents[3])
+        if evidence_class is EvidenceClass.REAL_TARGET:
+            mirror = ImmutableSourceMirror()
+            expected_path = (
+                INTERNAL_MIRROR_ROOT
+                / receipt.tenant_id
+                / receipt.application_id
+                / receipt.target_reference
+                / receipt.baseline_id
+            )
+            if mirror_path_value != expected_path:
+                return False
+        else:
+            mirror = ImmutableSourceMirror.for_test(mirror_path_value.parents[3])
         return mirror.verify(receipt)
     except (OSError, RuntimeError, RevisionError, ValueError, TypeError):
         return False
@@ -674,6 +688,7 @@ class CapturedApplicationRevision:
     evidence_reference: str = "revision://fixture/baseline"
     snapshot_semantics: str = "observed-tree-merkle-race-checked"
     _live_receipt_path: str | None = field(default=None, repr=False, compare=False)
+    _live_inventory_evidence_digest: str | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         for value, name in (
@@ -777,11 +792,14 @@ class CapturedApplicationRevision:
                 target_reference=self.target_reference,
                 host_identity=self.host_identity,
                 approved_root=self.approved_root,
+                inventory_evidence_digest=self._live_inventory_evidence_digest,
                 evidence_reference=self.evidence_reference,
                 receipt_path=self._live_receipt_path,
             ):
                 raise RevisionError("real-target evidence requires live capture authorization")
-        elif self._live_receipt_path is not None:
+        elif (
+            self._live_receipt_path is not None or self._live_inventory_evidence_digest is not None
+        ):
             raise RevisionError("live capture authorization is not valid for fixture evidence")
         if self.snapshot_semantics not in {"git-bound", "observed-tree-merkle-race-checked"}:
             raise RevisionError("snapshot semantics are invalid")
@@ -812,6 +830,7 @@ class CapturedApplicationRevision:
                 if isinstance(self._mirror_receipt, MirrorReceipt)
                 else "",
                 mirror_digest=mirror_digest,
+                evidence_class=self.evidence_class,
             ):
                 raise RevisionError("mirror evidence requires a verified sealed receipt")
 
@@ -882,6 +901,11 @@ class CapturedApplicationRevision:
             "database_metadata": dict(database),
             "source_revision": source_revision,
             "snapshot_semantics": semantics,
+            "live_inventory_evidence_digest": (
+                live_authorization.inventory_evidence_digest
+                if live_authorization is not None
+                else None
+            ),
         }
         digest = hashlib.sha256(
             json.dumps(
@@ -909,6 +933,11 @@ class CapturedApplicationRevision:
             _live_receipt_path=(
                 live_authorization._live_receipt_path if live_authorization is not None else None
             ),
+            _live_inventory_evidence_digest=(
+                live_authorization.inventory_evidence_digest
+                if live_authorization is not None
+                else None
+            ),
         )
 
     def _baseline_payload(self) -> dict[str, object]:
@@ -925,6 +954,7 @@ class CapturedApplicationRevision:
             "database_metadata": _canonical_metadata(self.database_metadata),
             "source_revision": self.source_revision,
             "snapshot_semantics": self.snapshot_semantics,
+            "live_inventory_evidence_digest": self._live_inventory_evidence_digest,
         }
 
     def _compute_baseline_digest(self) -> str:
@@ -988,6 +1018,7 @@ class CapturedApplicationRevision:
                     else ""
                 ),
                 mirror_digest=self.mirror_digest,
+                evidence_class=self.evidence_class,
             )
         ):
             status = CapabilityStatus.UNSUPPORTED
@@ -1037,6 +1068,7 @@ class CapturedApplicationRevision:
             evidence_reference=self.evidence_reference,
             snapshot_semantics=self.snapshot_semantics,
             _live_receipt_path=self._live_receipt_path,
+            _live_inventory_evidence_digest=self._live_inventory_evidence_digest,
         )
 
 

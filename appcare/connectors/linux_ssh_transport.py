@@ -50,6 +50,8 @@ from .linux_ssh_contracts import (
     WebServerMetadataRead,
     _live_snapshot_receipt_payload,
     _receipt_digest,
+    _trusted_receipt_ancestry,
+    _trusted_receipt_file,
     live_snapshot_receipt_path,
     parse_host_key_line,
     required_inventory_records_complete,
@@ -585,6 +587,8 @@ class LinuxSSHClient:
         if len(encoded) > 64 * 1024:
             raise HostKeyVerificationError("live inventory receipt is too large")
         self._mkdir_live_receipt_parent(receipt_path.parent)
+        if not _trusted_receipt_ancestry(receipt_path.parent):
+            raise HostKeyVerificationError("live inventory receipt directory trust failed")
         flags = (
             os.O_WRONLY
             | os.O_CREAT
@@ -612,12 +616,16 @@ class LinuxSSHClient:
             os.close(descriptor)
         try:
             os.chmod(receipt_path, 0o400)
+            if not _trusted_receipt_file(receipt_path):
+                raise HostKeyVerificationError("live inventory receipt permissions are unsafe")
             descriptor = os.open(
                 receipt_path,
                 os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
             )
-            os.fsync(descriptor)
-            os.close(descriptor)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
             directory_descriptor = os.open(
                 receipt_path.parent,
                 os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
@@ -643,6 +651,8 @@ class LinuxSSHClient:
     def _mkdir_live_receipt_parent(path: Path) -> None:
         root = LIVE_INVENTORY_RECEIPT_ROOT
         if path == root:
+            if not _trusted_receipt_ancestry(root.parent):
+                raise HostKeyVerificationError("live inventory receipt parent trust failed")
             if path.is_symlink() or (path.exists() and not path.is_dir()):
                 raise HostKeyVerificationError("live inventory receipt directory is unsafe")
             if not path.exists():
@@ -653,9 +663,13 @@ class LinuxSSHClient:
                         "live inventory receipt directory cannot be created"
                     ) from exc
             os.chmod(path, 0o700)
+            if not _trusted_receipt_ancestry(path):
+                raise HostKeyVerificationError("live inventory receipt directory trust failed")
             return
         if root not in path.parents:
             raise HostKeyVerificationError("live inventory receipt directory escaped AppCare")
+        if not _trusted_receipt_ancestry(root):
+            raise HostKeyVerificationError("live inventory receipt root trust failed")
         if path.is_symlink() or (path.exists() and not path.is_dir()):
             raise HostKeyVerificationError("live inventory receipt directory is unsafe")
         try:
@@ -666,6 +680,8 @@ class LinuxSSHClient:
                     "live inventory receipt directory is unsafe"
                 ) from None
         os.chmod(path, 0o700)
+        if not _trusted_receipt_ancestry(path):
+            raise HostKeyVerificationError("live inventory receipt directory trust failed")
 
     def _execute_command(
         self,
