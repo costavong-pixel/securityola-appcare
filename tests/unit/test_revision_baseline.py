@@ -456,12 +456,13 @@ def test_mirror_rejects_source_root_identity_replacement_after_copy(
 def test_mirror_rejects_untrusted_writable_ancestry(tmp_path: Path) -> None:
     unsafe_parent = tmp_path / "unsafe-parent"
     unsafe_parent.mkdir()
-    os.chmod(unsafe_parent, 0o777)
+    original_mode = stat.S_IMODE(unsafe_parent.stat().st_mode)
+    os.chmod(unsafe_parent, original_mode | stat.S_IWOTH)
     try:
         with pytest.raises(MirrorCaptureError, match="ancestry"):
             ImmutableSourceMirror.for_test(unsafe_parent / "mirror")
     finally:
-        os.chmod(unsafe_parent, 0o700)
+        os.chmod(unsafe_parent, original_mode)
 
 
 def test_no_network_or_secret_receipt_content_is_persisted(tmp_path: Path) -> None:
