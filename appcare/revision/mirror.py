@@ -252,11 +252,11 @@ class ImmutableSourceMirror:
                         raise MirrorCaptureError("mirror readback verification failed")
                 except MirrorCaptureError:
                     committed = False
-                    self._remove_tree(final)
+                    self._remove_entry(final)
                     raise
                 except OSError as exc:
                     committed = False
-                    self._remove_tree(final)
+                    self._remove_entry(final)
                     raise MirrorCaptureError("mirror durability verification failed") from exc
                 try:
                     self._unlink_entry(claim)
@@ -268,7 +268,7 @@ class ImmutableSourceMirror:
                     post = active_capturer.capture(source)
                 except (BaselineCaptureError, OSError, ValueError, TypeError, UnicodeError):
                     committed = False
-                    self._remove_tree(final)
+                    self._remove_entry(final)
                     raise MirrorCaptureError(
                         "source changed while mirror was being captured"
                     ) from None
@@ -278,7 +278,7 @@ class ImmutableSourceMirror:
                     or post.root_identity != revision._source_root_identity
                 ):
                     committed = False
-                    self._remove_tree(final)
+                    self._remove_entry(final)
                     raise MirrorCaptureError(
                         "source identity or contents changed while mirror was being captured"
                     )
@@ -291,16 +291,19 @@ class ImmutableSourceMirror:
             except (OSError, ValueError, TypeError, UnicodeError) as exc:
                 raise MirrorCaptureError("mirror capture failed") from exc
             finally:
-                if not committed and staging.exists():
+                if not committed:
                     try:
-                        self._remove_tree(staging)
-                    except OSError as exc:
+                        self._remove_entry(staging)
+                    except FileNotFoundError:
+                        pass
+                    except (MirrorCaptureError, OSError) as exc:
                         raise MirrorCaptureError("mirror cleanup failed") from exc
-                if claim.exists() or claim.is_symlink():
-                    try:
-                        self._unlink_entry(claim)
-                    except OSError as exc:
-                        raise MirrorCaptureError("mirror claim cleanup failed") from exc
+                try:
+                    self._unlink_entry(claim)
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    raise MirrorCaptureError("mirror claim cleanup failed") from exc
 
     def verify(self, receipt: MirrorReceipt) -> bool:
         """Verify a sealed mirror without trusting a caller-supplied path."""
@@ -816,6 +819,8 @@ class ImmutableSourceMirror:
 
     def _unlink_entry(self, path: Path) -> None:
         if os.name == "posix" and self._active_parent_fd is not None:
+            if self._active_parent_path != path.parent:
+                raise MirrorCaptureError("mirror entry escaped pinned parent")
             try:
                 os.unlink(path.name, dir_fd=self._active_parent_fd)
             except FileNotFoundError:
@@ -1018,8 +1023,13 @@ class ImmutableSourceMirror:
         ).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
 
-    @staticmethod
-    def _seal_permissions(root: Path) -> None:
+    def _seal_permissions(self, root: Path) -> None:
+        if os.name == "posix":
+            parent_fd = self._active_parent_fd
+            if parent_fd is None or self._active_parent_path != root.parent:
+                raise MirrorCaptureError("mirror sealing is not descriptor-pinned")
+            self._seal_pinned_entry(parent_fd, root.name)
+            return
         for current, directories, files in os.walk(root, topdown=False, followlinks=False):
             current_path = Path(current)
             for name in files:
@@ -1033,6 +1043,134 @@ class ImmutableSourceMirror:
                     raise MirrorCaptureError("mirror contains a symlink")
                 os.chmod(path, 0o500)
         os.chmod(root, 0o500)
+
+    def _seal_pinned_entry(self, parent_fd: int, name: str) -> None:
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        try:
+            directory_fd = os.open(name, flags, dir_fd=parent_fd)
+        except OSError as exc:
+            raise MirrorCaptureError("mirror entry cannot be pinned for sealing") from exc
+        try:
+            self._seal_pinned_directory(directory_fd)
+        finally:
+            os.close(directory_fd)
+
+    def _seal_pinned_directory(self, directory_fd: int) -> None:
+        directory_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        file_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+        try:
+            with os.scandir(directory_fd) as iterator:
+                names = sorted(
+                    (entry.name for entry in iterator),
+                    key=lambda entry_name: os.fsencode(entry_name),
+                )
+            for child_name in names:
+                metadata = os.stat(child_name, dir_fd=directory_fd, follow_symlinks=False)
+                if stat.S_ISLNK(metadata.st_mode):
+                    raise MirrorCaptureError("mirror contains a symlink")
+                if stat.S_ISDIR(metadata.st_mode):
+                    child_fd = os.open(child_name, directory_flags, dir_fd=directory_fd)
+                    try:
+                        opened = os.fstat(child_fd)
+                        if _source_stat_tuple(metadata) != _source_stat_tuple(opened):
+                            raise MirrorCaptureError("mirror directory changed while sealing")
+                        self._seal_pinned_directory(child_fd)
+                        self._fchmod(child_fd, 0o500)
+                    finally:
+                        os.close(child_fd)
+                    continue
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                    raise MirrorCaptureError("mirror contains an unsafe file")
+                file_fd = os.open(child_name, file_flags, dir_fd=directory_fd)
+                try:
+                    opened = os.fstat(file_fd)
+                    if _source_stat_tuple(metadata) != _source_stat_tuple(opened):
+                        raise MirrorCaptureError("mirror file changed while sealing")
+                    self._fchmod(file_fd, 0o400)
+                finally:
+                    os.close(file_fd)
+            self._fchmod(directory_fd, 0o500)
+            os.fsync(directory_fd)
+        except MirrorCaptureError:
+            raise
+        except OSError as exc:
+            raise MirrorCaptureError("mirror sealing failed") from exc
+
+    def _remove_entry(self, path: Path) -> None:
+        if os.name != "posix":
+            self._remove_tree(path)
+            return
+        parent_fd = self._active_parent_fd
+        if parent_fd is None or self._active_parent_path != path.parent:
+            raise MirrorCaptureError("mirror cleanup is not descriptor-pinned")
+        self._remove_pinned_entry(parent_fd, path.name)
+
+    @staticmethod
+    def _fchmod(descriptor: int, mode: int) -> None:
+        fchmod = getattr(os, "fchmod", None)
+        if not callable(fchmod):
+            raise MirrorCaptureError("descriptor permission control is unavailable")
+        fchmod(descriptor, mode)
+
+    def _remove_pinned_entry(self, parent_fd: int, name: str) -> None:
+        directory_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        try:
+            directory_fd = os.open(name, directory_flags, dir_fd=parent_fd)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise MirrorCaptureError("mirror cleanup entry cannot be pinned") from exc
+        try:
+            self._fchmod(directory_fd, 0o700)
+            with os.scandir(directory_fd) as iterator:
+                names = sorted(
+                    (entry.name for entry in iterator),
+                    key=lambda entry_name: os.fsencode(entry_name),
+                )
+            for child_name in names:
+                try:
+                    metadata = os.stat(child_name, dir_fd=directory_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+                    self._remove_pinned_entry(directory_fd, child_name)
+                else:
+                    try:
+                        os.unlink(child_name, dir_fd=directory_fd)
+                    except FileNotFoundError:
+                        pass
+            os.fsync(directory_fd)
+            current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            opened = os.fstat(directory_fd)
+            if _source_stat_tuple(current) != _source_stat_tuple(opened):
+                raise MirrorCaptureError("mirror cleanup entry changed during removal")
+        except MirrorCaptureError:
+            raise
+        except OSError as exc:
+            raise MirrorCaptureError("mirror cleanup failed") from exc
+        finally:
+            os.close(directory_fd)
+        try:
+            os.rmdir(name, dir_fd=parent_fd)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise MirrorCaptureError("mirror cleanup failed") from exc
 
     @staticmethod
     def _remove_tree(path: Path) -> None:
