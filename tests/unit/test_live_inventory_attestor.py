@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
+import socket
+import struct
 from datetime import UTC, datetime, timedelta
+from threading import Thread
 from typing import Any, cast
 
 import pytest
@@ -27,6 +31,7 @@ from appcare.connectors.live_inventory_attestor import (
     RootBinding,
     RootControlledLiveInventoryAttestor,
     TrustedOperationEvidence,
+    UnixSocketAttestorServer,
 )
 
 KEY_BLOB = b"attestor-test-host-key"
@@ -148,6 +153,7 @@ def _fixture(
         target_reference=current.target_reference,
         status=connection.status,
         evidence_digest=connection.evidence_digest,
+        transport_run_id="run",
         record_evidence_digests=(),
         host_identity=current.expected_hostname,
         root_bindings=(),
@@ -162,6 +168,7 @@ def _fixture(
         target_reference=current.target_reference,
         status=inventory.status,
         evidence_digest=inventory.evidence_digest,
+        transport_run_id="run",
         record_evidence_digests=tuple(item.evidence_digest for item in inventory.records),
         host_identity=current.expected_hostname,
         root_bindings=(
@@ -207,6 +214,7 @@ def test_arbitrary_message_is_not_signed() -> None:
     (
         lambda payload: payload["target"].__setitem__("application_id", "other-app"),
         lambda payload: payload.__setitem__("connection_evidence_digest", "0" * 64),
+        lambda payload: payload.__setitem__("transport_run_id", "other-run"),
         lambda payload: payload["source_binding"].__setitem__("host_identity", "wrong-host"),
         lambda payload: payload["source_binding"]["roots"][0].__setitem__("inode", 999),
     ),
@@ -253,3 +261,61 @@ def test_canonical_json_rejects_duplicate_keys_and_noncanonical_spacing() -> Non
     ):
         with pytest.raises(AttestorError):
             service.attest(message)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Unix socket framing is POSIX-only")
+def test_socket_protocol_requires_write_half_close_and_returns_signature() -> None:
+    _target, service, fixture, signer = _fixture()
+    server = UnixSocketAttestorServer(
+        attestor=service,
+        allowed_peer_uid=os.getuid(),
+        allowed_peer_gid=os.getgid(),
+    )
+    client, peer = socket.socketpair()
+    thread = Thread(target=server._handle, args=(peer,))
+    thread.start()
+    try:
+        message = cast(bytes, fixture["message"])
+        client.sendall(struct.pack("!I", len(message)) + message)
+        client.shutdown(socket.SHUT_WR)
+        length = struct.unpack("!I", _read_exact(client, 4))[0]
+        signature = _read_exact(client, length)
+        signer.public_key().verify(signature, message)
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+    finally:
+        client.close()
+        peer.close()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Unix socket framing is POSIX-only")
+def test_socket_protocol_rejects_trailing_bytes() -> None:
+    _target, service, fixture, _signer = _fixture()
+    server = UnixSocketAttestorServer(
+        attestor=service,
+        allowed_peer_uid=os.getuid(),
+        allowed_peer_gid=os.getgid(),
+    )
+    client, peer = socket.socketpair()
+    thread = Thread(target=server._handle, args=(peer,))
+    thread.start()
+    try:
+        message = cast(bytes, fixture["message"])
+        client.sendall(struct.pack("!I", len(message)) + message + b"trailing")
+        client.shutdown(socket.SHUT_WR)
+        assert struct.unpack("!I", _read_exact(client, 4))[0] == 0
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+    finally:
+        client.close()
+        peer.close()
+
+
+def _read_exact(channel: socket.socket, length: int) -> bytes:
+    content = bytearray()
+    while len(content) < length:
+        chunk = channel.recv(length - len(content))
+        if not chunk:
+            raise AssertionError("socket frame ended early")
+        content.extend(chunk)
+    return bytes(content)

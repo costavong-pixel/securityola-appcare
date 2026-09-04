@@ -129,6 +129,7 @@ class TrustedOperationEvidence:
     target_reference: str
     status: OperationStatus
     evidence_digest: str
+    transport_run_id: str
     record_evidence_digests: tuple[str, ...]
     host_identity: str
     root_bindings: tuple[RootBinding, ...]
@@ -152,6 +153,7 @@ class TrustedOperationEvidence:
         )
         if not _is_digest(self.evidence_digest):
             raise AttestorError("operation evidence digest is invalid")
+        object.__setattr__(self, "transport_run_id", validate_operation_id(self.transport_run_id))
         if len(self.record_evidence_digests) > 128:
             raise AttestorError("operation record evidence is invalid")
         if any(not _is_digest(item) for item in self.record_evidence_digests):
@@ -181,6 +183,7 @@ class TrustedOperationEvidence:
             "target_reference",
             "status",
             "evidence_digest",
+            "transport_run_id",
             "record_evidence_digests",
             "host_identity",
             "root_bindings",
@@ -196,6 +199,7 @@ class TrustedOperationEvidence:
         target_reference = value.get("target_reference")
         status = value.get("status")
         evidence_digest = value.get("evidence_digest")
+        transport_run_id = value.get("transport_run_id")
         record_digests = value.get("record_evidence_digests")
         host_identity = value.get("host_identity")
         root_values = value.get("root_bindings")
@@ -209,6 +213,7 @@ class TrustedOperationEvidence:
             or not isinstance(target_reference, str)
             or not isinstance(status, str)
             or not isinstance(evidence_digest, str)
+            or not isinstance(transport_run_id, str)
             or not isinstance(record_digests, list)
             or not isinstance(host_identity, str)
             or not isinstance(root_values, list)
@@ -233,6 +238,7 @@ class TrustedOperationEvidence:
             target_reference=target_reference,
             status=parsed_status,
             evidence_digest=evidence_digest,
+            transport_run_id=transport_run_id,
             record_evidence_digests=tuple(record_digests),
             host_identity=host_identity,
             root_bindings=tuple(
@@ -435,6 +441,7 @@ class RootControlledLiveInventoryAttestor:
             "connection_evidence_digest",
             "inventory_operation_id",
             "inventory_evidence_digest",
+            "transport_run_id",
             "record_evidence_digests",
             "source_binding",
             "evidence_reference",
@@ -463,6 +470,7 @@ class RootControlledLiveInventoryAttestor:
         inventory_id = payload.get("inventory_operation_id")
         connection_digest = payload.get("connection_evidence_digest")
         inventory_digest = payload.get("inventory_evidence_digest")
+        transport_run_id = payload.get("transport_run_id")
         record_digests = payload.get("record_evidence_digests")
         if (
             not isinstance(connection_id, str)
@@ -470,6 +478,7 @@ class RootControlledLiveInventoryAttestor:
             or connection_id == inventory_id
             or not _is_digest(connection_digest)
             or not _is_digest(inventory_digest)
+            or not isinstance(transport_run_id, str)
             or not isinstance(record_digests, list)
             or not record_digests
             or len(record_digests) > 128
@@ -488,6 +497,9 @@ class RootControlledLiveInventoryAttestor:
             or inventory.evidence_class != EvidenceClass.REAL_TARGET
             or connection.evidence_digest != connection_digest
             or inventory.evidence_digest != inventory_digest
+            or connection.transport_run_id != transport_run_id
+            or inventory.transport_run_id != transport_run_id
+            or connection.transport_run_id != inventory.transport_run_id
             or tuple(record_digests) != inventory.record_evidence_digests
         ):
             raise AttestorError("receipt operation evidence does not match")
@@ -871,8 +883,7 @@ class UnixSocketAttestorServer:
             if not 1 <= length <= ATTESTOR_MAX_MESSAGE_BYTES:
                 raise AttestorError("attestor request length is invalid")
             message = _read_exact(connection, length)
-            if _has_trailing_data(connection):
-                raise AttestorError("attestor request has trailing data")
+            _require_frame_eof(connection)
             signature = self._attestor.attest(message)
             connection.sendall(struct.pack("!I", len(signature)) + signature)
         except (AttestorError, OSError, struct.error):
@@ -882,16 +893,15 @@ class UnixSocketAttestorServer:
                 pass
 
 
-def _has_trailing_data(connection: socket.socket) -> bool:
-    """Detect bytes after the framed request without waiting for half-close."""
+def _require_frame_eof(connection: socket.socket) -> None:
+    """Require the client to half-close after exactly one framed request."""
 
-    dont_wait = getattr(socket, "MSG_DONTWAIT", 0)
     try:
-        return bool(connection.recv(1, dont_wait))
-    except BlockingIOError:
-        return False
+        extra = connection.recv(1)
     except TimeoutError:
-        return False
+        raise AttestorError("attestor request is not half-closed") from None
+    if extra:
+        raise AttestorError("attestor request has trailing data")
 
 
 def _peer_uid_is_allowed(connection: socket.socket, allowed_uid: int) -> bool:
