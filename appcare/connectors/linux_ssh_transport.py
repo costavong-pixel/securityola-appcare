@@ -254,6 +254,7 @@ class RootControlledLiveReceiptAttestor:
                 channel.settimeout(5.0)
                 channel.connect(str(path))
                 channel.sendall(struct.pack("!I", len(message)) + message)
+                channel.shutdown(socket.SHUT_WR)
                 length = struct.unpack("!I", self._read_exact(channel, 4))[0]
                 if length != 64:
                     raise HostKeyVerificationError("live receipt attestation is malformed")

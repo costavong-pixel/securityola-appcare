@@ -150,6 +150,8 @@ def test_release_artifact_installs_wrapper_in_libexec() -> None:
         "ops/ssh/securityola-appcare-ssh-wrapper",
         "ops/ssh/install-securityola-appcare-release",
         "ops/ssh/securityola-appcare-release-guard",
+        "ops/attestor/securityola-appcare-live-inventory-attestor",
+        "ops/attestor/securityola-appcare-live-inventory-attestor.service",
     ]
     assert "scripts" not in config["project"]
     installer = project / "ops" / "ssh" / "install-securityola-appcare-release"

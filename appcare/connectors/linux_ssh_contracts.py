@@ -1342,6 +1342,12 @@ def _live_snapshot_receipt_payload(
     *,
     receipt_path: str,
 ) -> dict[str, object]:
+    transport_run_id = _live_transport_run_id(
+        connection.operation_id,
+        inventory.operation_id,
+    )
+    if transport_run_id is None:
+        raise HostKeyVerificationError("live receipt operation lineage is invalid")
     return {
         "schema_version": 1,
         "receipt_signature_algorithm": LIVE_RECEIPT_SIGNATURE_ALGORITHM,
@@ -1366,12 +1372,27 @@ def _live_snapshot_receipt_payload(
         "connection_evidence_digest": connection.evidence_digest,
         "inventory_operation_id": inventory.operation_id,
         "inventory_evidence_digest": inventory.evidence_digest,
+        "transport_run_id": transport_run_id,
         "record_evidence_digests": [record.evidence_digest for record in records],
         "source_binding": _live_source_binding_payload(target, records),
         "evidence_reference": (
             f"live://{target.target_reference}/inventory/{inventory.evidence_digest}"
         ),
     }
+
+
+def _live_transport_run_id(connection_operation_id: str, inventory_operation_id: str) -> str | None:
+    connection = validate_operation_id(connection_operation_id)
+    inventory = validate_operation_id(inventory_operation_id)
+    connection_prefix, connection_suffix = connection.rsplit(":", 1)
+    inventory_prefix, inventory_suffix = inventory.rsplit(":", 1)
+    if (
+        connection_suffix != "connect"
+        or inventory_suffix != "inventory"
+        or connection_prefix != inventory_prefix
+    ):
+        return None
+    return connection_prefix
 
 
 def live_snapshot_receipt_path(target: LinuxTarget, operation_id: str) -> Path:
