@@ -26,6 +26,8 @@ include = ["appcare*"]
     "ops/ssh/securityola-appcare-ssh-wrapper",
     "ops/ssh/install-securityola-appcare-release",
     "ops/ssh/securityola-appcare-release-guard",
+    "ops/attestor/securityola-appcare-live-inventory-attestor",
+    "ops/attestor/securityola-appcare-live-inventory-attestor.service",
 ]
 
 [tool.setuptools.package-data]
