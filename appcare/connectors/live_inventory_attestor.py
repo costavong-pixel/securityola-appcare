@@ -857,12 +857,12 @@ class UnixSocketAttestorServer:
             ):
                 raise AttestorError("attestor socket replacement is unsafe")
             self._path.unlink()
-        address_family = cast(int, socket.AF_UNIX)  # type: ignore[attr-defined]
+        address_family = cast(int, socket.AF_UNIX)
         listener = socket.socket(address_family, socket.SOCK_STREAM)
         try:
             listener.bind(self._path.as_posix())
             os.chmod(self._path, 0o660)
-            os.chown(self._path, 0, self._peer_gid)  # type: ignore[attr-defined]
+            os.chown(self._path, 0, self._peer_gid)
             listener.listen(8)
             return listener
         except (OSError, ValueError) as exc:

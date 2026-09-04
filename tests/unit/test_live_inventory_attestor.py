@@ -5,7 +5,6 @@ import hashlib
 import os
 import socket
 import struct
-from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from threading import Thread
 from typing import Any, cast
@@ -63,11 +62,11 @@ def _mutate_source_inode(payload: object) -> None:
 
 
 def _current_uid() -> int:
-    return cast(Callable[[], int], os.getuid)()  # type: ignore[attr-defined]
+    return os.getuid()
 
 
 def _current_gid() -> int:
-    return cast(Callable[[], int], os.getgid)()  # type: ignore[attr-defined]
+    return os.getgid()
 
 
 FINGERPRINT = "SHA256:" + base64.b64encode(hashlib.sha256(KEY_BLOB).digest()).decode().rstrip("=")
