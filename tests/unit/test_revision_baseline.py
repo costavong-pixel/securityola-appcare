@@ -452,6 +452,18 @@ def test_mirror_rejects_source_root_identity_replacement_after_copy(
     assert not tuple(mirror_root.rglob("*.staging-*"))
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mirror ancestry permissions are required")
+def test_mirror_rejects_untrusted_writable_ancestry(tmp_path: Path) -> None:
+    unsafe_parent = tmp_path / "unsafe-parent"
+    unsafe_parent.mkdir()
+    os.chmod(unsafe_parent, 0o777)
+    try:
+        with pytest.raises(MirrorCaptureError, match="ancestry"):
+            ImmutableSourceMirror.for_test(unsafe_parent / "mirror")
+    finally:
+        os.chmod(unsafe_parent, 0o700)
+
+
 def test_no_network_or_secret_receipt_content_is_persisted(tmp_path: Path) -> None:
     root = _root(tmp_path)
     revision = _revision(root)

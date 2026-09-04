@@ -83,8 +83,12 @@ class ImmutableSourceMirror:
             raise MirrorCaptureError("mirror root is unavailable") from exc
         if resolved == Path(resolved.anchor) or resolved != root:
             raise MirrorCaptureError("mirror root is too broad")
+        self._validate_mirror_root_ancestry(resolved)
         self.root = resolved
         self.policy = policy or MirrorPolicy()
+        self._active_root_fd: int | None = None
+        self._active_parent_fd: int | None = None
+        self._active_parent_path: Path | None = None
         with _LOCKS_GUARD:
             self._lock = _LOCKS.setdefault(self.root.as_posix(), threading.RLock())
 
@@ -93,6 +97,32 @@ class ImmutableSourceMirror:
         return cls(root, policy=policy)
 
     def capture(
+        self,
+        revision: CapturedApplicationRevision,
+        source_root: Path,
+    ) -> MirrorCaptureOutcome:
+        """Capture through a pinned, trusted mirror-root descriptor on POSIX."""
+
+        if os.name != "posix":
+            return self._capture_impl(revision, source_root)
+        with self._lock:
+            root_fd = self._open_trusted_root(create=True)
+            parent_fd = -1
+            try:
+                parent_fd = self._open_scope_parent(root_fd, revision)
+                self._active_root_fd = root_fd
+                self._active_parent_fd = parent_fd
+                self._active_parent_path = self._scope_path(revision).parent
+                return self._capture_impl(revision, source_root)
+            finally:
+                self._active_root_fd = None
+                self._active_parent_fd = None
+                self._active_parent_path = None
+                if parent_fd >= 0:
+                    os.close(parent_fd)
+                os.close(root_fd)
+
+    def _capture_impl(
         self,
         revision: CapturedApplicationRevision,
         source_root: Path,
@@ -124,9 +154,7 @@ class ImmutableSourceMirror:
             self._mkdir_secure(parent)
             claim = parent / f".claim-{revision.baseline_id}"
             try:
-                with claim.open("xb") as claim_handle:
-                    claim_handle.flush()
-                    os.fsync(claim_handle.fileno())
+                self._create_claim(claim)
             except FileExistsError as exc:
                 raise MirrorCaptureError("mirror capture is already active") from exc
             except OSError as exc:
@@ -136,17 +164,11 @@ class ImmutableSourceMirror:
             # already inside the scope-specific parent, and the UUID keeps it
             # collision-resistant without duplicating the baseline identifier.
             staging = parent / f".staging-{uuid.uuid4().hex}"
-            if staging.exists() or staging.is_symlink():
-                try:
-                    claim.unlink()
-                except OSError as exc:
-                    raise MirrorCaptureError("mirror claim cleanup failed") from exc
-                raise MirrorCaptureError("mirror staging collision")
             try:
-                staging.mkdir(mode=0o700)
-            except OSError as exc:
+                self._mkdir_exclusive(staging)
+            except (MirrorCaptureError, OSError) as exc:
                 try:
-                    claim.unlink()
+                    self._unlink_entry(claim)
                 except OSError as cleanup_exc:
                     raise MirrorCaptureError("mirror claim cleanup failed") from cleanup_exc
                 raise MirrorCaptureError("mirror staging cannot be created") from exc
@@ -218,10 +240,13 @@ class ImmutableSourceMirror:
                 self._write_json(staging / "receipt.json", receipt.as_dict(), maximum=32 * 1024)
                 self._write_marker(staging / "SEALED")
                 self._seal_permissions(staging)
-                os.replace(staging, final)
+                self._replace_staging(staging, final)
                 committed = True
                 try:
-                    self._fsync_directory(parent)
+                    if self._active_parent_fd is not None:
+                        os.fsync(self._active_parent_fd)
+                    else:
+                        self._fsync_directory(parent)
                     if not self.verify(receipt):
                         raise MirrorCaptureError("mirror readback verification failed")
                 except MirrorCaptureError:
@@ -233,7 +258,7 @@ class ImmutableSourceMirror:
                     self._remove_tree(final)
                     raise MirrorCaptureError("mirror durability verification failed") from exc
                 try:
-                    claim.unlink()
+                    self._unlink_entry(claim)
                 except FileNotFoundError:
                     pass
                 except OSError as exc:
@@ -272,7 +297,7 @@ class ImmutableSourceMirror:
                         raise MirrorCaptureError("mirror cleanup failed") from exc
                 if claim.exists() or claim.is_symlink():
                     try:
-                        claim.unlink()
+                        self._unlink_entry(claim)
                     except OSError as exc:
                         raise MirrorCaptureError("mirror claim cleanup failed") from exc
 
@@ -289,8 +314,7 @@ class ImmutableSourceMirror:
         if (
             receipt.mirror_identity != expected_identity
             or final.as_posix() != receipt.mirror_path
-            or not final.is_dir()
-            or final.is_symlink()
+            or not self._trusted_mirror_path(final)
         ):
             return False
         try:
@@ -606,6 +630,212 @@ class ImmutableSourceMirror:
         finally:
             os.close(current)
 
+    @staticmethod
+    def _trusted_directory_metadata(metadata: os.stat_result) -> bool:
+        if not stat.S_ISDIR(metadata.st_mode):
+            return False
+        if os.name != "posix":
+            return True
+        current_uid = getattr(os, "getuid", lambda: -1)()
+        mode = stat.S_IMODE(metadata.st_mode)
+        return metadata.st_uid in {0, current_uid} and (
+            not mode & 0o022 or bool(metadata.st_mode & stat.S_ISVTX)
+        )
+
+    @classmethod
+    def _validate_mirror_root_ancestry(cls, root: Path) -> None:
+        """Reject symlinked or writable mirror ancestry before any writes."""
+
+        if os.name != "posix":
+            return
+        current = Path(root.anchor)
+        for component in root.parts[1:]:
+            current /= component
+            try:
+                metadata = current.lstat()
+            except FileNotFoundError:
+                break
+            except OSError as exc:
+                raise MirrorCaptureError("mirror root ancestry is unavailable") from exc
+            if stat.S_ISLNK(metadata.st_mode) or not cls._trusted_directory_metadata(metadata):
+                raise MirrorCaptureError("mirror root ancestry is untrusted")
+
+    @staticmethod
+    def _open_directory_descriptor(path: Path) -> int:
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        try:
+            descriptor = os.open(path, flags)
+            metadata = os.fstat(descriptor)
+        except OSError as exc:
+            raise MirrorCaptureError("mirror directory cannot be opened safely") from exc
+        if not ImmutableSourceMirror._trusted_directory_metadata(metadata):
+            os.close(descriptor)
+            raise MirrorCaptureError("mirror directory trust validation failed")
+        return descriptor
+
+    def _open_trusted_root(self, *, create: bool) -> int:
+        if create:
+            self._mkdir_secure(self.root)
+        self._validate_mirror_root_ancestry(self.root)
+        return self._open_directory_descriptor(self.root)
+
+    @classmethod
+    def _mkdir_relative(cls, root_fd: int, parts: tuple[str, ...]) -> None:
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        current = os.dup(root_fd)
+        try:
+            for component in parts:
+                if not component or component in {".", ".."} or "/" in component:
+                    raise MirrorCaptureError("mirror directory component is unsafe")
+                try:
+                    os.mkdir(component, 0o700, dir_fd=current)
+                except FileExistsError:
+                    pass
+                try:
+                    child = os.open(component, flags, dir_fd=current)
+                except OSError as exc:
+                    raise MirrorCaptureError("mirror directory cannot be opened safely") from exc
+                try:
+                    if not cls._trusted_directory_metadata(os.fstat(child)):
+                        raise MirrorCaptureError("mirror directory trust validation failed")
+                except MirrorCaptureError:
+                    os.close(child)
+                    raise
+                os.close(current)
+                current = child
+        finally:
+            os.close(current)
+
+    def _open_scope_parent(self, root_fd: int, revision: CapturedApplicationRevision) -> int:
+        parts = tuple(
+            self._validate_scope_path_identifier(value, field_name=name)
+            for value, name in (
+                (revision.tenant_id, "tenant_id"),
+                (revision.application_id, "application_id"),
+                (revision.target_reference, "target_reference"),
+            )
+        )
+        self._mkdir_relative(root_fd, parts)
+        current = os.dup(root_fd)
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        try:
+            for component in parts:
+                child = os.open(component, flags, dir_fd=current)
+                os.close(current)
+                current = child
+            return current
+        except OSError as exc:
+            os.close(current)
+            raise MirrorCaptureError("mirror scope cannot be pinned") from exc
+
+    def _trusted_mirror_path(self, path: Path) -> bool:
+        if os.name != "posix":
+            return path.is_dir() and not path.is_symlink()
+        try:
+            relative = path.relative_to(self.root)
+        except ValueError:
+            return False
+        root_fd: int | None = self._active_root_fd
+        owns_root_fd = root_fd is None
+        try:
+            if root_fd is None:
+                root_fd = self._open_trusted_root(create=False)
+            parts = tuple(relative.parts)
+            descriptor = os.dup(root_fd)
+            flags = (
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+            )
+            try:
+                for component in parts:
+                    child = os.open(component, flags, dir_fd=descriptor)
+                    os.close(descriptor)
+                    descriptor = child
+                return self._trusted_directory_metadata(os.fstat(descriptor))
+            finally:
+                os.close(descriptor)
+        except (OSError, MirrorCaptureError, ValueError):
+            return False
+        finally:
+            if owns_root_fd and root_fd is not None:
+                os.close(root_fd)
+
+    def _mkdir_exclusive(self, path: Path) -> None:
+        if os.name == "posix" and self._active_parent_fd is not None:
+            try:
+                os.mkdir(path.name, 0o700, dir_fd=self._active_parent_fd)
+            except FileExistsError as exc:
+                raise MirrorCaptureError("mirror staging collision") from exc
+            return
+        try:
+            path.mkdir(mode=0o700)
+        except FileExistsError as exc:
+            raise MirrorCaptureError("mirror staging collision") from exc
+
+    def _create_claim(self, path: Path) -> None:
+        if os.name == "posix" and self._active_parent_fd is not None:
+            flags = (
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+            )
+            try:
+                descriptor = os.open(path.name, flags, 0o600, dir_fd=self._active_parent_fd)
+            except FileExistsError as exc:
+                raise MirrorCaptureError("mirror capture is already active") from exc
+            except OSError as exc:
+                raise MirrorCaptureError("mirror claim cannot be created") from exc
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            return
+        with path.open("xb") as handle:
+            handle.flush()
+            os.fsync(handle.fileno())
+
+    def _unlink_entry(self, path: Path) -> None:
+        if os.name == "posix" and self._active_parent_fd is not None:
+            try:
+                os.unlink(path.name, dir_fd=self._active_parent_fd)
+            except FileNotFoundError:
+                pass
+            return
+        path.unlink()
+
+    def _replace_staging(self, staging: Path, final: Path) -> None:
+        if os.name == "posix" and self._active_parent_fd is not None:
+            try:
+                os.replace(
+                    staging.name,
+                    final.name,
+                    src_dir_fd=self._active_parent_fd,
+                    dst_dir_fd=self._active_parent_fd,
+                )
+            except OSError as exc:
+                raise MirrorCaptureError("mirror promotion failed") from exc
+            return
+        os.replace(staging, final)
+
     def _scope_path(self, revision: CapturedApplicationRevision) -> Path:
         return self._scope_path_values(
             revision.tenant_id,
@@ -694,6 +924,23 @@ class ImmutableSourceMirror:
         return candidate
 
     def _mkdir_secure(self, path: Path) -> None:
+        if os.name == "posix":
+            if path != self.root and self.root not in path.parents:
+                raise MirrorCaptureError("mirror directory escaped root")
+            if self._active_root_fd is not None:
+                try:
+                    relative = path.relative_to(self.root)
+                except ValueError as exc:
+                    raise MirrorCaptureError("mirror directory escaped root") from exc
+                self._mkdir_relative(self._active_root_fd, tuple(relative.parts))
+                return
+            self._validate_mirror_root_ancestry(self.root)
+            anchor_fd = self._open_directory_descriptor(Path(path.anchor))
+            try:
+                self._mkdir_relative(anchor_fd, tuple(path.parts[1:]))
+            finally:
+                os.close(anchor_fd)
+            return
         if path.exists() or path.is_symlink():
             if path.is_symlink() or not path.is_dir():
                 raise MirrorCaptureError("mirror directory is unsafe")
