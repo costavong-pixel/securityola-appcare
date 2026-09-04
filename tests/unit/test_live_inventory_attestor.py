@@ -5,6 +5,7 @@ import hashlib
 import os
 import socket
 import struct
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from threading import Thread
 from typing import Any, cast
@@ -35,6 +36,40 @@ from appcare.connectors.live_inventory_attestor import (
 )
 
 KEY_BLOB = b"attestor-test-host-key"
+
+
+def _mutate_target_application(payload: object) -> None:
+    target = cast(dict[str, object], cast(dict[str, object], payload)["target"])
+    target["application_id"] = "other-app"
+
+
+def _mutate_connection_digest(payload: object) -> None:
+    cast(dict[str, object], payload)["connection_evidence_digest"] = "0" * 64
+
+
+def _mutate_transport_run(payload: object) -> None:
+    cast(dict[str, object], payload)["transport_run_id"] = "other-run"
+
+
+def _mutate_source_host(payload: object) -> None:
+    source_binding = cast(dict[str, object], cast(dict[str, object], payload)["source_binding"])
+    source_binding["host_identity"] = "wrong-host"
+
+
+def _mutate_source_inode(payload: object) -> None:
+    source_binding = cast(dict[str, object], cast(dict[str, object], payload)["source_binding"])
+    roots = cast(list[dict[str, object]], source_binding["roots"])
+    roots[0]["inode"] = 999
+
+
+def _current_uid() -> int:
+    return cast(Callable[[], int], os.getuid)()  # type: ignore[attr-defined]
+
+
+def _current_gid() -> int:
+    return cast(Callable[[], int], os.getgid)()  # type: ignore[attr-defined]
+
+
 FINGERPRINT = "SHA256:" + base64.b64encode(hashlib.sha256(KEY_BLOB).digest()).decode().rstrip("=")
 NOW = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)
 
@@ -212,20 +247,22 @@ def test_arbitrary_message_is_not_signed() -> None:
 @pytest.mark.parametrize(
     "mutate",
     (
-        lambda payload: payload["target"].__setitem__("application_id", "other-app"),
-        lambda payload: payload.__setitem__("connection_evidence_digest", "0" * 64),
-        lambda payload: payload.__setitem__("transport_run_id", "other-run"),
-        lambda payload: payload["source_binding"].__setitem__("host_identity", "wrong-host"),
-        lambda payload: payload["source_binding"]["roots"][0].__setitem__("inode", 999),
+        _mutate_target_application,
+        _mutate_connection_digest,
+        _mutate_transport_run,
+        _mutate_source_host,
+        _mutate_source_inode,
     ),
 )
 def test_tampered_scope_digest_or_source_binding_is_rejected(mutate: Any) -> None:
     _target, service, fixture, _signer = _fixture()
     payload = cast(dict[str, object], fixture["payload"]).copy()
     payload["target"] = dict(cast(dict[str, object], payload["target"]))
-    payload["source_binding"] = dict(cast(dict[str, object], payload["source_binding"]))
-    roots = cast(list[dict[str, object]], payload["source_binding"]["roots"])
-    payload["source_binding"]["roots"] = [dict(item) for item in roots]
+    source_binding = cast(dict[str, object], payload["source_binding"])
+    source_binding = dict(source_binding)
+    payload["source_binding"] = source_binding
+    roots = cast(list[dict[str, object]], source_binding["roots"])
+    source_binding["roots"] = [dict(item) for item in roots]
     mutate(payload)
     payload.pop("receipt_digest")
     digest = _receipt_digest(payload)
@@ -268,8 +305,8 @@ def test_socket_protocol_requires_write_half_close_and_returns_signature() -> No
     _target, service, fixture, signer = _fixture()
     server = UnixSocketAttestorServer(
         attestor=service,
-        allowed_peer_uid=os.getuid(),
-        allowed_peer_gid=os.getgid(),
+        allowed_peer_uid=_current_uid(),
+        allowed_peer_gid=_current_gid(),
     )
     client, peer = socket.socketpair()
     thread = Thread(target=server._handle, args=(peer,))
@@ -293,8 +330,8 @@ def test_socket_protocol_rejects_trailing_bytes() -> None:
     _target, service, fixture, _signer = _fixture()
     server = UnixSocketAttestorServer(
         attestor=service,
-        allowed_peer_uid=os.getuid(),
-        allowed_peer_gid=os.getgid(),
+        allowed_peer_uid=_current_uid(),
+        allowed_peer_gid=_current_gid(),
     )
     client, peer = socket.socketpair()
     thread = Thread(target=server._handle, args=(peer,))
