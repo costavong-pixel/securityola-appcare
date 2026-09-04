@@ -198,3 +198,25 @@ and return a Draft PR for coordinator/owner review. No AppCare capability is
 DONE based on backend code alone; the applicable engine, UI, integration,
 persistence/state, success, failure, discoverability, test, runtime-evidence,
 and maturity gates must pass.
+
+## Controlled DeepSeek fallback
+
+Spark remains the preferred implementation worker. If Spark is unavailable,
+Hermes may assign DeepSeek only a tightly bounded Draft-PR implementation task
+under `WORKER_PROTOCOL.md`; it never replaces Luna review, Terra challenge, or
+the required Codex Security gate. The task issue must additionally state:
+
+```text
+IMPLEMENTATION_MODEL: deepseek-...
+FALLBACK_REASON: SPARK_UNAVAILABLE | SPARK_QUOTA_EXHAUSTED | SPARK_PROVIDER_OUTAGE
+REVIEWER_PROFILE: <different named reviewer profile>
+REVIEWER_MODEL: <non-DeepSeek reviewer model>
+```
+
+Before review, the implementation handoff must record the exact final commit
+as `review_head_sha`. A different named profile and model must inspect that
+exact commit and the Draft PR; it may request changes or block the task.
+DeepSeek cannot self-approve, promote maturity/readiness, merge, release, or
+authorize customer or production activity. The owner performs the manual
+merge. If an independent reviewer is not configured or authenticated, the task
+is `BLOCKED`, not complete.
