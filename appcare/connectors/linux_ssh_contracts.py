@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import hmac
 import ipaddress
 import json
 import os
@@ -22,6 +23,9 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Final, Protocol, cast
+
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from ..readiness.contracts import (
     CapabilityEvidence,
@@ -105,6 +109,14 @@ _SAFE_OPERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _SAFE_METADATA_KEY = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 _FINGERPRINT = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
 DEFAULT_OPERATION_LEDGER_PATH = Path("/var/lib/securityola/appcare/ssh/operation-ledger.db")
+LIVE_INVENTORY_RECEIPT_VERIFY_KEY = Path(
+    "/etc/securityola/appcare/live-inventory/receipt-signing-public-key"
+)
+LIVE_INVENTORY_RECEIPT_ATTESTOR_SOCKET = Path(
+    "/run/securityola/appcare/live-inventory-attestor.sock"
+)
+LIVE_RECEIPT_SIGNATURE_ALGORITHM = "ed25519-v1"
+_LIVE_RECEIPT_SIGNATURE_BYTES = 64
 
 
 def _current_uid() -> int:
@@ -631,6 +643,13 @@ class OperationLedger(Protocol):
 
     def claim(self, *, target_reference: str, operation_id: str) -> bool:
         """Atomically claim an operation identity once."""
+
+
+class LiveReceiptAttestor(Protocol):
+    """Root-controlled signer for receipts derived from live transport evidence."""
+
+    def attest(self, message: bytes) -> bytes:
+        """Return a detached Ed25519 signature from an independent signer."""
 
 
 def _validate_operation_ledger_path(value: object) -> Path:
@@ -1325,6 +1344,7 @@ def _live_snapshot_receipt_payload(
 ) -> dict[str, object]:
     return {
         "schema_version": 1,
+        "receipt_signature_algorithm": LIVE_RECEIPT_SIGNATURE_ALGORITHM,
         "sealed": True,
         "receipt_path": receipt_path,
         "target": {
@@ -1452,6 +1472,88 @@ def _receipt_digest(payload: Mapping[str, object]) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _receipt_signature_message(payload: Mapping[str, object], digest: str) -> bytes:
+    signed = dict(payload)
+    signed["receipt_digest"] = digest
+    return json.dumps(signed, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+        "utf-8"
+    )
+
+
+def _read_receipt_verify_key() -> bytes | None:
+    path = LIVE_INVENTORY_RECEIPT_VERIFY_KEY
+    if os.name == "posix":
+        if not _trusted_receipt_ancestry(path.parent):
+            return None
+        try:
+            metadata = path.lstat()
+        except OSError:
+            return None
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or metadata.st_uid != 0
+            or metadata.st_mode & 0o022
+            or metadata.st_size != 32
+        ):
+            return None
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or metadata.st_size != 32
+            or (os.name == "posix" and (metadata.st_uid != 0 or metadata.st_mode & 0o022))
+        ):
+            return None
+        content = os.read(descriptor, 33)
+        if len(content) != 32:
+            return None
+        return content
+    except OSError:
+        return None
+    finally:
+        os.close(descriptor)
+
+
+def _verify_receipt_auth(
+    payload: Mapping[str, object],
+    supplied_digest: object,
+    supplied_signature: object,
+) -> bool:
+    if (
+        not isinstance(supplied_digest, str)
+        or len(supplied_digest) != 64
+        or any(character not in "0123456789abcdef" for character in supplied_digest)
+        or payload.get("receipt_signature_algorithm") != LIVE_RECEIPT_SIGNATURE_ALGORITHM
+        or not isinstance(supplied_signature, str)
+    ):
+        return False
+    try:
+        signature = base64.b64decode(supplied_signature, validate=True)
+    except (binascii.Error, ValueError, TypeError):
+        return False
+    if len(signature) != _LIVE_RECEIPT_SIGNATURE_BYTES:
+        return False
+    expected_digest = _receipt_digest(payload)
+    if not hmac.compare_digest(supplied_digest, expected_digest):
+        return False
+    key_material = _read_receipt_verify_key()
+    if key_material is None:
+        return False
+    try:
+        key = Ed25519PublicKey.from_public_bytes(key_material)
+        key.verify(signature, _receipt_signature_message(payload, supplied_digest))
+    except (InvalidSignature, ValueError, TypeError):
+        return False
+    return True
+
+
 def verify_live_snapshot_receipt(snapshot: LinuxInventorySnapshot) -> bool:
     """Validate the durable, sanitized receipt emitted by live transport."""
 
@@ -1463,12 +1565,9 @@ def verify_live_snapshot_receipt(snapshot: LinuxInventorySnapshot) -> bool:
     payload = _read_live_receipt(expected_path)
     if payload is None:
         return False
+    supplied_signature = payload.pop("receipt_signature", None)
     supplied_digest = payload.pop("receipt_digest", None)
-    if (
-        not isinstance(supplied_digest, str)
-        or len(supplied_digest) != 64
-        or any(character not in "0123456789abcdef" for character in supplied_digest)
-    ):
+    if not _verify_receipt_auth(payload, supplied_digest, supplied_signature):
         return False
     expected = _live_snapshot_receipt_payload(
         snapshot.target,
@@ -1477,7 +1576,7 @@ def verify_live_snapshot_receipt(snapshot: LinuxInventorySnapshot) -> bool:
         snapshot.records,
         receipt_path=expected_path.as_posix(),
     )
-    return payload == expected and supplied_digest == _receipt_digest(expected)
+    return payload == expected
 
 
 def verify_live_capture_receipt_reference(
@@ -1507,7 +1606,10 @@ def verify_live_capture_receipt_reference(
     payload = _read_live_receipt(receipt_path)
     if payload is None:
         return False
+    supplied_signature = payload.pop("receipt_signature", None)
     supplied_digest = payload.pop("receipt_digest", None)
+    if not _verify_receipt_auth(payload, supplied_digest, supplied_signature):
+        return False
     target = payload.get("target")
     if not isinstance(target, dict):
         return False
@@ -1576,7 +1678,6 @@ def verify_live_capture_receipt_reference(
     return (
         payload.get("schema_version") == 1
         and payload.get("sealed") is True
-        and supplied_digest == _receipt_digest(payload)
         and payload.get("receipt_path") == receipt_path.as_posix()
         and target.get("tenant_id") == tenant_id
         and target.get("application_id") == application_id
@@ -1750,6 +1851,10 @@ __all__ = [
     "HostKeyVerificationError",
     "InMemoryOperationLedger",
     "InventoryRecord",
+    "LIVE_INVENTORY_RECEIPT_VERIFY_KEY",
+    "LIVE_INVENTORY_RECEIPT_ATTESTOR_SOCKET",
+    "LIVE_RECEIPT_SIGNATURE_ALGORITHM",
+    "LiveReceiptAttestor",
     "LinuxCredentialMetadata",
     "LinuxCredentialRegistry",
     "LinuxInventorySnapshot",

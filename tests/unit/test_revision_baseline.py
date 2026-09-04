@@ -338,6 +338,19 @@ def test_secret_bearing_source_content_is_not_copied(tmp_path: Path) -> None:
     assert outcome.receipt.excluded_file_count >= 7
 
 
+def test_provider_secret_literal_is_not_copied(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    stripe_token = "sk_" + "live_" + "a" * 20
+    (root / "public" / "stripe-client.php").write_text(
+        f"<?php Stripe\\Stripe::setApiKey('{stripe_token}');\n",
+        encoding="utf-8",
+    )
+    revision = _revision(root)
+    outcome = ImmutableSourceMirror.for_test(tmp_path / "mirror").capture(revision, root)
+
+    assert not (Path(outcome.receipt.mirror_path) / "public" / "stripe-client.php").exists()
+
+
 def test_symlink_escape_is_rejected_without_following_it(tmp_path: Path) -> None:
     root = _root(tmp_path)
     outside = tmp_path / "outside.txt"

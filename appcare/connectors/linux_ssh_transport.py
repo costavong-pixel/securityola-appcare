@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
+import socket
 import stat
+import struct
 import subprocess
 import threading
 import time
@@ -18,6 +21,7 @@ from typing import BinaryIO, cast
 from .linux_ssh_commands import CommandRegistry, RemoteCommand
 from .linux_ssh_contracts import (
     DEFAULT_OPERATION_LEDGER_PATH,
+    LIVE_INVENTORY_RECEIPT_ATTESTOR_SOCKET,
     LIVE_INVENTORY_RECEIPT_ROOT,
     ApplicationRootVerification,
     BoundedLimits,
@@ -34,6 +38,7 @@ from .linux_ssh_contracts import (
     LinuxInventorySnapshot,
     LinuxOperation,
     LinuxTarget,
+    LiveReceiptAttestor,
     NetworkBindingRead,
     OperationKind,
     OperationLedger,
@@ -50,6 +55,7 @@ from .linux_ssh_contracts import (
     WebServerMetadataRead,
     _live_snapshot_receipt_payload,
     _receipt_digest,
+    _receipt_signature_message,
     _trusted_receipt_ancestry,
     _trusted_receipt_file,
     live_snapshot_receipt_path,
@@ -224,6 +230,68 @@ class VerifiedHostKey:
     known_hosts_path: Path
 
 
+class RootControlledLiveReceiptAttestor:
+    """Call the fixed root-controlled live-evidence attestor over a Unix socket.
+
+    The peer must independently validate the live transport operation before
+    returning an Ed25519 signature.  This client never owns the signing key and
+    never falls back to an in-process or unkeyed receipt authority.
+    """
+
+    def attest(self, message: bytes) -> bytes:
+        if os.name != "posix" or not isinstance(message, bytes) or not message:
+            raise HostKeyVerificationError("live receipt attestor is unavailable")
+        path = LIVE_INVENTORY_RECEIPT_ATTESTOR_SOCKET
+        if not self._trusted_socket(path):
+            raise HostKeyVerificationError("live receipt attestor socket is untrusted")
+        if len(message) > 64 * 1024:
+            raise HostKeyVerificationError("live receipt attestation request is too large")
+        try:
+            address_family = cast(int | None, getattr(socket, "AF_UNIX", None))
+            if address_family is None:
+                raise HostKeyVerificationError("live receipt attestor is unavailable")
+            with socket.socket(address_family, socket.SOCK_STREAM) as channel:
+                channel.settimeout(5.0)
+                channel.connect(str(path))
+                channel.sendall(struct.pack("!I", len(message)) + message)
+                length = struct.unpack("!I", self._read_exact(channel, 4))[0]
+                if length != 64:
+                    raise HostKeyVerificationError("live receipt attestation is malformed")
+                signature = self._read_exact(channel, length)
+                if channel.recv(1):
+                    raise HostKeyVerificationError("live receipt attestation has trailing data")
+                return signature
+        except HostKeyVerificationError:
+            raise
+        except (OSError, struct.error) as exc:
+            raise HostKeyVerificationError("live receipt attestor request failed") from exc
+
+    @staticmethod
+    def _trusted_socket(path: Path) -> bool:
+        try:
+            if not _trusted_receipt_ancestry(path.parent):
+                return False
+            metadata = path.lstat()
+        except OSError:
+            return False
+        return (
+            stat.S_ISSOCK(metadata.st_mode)
+            and metadata.st_nlink == 1
+            and metadata.st_uid == 0
+            and not metadata.st_mode & 0o007
+        )
+
+    @staticmethod
+    def _read_exact(channel: socket.socket, length: int) -> bytes:
+        content = bytearray()
+        while len(content) < length:
+            chunk = channel.recv(length - len(content))
+            if not chunk:
+                raise HostKeyVerificationError("live receipt attestation ended early")
+            content.extend(chunk)
+        return bytes(content)
+
+
 class KnownHostsStore:
     """Target-scoped known-hosts material under an AppCare-owned root."""
 
@@ -365,6 +433,7 @@ class LinuxSSHClient:
         limits: BoundedLimits | None = None,
         operation_ledger: OperationLedger | None = None,
         command_registry: CommandRegistry | None = None,
+        live_receipt_attestor: LiveReceiptAttestor | None = None,
     ) -> None:
         self.target = target
         self._credential_provider = credential_provider
@@ -374,6 +443,7 @@ class LinuxSSHClient:
         self._limits = limits or BoundedLimits()
         self._ledger = operation_ledger or InMemoryOperationLedger()
         self._commands = command_registry or CommandRegistry()
+        self._live_receipt_attestor = live_receipt_attestor
         self._evidence_class = EvidenceClass.FIXTURE
 
     @classmethod
@@ -385,6 +455,7 @@ class LinuxSSHClient:
         known_hosts_root: Path = DEFAULT_KNOWN_HOSTS_ROOT,
         limits: BoundedLimits | None = None,
         operation_ledger: OperationLedger | None = None,
+        live_receipt_attestor: LiveReceiptAttestor | None = None,
     ) -> LinuxSSHClient:
         if (
             type(operation_ledger) is not SqliteOperationLedger
@@ -395,6 +466,10 @@ class LinuxSSHClient:
             part in {".", ".."} for part in known_hosts_root.parts
         ):
             raise HostKeyVerificationError("live known-hosts root is unsafe")
+        if live_receipt_attestor is None:
+            live_receipt_attestor = RootControlledLiveReceiptAttestor()
+        elif type(live_receipt_attestor) is not RootControlledLiveReceiptAttestor:
+            raise HostKeyVerificationError("live SSH requires the root-controlled receipt attestor")
         runner = OpenSSHProcessRunner()
         client = cls(
             target,
@@ -404,6 +479,7 @@ class LinuxSSHClient:
             scanner=OpenSshHostKeyScanner(runner),
             limits=limits,
             operation_ledger=operation_ledger,
+            live_receipt_attestor=live_receipt_attestor,
         )
         if not any(
             known_hosts_root == root or root in known_hosts_root.parents
@@ -580,7 +656,22 @@ class LinuxSSHClient:
             snapshot.records,
             receipt_path=receipt_path.as_posix(),
         )
-        payload["receipt_digest"] = _receipt_digest(payload)
+        receipt_digest = _receipt_digest(payload)
+        payload["receipt_digest"] = receipt_digest
+        attestor = self._live_receipt_attestor
+        if attestor is None:
+            raise HostKeyVerificationError(
+                "live inventory requires an independent receipt attestor"
+            )
+        try:
+            signature = attestor.attest(
+                _receipt_signature_message(payload, receipt_digest)
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            raise HostKeyVerificationError("live inventory receipt attestation failed") from exc
+        if not isinstance(signature, bytes) or len(signature) != 64:
+            raise HostKeyVerificationError("live inventory receipt attestation is malformed")
+        payload["receipt_signature"] = base64.b64encode(signature).decode("ascii")
         encoded = json.dumps(
             payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
         ).encode("utf-8")
@@ -1102,6 +1193,7 @@ __all__ = [
     "LinuxSSHClient",
     "OpenSSHProcessRunner",
     "OpenSshHostKeyScanner",
+    "RootControlledLiveReceiptAttestor",
     "VerifiedHostKey",
     "verify_host_key",
 ]

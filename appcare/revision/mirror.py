@@ -65,6 +65,7 @@ _SECRET_CONFIG_KEY = re.compile(
     rb"\s*(?:=>|[:=])"
 )
 _SECRET_AUTHORIZATION = re.compile(rb"(?ix)\bauthorization\s*:\s*bearer\s+\S+")
+_SECRET_PROVIDER_TOKEN = re.compile(rb"(?ix)\b(?:sk|rk)_(?:live|test)_[a-z0-9]{16,}\b")
 _SECRET_SCAN_CARRY = 8 * 1024
 _RESERVED_MIRROR_NAMES = frozenset({"manifest.json", "receipt.json", "SEALED"})
 _MAX_MIRROR_ENTRIES = 100_000
@@ -1252,6 +1253,7 @@ def _looks_secret(window: bytes) -> bool:
             _PHP_SECRET_DEFINE,
             _SECRET_CONFIG_KEY,
             _SECRET_AUTHORIZATION,
+            _SECRET_PROVIDER_TOKEN,
         )
     )
 
