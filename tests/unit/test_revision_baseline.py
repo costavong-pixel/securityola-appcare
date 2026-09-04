@@ -434,7 +434,7 @@ def test_directory_replacement_between_stat_and_open_is_rejected(
     original_open = os.open
 
     def swapping_open(
-        path: object,
+        path: str | Path,
         flags: int,
         mode: int = 0o777,
         *,
