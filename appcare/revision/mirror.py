@@ -64,6 +64,7 @@ _SECRET_CONFIG_KEY = re.compile(
     rb"(?ix)(?:[\"']" + _SECRET_NAME + rb"[\"']|\b" + _SECRET_NAME + rb")"
     rb"\s*(?:=>|[:=])"
 )
+_SECRET_AUTHORIZATION = re.compile(rb"(?ix)\bauthorization\s*:\s*bearer\s+\S+")
 _SECRET_SCAN_CARRY = 8 * 1024
 _RESERVED_MIRROR_NAMES = frozenset({"manifest.json", "receipt.json", "SEALED"})
 _MAX_MIRROR_ENTRIES = 100_000
@@ -1108,7 +1109,12 @@ def _looks_secret(window: bytes) -> bool:
     lowered = window.lower()
     return any(marker in lowered for marker in _SECRET_CONTENT_MARKERS) or any(
         pattern.search(window) is not None
-        for pattern in (_SECRET_ASSIGNMENT, _PHP_SECRET_DEFINE, _SECRET_CONFIG_KEY)
+        for pattern in (
+            _SECRET_ASSIGNMENT,
+            _PHP_SECRET_DEFINE,
+            _SECRET_CONFIG_KEY,
+            _SECRET_AUTHORIZATION,
+        )
     )
 
 

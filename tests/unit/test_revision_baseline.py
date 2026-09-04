@@ -296,6 +296,9 @@ def test_secret_bearing_source_content_is_not_copied(tmp_path: Path) -> None:
         "<?php $password = 'suspicious';\n", encoding="utf-8"
     )
     (root / "public" / "settings.yaml").write_text("client_secret: suspicious\n", encoding="utf-8")
+    (root / "public" / "authorization.txt").write_text(
+        "Authorization:\tBearer suspicious\n", encoding="utf-8"
+    )
     (root / "public" / "environment.ini").write_text(
         "DATABASE_URL=mysql://suspicious\n", encoding="utf-8"
     )
@@ -312,6 +315,7 @@ def test_secret_bearing_source_content_is_not_copied(tmp_path: Path) -> None:
     final = Path(outcome.receipt.mirror_path)
     assert not (final / "public" / "helpers.php").exists()
     assert not (final / "public" / "settings.yaml").exists()
+    assert not (final / "public" / "authorization.txt").exists()
     assert not (final / "public" / "environment.ini").exists()
     assert not (final / "public" / "constants.php").exists()
     assert not (final / "public" / "config-map.php").exists()
@@ -417,6 +421,32 @@ def test_toctou_source_replacement_is_detected_and_staging_is_cleaned(
             root,
         )
     assert not tuple(mirror_root.rglob("*.staging-*"))
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX descriptor replacement is required")
+def test_directory_replacement_between_stat_and_open_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _root(tmp_path)
+    replacement = tmp_path / "replacement"
+    replacement.mkdir()
+    (replacement / "different.txt").write_text("different\n", encoding="utf-8")
+    original_open = os.open
+
+    def swapping_open(
+        path: object,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if path == "public" and dir_fd is not None and flags & getattr(os, "O_DIRECTORY", 0):
+            return original_open(replacement, flags, mode)
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", swapping_open)
+    with pytest.raises(BaselineCaptureError, match="directory was replaced"):
+        FilesystemBaselineCapturer().capture(root)
 
 
 def test_mirror_rejects_source_root_identity_replacement_after_copy(

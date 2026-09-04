@@ -192,6 +192,8 @@ class FilesystemBaselineCapturer:
                 except OSError as exc:
                     raise BaselineCaptureError("directory cannot be opened safely") from exc
                 try:
+                    if _stat_identity(metadata) != _stat_identity(os.fstat(child_fd)):
+                        raise BaselineCaptureError("source directory was replaced during capture")
                     self._capture_posix_directory(
                         child_fd,
                         relative_directory=relative,
