@@ -7,7 +7,10 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+import appcare.connectors.linux_ssh_contracts as linux_ssh_contracts
 from appcare.connectors.linux_ssh_contracts import (
     BoundedLimits,
     CredentialBoundaryError,
@@ -155,3 +158,32 @@ def test_sqlite_operation_ledger_is_atomic_and_survives_restart(tmp_path: Path) 
     reopened = SqliteOperationLedger(path)
     assert not reopened.claim(target_reference="target-a", operation_id="operation-a")
     assert reopened.claim(target_reference="target-b", operation_id="operation-a")
+
+
+def test_live_receipt_auth_requires_root_controlled_signature(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = Ed25519PrivateKey.generate()
+    public_key = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    payload = {
+        "receipt_signature_algorithm": linux_ssh_contracts.LIVE_RECEIPT_SIGNATURE_ALGORITHM,
+        "sealed": True,
+        "target_reference": "target-a",
+    }
+    digest = linux_ssh_contracts._receipt_digest(payload)
+    signature = private_key.sign(linux_ssh_contracts._receipt_signature_message(payload, digest))
+    monkeypatch.setattr(linux_ssh_contracts, "_read_receipt_verify_key", lambda: public_key)
+
+    assert linux_ssh_contracts._verify_receipt_auth(
+        payload,
+        digest,
+        base64.b64encode(signature).decode("ascii"),
+    )
+    assert not linux_ssh_contracts._verify_receipt_auth(
+        payload,
+        digest,
+        base64.b64encode(b"x").decode(),
+    )

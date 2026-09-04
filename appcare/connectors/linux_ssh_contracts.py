@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import hmac
 import ipaddress
 import json
 import os
@@ -22,6 +23,9 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Final, Protocol, cast
+
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from ..readiness.contracts import (
     CapabilityEvidence,
@@ -105,6 +109,14 @@ _SAFE_OPERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _SAFE_METADATA_KEY = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 _FINGERPRINT = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
 DEFAULT_OPERATION_LEDGER_PATH = Path("/var/lib/securityola/appcare/ssh/operation-ledger.db")
+LIVE_INVENTORY_RECEIPT_VERIFY_KEY = Path(
+    "/etc/securityola/appcare/live-inventory/receipt-signing-public-key"
+)
+LIVE_INVENTORY_RECEIPT_ATTESTOR_SOCKET = Path(
+    "/run/securityola/appcare/live-inventory-attestor.sock"
+)
+LIVE_RECEIPT_SIGNATURE_ALGORITHM = "ed25519-v1"
+_LIVE_RECEIPT_SIGNATURE_BYTES = 64
 
 
 def _current_uid() -> int:
@@ -633,6 +645,13 @@ class OperationLedger(Protocol):
         """Atomically claim an operation identity once."""
 
 
+class LiveReceiptAttestor(Protocol):
+    """Root-controlled signer for receipts derived from live transport evidence."""
+
+    def attest(self, message: bytes) -> bytes:
+        """Return a detached Ed25519 signature from an independent signer."""
+
+
 def _validate_operation_ledger_path(value: object) -> Path:
     if (
         not isinstance(value, Path)
@@ -1085,11 +1104,19 @@ def required_inventory_records_complete(
 
     def filesystem_metadata(metadata: Mapping[str, object]) -> bool:
         bytes_value = metadata.get("bytes")
+        device = metadata.get("device")
+        inode = metadata.get("inode")
         return (
             root_metadata(metadata)
             and isinstance(bytes_value, int)
             and not isinstance(bytes_value, bool)
             and bytes_value >= 0
+            and isinstance(device, int)
+            and not isinstance(device, bool)
+            and device >= 0
+            and isinstance(inode, int)
+            and not isinstance(inode, bool)
+            and inode >= 0
         )
 
     add(
@@ -1259,12 +1286,420 @@ class RemoteExecutionResult:
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+LIVE_INVENTORY_RECEIPT_ROOT: Final = Path("/var/lib/securityola/appcare/evidence/live-inventory")
+_MAX_LIVE_RECEIPT_BYTES: Final = 64 * 1024
+
+
+def _live_source_binding_payload(
+    target: LinuxTarget,
+    records: Sequence[InventoryRecord],
+) -> dict[str, object]:
+    """Persist the typed target-host identity used by live revision capture."""
+
+    host_records = tuple(
+        record
+        for record in records
+        if record.source_reference == "linux-ssh/host_inventory/hostname"
+        and record.record_type == "host_identity"
+        and record.identity == target.expected_hostname
+    )
+    roots: list[dict[str, object]] = []
+    for approved_root in target.approved_application_roots:
+        matches = tuple(
+            record
+            for record in records
+            if record.source_reference == "linux-ssh/filesystem_metadata_read/metadata"
+            and record.record_type == "filesystem"
+            and record.identity == approved_root
+        )
+        if len(matches) != 1:
+            continue
+        record = matches[0]
+        device = record.metadata.get("device")
+        inode = record.metadata.get("inode")
+        roots.append(
+            {
+                "approved_root": approved_root,
+                "device": device,
+                "inode": inode,
+                "record_evidence_digest": record.evidence_digest,
+            }
+        )
+    return {
+        "host_identity": host_records[0].identity if len(host_records) == 1 else None,
+        "host_record_evidence_digest": (
+            host_records[0].evidence_digest if len(host_records) == 1 else None
+        ),
+        "roots": roots,
+    }
+
+
+def _live_snapshot_receipt_payload(
+    target: LinuxTarget,
+    connection: RemoteExecutionResult,
+    inventory: RemoteExecutionResult,
+    records: Sequence[InventoryRecord],
+    *,
+    receipt_path: str,
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "receipt_signature_algorithm": LIVE_RECEIPT_SIGNATURE_ALGORITHM,
+        "sealed": True,
+        "receipt_path": receipt_path,
+        "target": {
+            "tenant_id": target.tenant_id,
+            "application_id": target.application_id,
+            "environment": target.environment,
+            "host": target.host,
+            "expected_hostname": target.expected_hostname,
+            "ssh_port": target.ssh_port,
+            "expected_host_key_fingerprint": target.expected_host_key_fingerprint,
+            "credential_reference": target.credential_reference,
+            "remote_user": target.remote_user,
+            "approved_application_roots": list(target.approved_application_roots),
+            "approved_service_names": list(target.approved_service_names),
+            "approved_database_identifiers": list(target.approved_database_identifiers),
+            "target_reference": target.target_reference,
+        },
+        "connection_operation_id": connection.operation_id,
+        "connection_evidence_digest": connection.evidence_digest,
+        "inventory_operation_id": inventory.operation_id,
+        "inventory_evidence_digest": inventory.evidence_digest,
+        "record_evidence_digests": [record.evidence_digest for record in records],
+        "source_binding": _live_source_binding_payload(target, records),
+        "evidence_reference": (
+            f"live://{target.target_reference}/inventory/{inventory.evidence_digest}"
+        ),
+    }
+
+
+def live_snapshot_receipt_path(target: LinuxTarget, operation_id: str) -> Path:
+    operation = validate_operation_id(operation_id)
+    return LIVE_INVENTORY_RECEIPT_ROOT / target.target_reference / f"{operation}.json"
+
+
+def _read_live_receipt(path: Path) -> dict[str, object] | None:
+    if not _is_safe_live_receipt_path(path):
+        return None
+    if not _trusted_receipt_ancestry(path.parent):
+        return None
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not _trusted_receipt_file_metadata(metadata)
+            or metadata.st_size > _MAX_LIVE_RECEIPT_BYTES
+        ):
+            return None
+        content = bytearray()
+        while len(content) <= _MAX_LIVE_RECEIPT_BYTES:
+            chunk = os.read(descriptor, _MAX_LIVE_RECEIPT_BYTES + 1 - len(content))
+            if not chunk:
+                break
+            content.extend(chunk)
+        if len(content) > _MAX_LIVE_RECEIPT_BYTES:
+            return None
+    except OSError:
+        return None
+    finally:
+        os.close(descriptor)
+    try:
+        payload = json.loads(bytes(content).decode("utf-8"))
+    except (UnicodeError, ValueError, TypeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _is_safe_live_receipt_path(path: Path) -> bool:
+    if not path.is_absolute() or path.is_symlink():
+        return False
+    try:
+        root = LIVE_INVENTORY_RECEIPT_ROOT
+        return (
+            root == path.parents[1]
+            and root.resolve(strict=True) == root
+            and path.parent.resolve(strict=True) == path.parent
+        )
+    except (IndexError, OSError, RuntimeError):
+        return False
+
+
+def _trusted_receipt_directory(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    if not stat.S_ISDIR(metadata.st_mode) or (
+        metadata.st_mode & 0o022 and not metadata.st_mode & stat.S_ISVTX
+    ):
+        return False
+    return os.name != "posix" or metadata.st_uid in {0, _current_uid()}
+
+
+def _trusted_receipt_file_metadata(metadata: os.stat_result) -> bool:
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1 or metadata.st_mode & 0o077:
+        return False
+    return os.name != "posix" or metadata.st_uid in {0, _current_uid()}
+
+
+def _trusted_receipt_file(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    return _trusted_receipt_file_metadata(metadata)
+
+
+def _trusted_receipt_ancestry(path: Path) -> bool:
+    if not path.is_absolute():
+        return False
+    current = path
+    while True:
+        if not _trusted_receipt_directory(current):
+            return False
+        if current == Path(current.anchor):
+            return True
+        current = current.parent
+
+
+def _receipt_digest(payload: Mapping[str, object]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _receipt_signature_message(payload: Mapping[str, object], digest: str) -> bytes:
+    signed = dict(payload)
+    signed["receipt_digest"] = digest
+    return json.dumps(signed, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+        "utf-8"
+    )
+
+
+def _read_receipt_verify_key() -> bytes | None:
+    path = LIVE_INVENTORY_RECEIPT_VERIFY_KEY
+    if os.name == "posix":
+        if not _trusted_receipt_ancestry(path.parent):
+            return None
+        try:
+            metadata = path.lstat()
+        except OSError:
+            return None
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or metadata.st_uid != 0
+            or metadata.st_mode & 0o022
+            or metadata.st_size != 32
+        ):
+            return None
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or metadata.st_size != 32
+            or (os.name == "posix" and (metadata.st_uid != 0 or metadata.st_mode & 0o022))
+        ):
+            return None
+        content = os.read(descriptor, 33)
+        if len(content) != 32:
+            return None
+        return content
+    except OSError:
+        return None
+    finally:
+        os.close(descriptor)
+
+
+def _verify_receipt_auth(
+    payload: Mapping[str, object],
+    supplied_digest: object,
+    supplied_signature: object,
+) -> bool:
+    if (
+        not isinstance(supplied_digest, str)
+        or len(supplied_digest) != 64
+        or any(character not in "0123456789abcdef" for character in supplied_digest)
+        or payload.get("receipt_signature_algorithm") != LIVE_RECEIPT_SIGNATURE_ALGORITHM
+        or not isinstance(supplied_signature, str)
+    ):
+        return False
+    try:
+        signature = base64.b64decode(supplied_signature, validate=True)
+    except (binascii.Error, ValueError, TypeError):
+        return False
+    if len(signature) != _LIVE_RECEIPT_SIGNATURE_BYTES:
+        return False
+    expected_digest = _receipt_digest(payload)
+    if not hmac.compare_digest(supplied_digest, expected_digest):
+        return False
+    key_material = _read_receipt_verify_key()
+    if key_material is None:
+        return False
+    try:
+        key = Ed25519PublicKey.from_public_bytes(key_material)
+        key.verify(signature, _receipt_signature_message(payload, supplied_digest))
+    except (InvalidSignature, ValueError, TypeError):
+        return False
+    return True
+
+
+def verify_live_snapshot_receipt(snapshot: LinuxInventorySnapshot) -> bool:
+    """Validate the durable, sanitized receipt emitted by live transport."""
+
+    if snapshot._live_receipt_path is None:
+        return False
+    expected_path = live_snapshot_receipt_path(snapshot.target, snapshot.inventory.operation_id)
+    if Path(snapshot._live_receipt_path) != expected_path:
+        return False
+    payload = _read_live_receipt(expected_path)
+    if payload is None:
+        return False
+    supplied_signature = payload.pop("receipt_signature", None)
+    supplied_digest = payload.pop("receipt_digest", None)
+    if not _verify_receipt_auth(payload, supplied_digest, supplied_signature):
+        return False
+    expected = _live_snapshot_receipt_payload(
+        snapshot.target,
+        snapshot.connection,
+        snapshot.inventory,
+        snapshot.records,
+        receipt_path=expected_path.as_posix(),
+    )
+    return payload == expected
+
+
+def verify_live_capture_receipt_reference(
+    path: str,
+    *,
+    tenant_id: str,
+    application_id: str,
+    target_reference: str,
+    host_identity: str,
+    approved_root: str,
+    inventory_evidence_digest: str | None,
+    evidence_reference: str,
+    source_host_identity: str | None = None,
+    source_root_identity: tuple[int, int] | None = None,
+) -> bool:
+    """Validate a live revision's reference against the durable receipt."""
+
+    receipt_path = Path(path)
+    try:
+        validate_operation_id(receipt_path.stem)
+    except (LinuxSSHError, ValueError):
+        return False
+    if receipt_path.parent != LIVE_INVENTORY_RECEIPT_ROOT / target_reference:
+        return False
+    if not _trusted_receipt_directory(LIVE_INVENTORY_RECEIPT_ROOT):
+        return False
+    payload = _read_live_receipt(receipt_path)
+    if payload is None:
+        return False
+    supplied_signature = payload.pop("receipt_signature", None)
+    supplied_digest = payload.pop("receipt_digest", None)
+    if not _verify_receipt_auth(payload, supplied_digest, supplied_signature):
+        return False
+    target = payload.get("target")
+    if not isinstance(target, dict):
+        return False
+    roots = target.get("approved_application_roots")
+    source_binding = payload.get("source_binding")
+    if (
+        source_host_identity is None
+        or source_root_identity is None
+        or not isinstance(source_binding, dict)
+        or source_binding.get("host_identity") != source_host_identity
+        or source_host_identity != host_identity
+    ):
+        return False
+    binding_roots = source_binding.get("roots")
+    record_digests = payload.get("record_evidence_digests")
+    host_record_digest = source_binding.get("host_record_evidence_digest")
+    if (
+        not isinstance(roots, (tuple, list))
+        or any(not isinstance(root, str) for root in roots)
+        or not isinstance(binding_roots, (tuple, list))
+        or len(binding_roots) != len(roots)
+        or not isinstance(record_digests, (tuple, list))
+        or not isinstance(host_record_digest, str)
+        or len(host_record_digest) != 64
+        or any(character not in "0123456789abcdef" for character in host_record_digest)
+        or host_record_digest not in record_digests
+    ):
+        return False
+    seen_roots: set[str] = set()
+    selected_root_binding: dict[str, object] | None = None
+    for binding in binding_roots:
+        if not isinstance(binding, dict):
+            return False
+        bound_root = binding.get("approved_root")
+        device = binding.get("device")
+        inode = binding.get("inode")
+        record_digest = binding.get("record_evidence_digest")
+        if (
+            not isinstance(bound_root, str)
+            or bound_root in seen_roots
+            or not isinstance(roots, (tuple, list))
+            or bound_root not in roots
+            or isinstance(device, bool)
+            or not isinstance(device, int)
+            or device < 0
+            or isinstance(inode, bool)
+            or not isinstance(inode, int)
+            or inode < 0
+            or not isinstance(record_digest, str)
+            or len(record_digest) != 64
+            or any(character not in "0123456789abcdef" for character in record_digest)
+            or record_digest not in record_digests
+        ):
+            return False
+        seen_roots.add(bound_root)
+        if bound_root == approved_root:
+            selected_root_binding = binding
+    if (
+        not isinstance(roots, (tuple, list))
+        or seen_roots != set(roots)
+        or selected_root_binding is None
+        or selected_root_binding.get("device") != source_root_identity[0]
+        or selected_root_binding.get("inode") != source_root_identity[1]
+    ):
+        return False
+    return (
+        payload.get("schema_version") == 1
+        and payload.get("sealed") is True
+        and payload.get("receipt_path") == receipt_path.as_posix()
+        and target.get("tenant_id") == tenant_id
+        and target.get("application_id") == application_id
+        and target.get("target_reference") == target_reference
+        and target.get("expected_hostname") == host_identity
+        and isinstance(roots, (tuple, list))
+        and approved_root in roots
+        and (
+            inventory_evidence_digest is None
+            or payload.get("inventory_evidence_digest") == inventory_evidence_digest
+        )
+        and payload.get("evidence_reference") == evidence_reference
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class LinuxInventorySnapshot:
     target: LinuxTarget
     connection: RemoteExecutionResult
     inventory: RemoteExecutionResult
     records: tuple[InventoryRecord, ...]
+    _live_receipt_path: str | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if (
@@ -1276,12 +1711,67 @@ class LinuxInventorySnapshot:
             or self.inventory.target_reference != self.target.target_reference
         ):
             raise ReadinessValidationError("Linux inventory crosses target scope")
+        object.__setattr__(self, "records", tuple(self.records))
         if len(self.records) > 128:
             raise LinuxSSHError("inventory record limit exceeded")
 
     @property
     def complete(self) -> bool:
         return self._inventory_supported
+
+    @property
+    def live_attested(self) -> bool:
+        """True only for snapshots emitted by the live transport boundary."""
+
+        return verify_live_snapshot_receipt(self)
+
+    @property
+    def live_receipt_path(self) -> str | None:
+        return self._live_receipt_path
+
+    def live_source_binding(self, approved_root: str) -> tuple[str, tuple[int, int]] | None:
+        """Return the target-host identity bound to required live observations."""
+
+        if not self.complete or not self.live_attested:
+            return None
+        if approved_root not in self.target.approved_application_roots:
+            return None
+        host_records = tuple(
+            record
+            for record in self.records
+            if record.source_reference == "linux-ssh/host_inventory/hostname"
+            and record.record_type == "host_identity"
+            and record.identity == self.target.expected_hostname
+        )
+        root_records = tuple(
+            record
+            for record in self.records
+            if record.source_reference == "linux-ssh/filesystem_metadata_read/metadata"
+            and record.record_type == "filesystem"
+            and record.identity in self.target.approved_application_roots
+        )
+        if len(host_records) != 1 or len(root_records) != len(
+            self.target.approved_application_roots
+        ):
+            return None
+        root_record = next(
+            (record for record in root_records if record.identity == approved_root),
+            None,
+        )
+        if root_record is None:
+            return None
+        device = root_record.metadata.get("device")
+        inode = root_record.metadata.get("inode")
+        if (
+            isinstance(device, bool)
+            or not isinstance(device, int)
+            or device < 0
+            or isinstance(inode, bool)
+            or not isinstance(inode, int)
+            or inode < 0
+        ):
+            return None
+        return self.target.expected_hostname, (device, inode)
 
     @property
     def _inventory_supported(self) -> bool:
@@ -1361,6 +1851,10 @@ __all__ = [
     "HostKeyVerificationError",
     "InMemoryOperationLedger",
     "InventoryRecord",
+    "LIVE_INVENTORY_RECEIPT_VERIFY_KEY",
+    "LIVE_INVENTORY_RECEIPT_ATTESTOR_SOCKET",
+    "LIVE_RECEIPT_SIGNATURE_ALGORITHM",
+    "LiveReceiptAttestor",
     "LinuxCredentialMetadata",
     "LinuxCredentialRegistry",
     "LinuxInventorySnapshot",

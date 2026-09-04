@@ -139,6 +139,8 @@ def _complete_records(target: LinuxTarget) -> list[InventoryRecord]:
                         "group": "appcare",
                         "mode": "755",
                         "bytes": 42,
+                        "device": 8,
+                        "inode": 123,
                     },
                 ),
             )

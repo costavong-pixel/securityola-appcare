@@ -119,7 +119,7 @@ class CommandRegistry:
                     CapabilityClass.FILESYSTEM_READ,
                     (
                         "stat",
-                        "--format=%n:%F:%U:%G:%a:%s",
+                        "--format=%n:%F:%U:%G:%a:%s:%d:%i",
                         "--",
                         operation.approved_root,
                     ),

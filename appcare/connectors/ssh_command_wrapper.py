@@ -230,7 +230,7 @@ def validate_original_command(
     if (
         len(argv) == 4
         and argv[0] == "stat"
-        and argv[1] == "--format=%n:%F:%U:%G:%a:%s"
+        and argv[1] == "--format=%n:%F:%U:%G:%a:%s:%d:%i"
         and argv[2] == "--"
         and _approved_root(argv[3], profile)
     ):
