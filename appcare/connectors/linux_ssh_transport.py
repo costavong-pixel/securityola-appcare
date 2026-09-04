@@ -664,9 +664,7 @@ class LinuxSSHClient:
                 "live inventory requires an independent receipt attestor"
             )
         try:
-            signature = attestor.attest(
-                _receipt_signature_message(payload, receipt_digest)
-            )
+            signature = attestor.attest(_receipt_signature_message(payload, receipt_digest))
         except (OSError, TypeError, ValueError) as exc:
             raise HostKeyVerificationError("live inventory receipt attestation failed") from exc
         if not isinstance(signature, bytes) or len(signature) != 64:
