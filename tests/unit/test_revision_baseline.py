@@ -457,7 +457,9 @@ def test_mirror_rejects_untrusted_writable_ancestry(tmp_path: Path) -> None:
     unsafe_parent = tmp_path / "unsafe-parent"
     unsafe_parent.mkdir()
     original_mode = stat.S_IMODE(unsafe_parent.stat().st_mode)
-    os.chmod(unsafe_parent, original_mode | stat.S_IWOTH)
+    os.chmod(  # noqa: S103 - deliberate unsafe ancestry fixture
+        unsafe_parent, original_mode | stat.S_IWOTH
+    )
     try:
         with pytest.raises(MirrorCaptureError, match="ancestry"):
             ImmutableSourceMirror.for_test(unsafe_parent / "mirror")
