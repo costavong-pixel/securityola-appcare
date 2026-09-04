@@ -119,6 +119,22 @@ def test_mirror_capability_cannot_be_forged_without_sealed_receipt_attestation(
         )
 
 
+def test_mirror_receipt_is_bound_to_manifest_and_evidence_class(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _root(tmp_path)
+    revision = _revision(root)
+    outcome = ImmutableSourceMirror.for_test(tmp_path / "mirror").capture(revision, root)
+    monkeypatch.setattr(ImmutableSourceMirror, "verify", lambda self, receipt: True)
+
+    with pytest.raises(RevisionError, match="bound to the revision"):
+        revision.with_mirror(receipt=replace(outcome.receipt, source_manifest_digest="b" * 64))
+    with pytest.raises(RevisionError, match="bound to the revision"):
+        revision.with_mirror(
+            receipt=replace(outcome.receipt, evidence_class=EvidenceClass.REAL_TARGET)
+        )
+
+
 def test_fixture_evidence_cannot_promote_real_target() -> None:
     entry = BaselineEntry(".", "directory", 0, 0o700, 0, 0)
     assert entry.classification == "included"

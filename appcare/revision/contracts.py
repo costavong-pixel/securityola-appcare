@@ -162,6 +162,7 @@ def _valid_verified_mirror_receipt(
     mirror_identity: str,
     mirror_path: str,
     mirror_digest: str,
+    source_manifest_digest: str,
     evidence_class: EvidenceClass,
 ) -> bool:
     """Accept mirror evidence only after durable sealed-artifact readback."""
@@ -176,6 +177,8 @@ def _valid_verified_mirror_receipt(
         or receipt.mirror_identity != mirror_identity
         or receipt.mirror_path != mirror_path
         or receipt.mirror_digest != mirror_digest
+        or receipt.source_manifest_digest != source_manifest_digest
+        or receipt.evidence_class is not evidence_class
     ):
         return False
     try:
@@ -993,6 +996,7 @@ class CapturedApplicationRevision:
                 if isinstance(self._mirror_receipt, MirrorReceipt)
                 else "",
                 mirror_digest=mirror_digest,
+                source_manifest_digest=self.manifest_digest,
                 evidence_class=self.evidence_class,
             ):
                 raise RevisionError("mirror evidence requires a verified sealed receipt")
@@ -1196,6 +1200,7 @@ class CapturedApplicationRevision:
                     else ""
                 ),
                 mirror_digest=self.mirror_digest,
+                source_manifest_digest=self.manifest_digest,
                 evidence_class=self.evidence_class,
             )
         ):
@@ -1224,6 +1229,11 @@ class CapturedApplicationRevision:
     ) -> CapturedApplicationRevision:
         if not isinstance(receipt, MirrorReceipt):
             raise RevisionError("mirror evidence requires a verified sealed receipt")
+        if (
+            receipt.source_manifest_digest != self.manifest_digest
+            or receipt.evidence_class is not self.evidence_class
+        ):
+            raise RevisionError("mirror evidence is not bound to the revision")
         return type(self)(
             tenant_id=self.tenant_id,
             application_id=self.application_id,
@@ -1350,6 +1360,8 @@ class MirrorCaptureOutcome:
             or self.revision.application_id != self.receipt.application_id
             or self.revision.target_reference != self.receipt.target_reference
             or self.revision.baseline_id != self.receipt.baseline_id
+            or self.revision.manifest_digest != self.receipt.source_manifest_digest
+            or self.revision.evidence_class is not self.receipt.evidence_class
             or not isinstance(self.revision._mirror_receipt, MirrorReceipt)
             or self.revision._mirror_receipt is not self.receipt
         ):
