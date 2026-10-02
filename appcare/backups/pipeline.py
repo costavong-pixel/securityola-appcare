@@ -183,6 +183,8 @@ class BackupCoordinator:
 
         if vault.destination != request.destination:
             raise BackupError("vault destination does not match backup request")
+        if getattr(source, "requires_streaming", False) is True:
+            raise BackupError("backup source requires the streaming artifact path")
         # BackupTarget and BackupDestination validate in their constructors;
         # repeat the identity checks before invoking injected source/vault code.
         BackupTarget(

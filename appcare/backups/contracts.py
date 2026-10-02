@@ -134,6 +134,7 @@ class BackupTarget:
     application_id: str
     environment: BackupEnvironment
     source_reference: str
+    target_reference: str | None = None
 
     def __post_init__(self) -> None:
         _safe_identifier(self.tenant_id, field="tenant_id")
@@ -141,6 +142,8 @@ class BackupTarget:
         if self.environment not in {"development", "staging", "test", "production"}:
             raise BackupBoundaryError("backup environment is unsupported")
         _safe_reference(self.source_reference, field="source_reference")
+        if self.target_reference is not None:
+            _safe_reference(self.target_reference, field="target_reference")
 
 
 @dataclass(frozen=True, slots=True)
