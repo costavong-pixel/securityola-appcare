@@ -497,6 +497,13 @@ class LinuxFilesystemBackupSource:
                         entry_type=FilesystemEntryType.DIRECTORY,
                         classification=FilesystemEntryClass.SECRET_EXCLUDED,
                     )
+                else:
+                    yield _entry_from_stat(
+                        relative_path,
+                        metadata,
+                        entry_type=FilesystemEntryType.DIRECTORY,
+                        classification=FilesystemEntryClass.SAFE_DIRECTORY,
+                    )
             for name in files:
                 relative_path = name if not directory_relative else f"{directory_relative}/{name}"
                 metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)

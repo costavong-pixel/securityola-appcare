@@ -119,6 +119,8 @@ def test_capture_is_deterministic_and_excludes_secret_contents(tmp_path: Path) -
     safe = next(item for item in first.entries if item.relative_path == "index.php")
     assert safe.classification is FilesystemEntryClass.SAFE_FILE
     assert safe.sha256 is not None
+    directory = next(item for item in first.entries if item.relative_path == "assets")
+    assert directory.classification is FilesystemEntryClass.SAFE_DIRECTORY
     assert "DATABASE_PASSWORD" not in str(first)
 
 
