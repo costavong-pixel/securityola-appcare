@@ -7,7 +7,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Literal, Protocol
 
 from ..services.security import contains_credential_like, is_safe_credential_reference
@@ -48,6 +48,34 @@ def _safe_reference(value: str, *, field: str) -> str:
         or ".." in normalized
         or any(character.isspace() or ord(character) < 32 for character in normalized)
         or contains_credential_like(normalized)
+    ):
+        raise BackupBoundaryError(f"{field} is unsafe")
+    lowered = normalized.casefold()
+    if any(marker in lowered for marker in _FORBIDDEN_MARKERS):
+        raise BackupBoundaryError(f"{field} is outside the AppCare boundary")
+    return normalized
+
+
+def _safe_source_reference(value: str, *, field: str) -> str:
+    """Validate logical references and exact absolute source roots.
+
+    Backup jobs normally use opaque logical source references. The Linux
+    filesystem source additionally binds a job to the exact absolute root it
+    was captured from. Keep that exception narrow: absolute roots cannot be
+    broad filesystem roots, contain traversal segments, or cross the existing
+    protected-path markers.
+    """
+
+    normalized = value.strip()
+    if not normalized.startswith("/"):
+        return _safe_reference(normalized, field=field)
+    if (
+        not normalized
+        or normalized == "/"
+        or len(normalized) > 500
+        or any(character.isspace() or ord(character) < 32 for character in normalized)
+        or contains_credential_like(normalized)
+        or any(part in {"", ".", ".."} for part in PurePosixPath(normalized).parts[1:])
     ):
         raise BackupBoundaryError(f"{field} is unsafe")
     lowered = normalized.casefold()
@@ -134,13 +162,16 @@ class BackupTarget:
     application_id: str
     environment: BackupEnvironment
     source_reference: str
+    target_reference: str | None = None
 
     def __post_init__(self) -> None:
         _safe_identifier(self.tenant_id, field="tenant_id")
         _safe_identifier(self.application_id, field="application_id")
         if self.environment not in {"development", "staging", "test", "production"}:
             raise BackupBoundaryError("backup environment is unsupported")
-        _safe_reference(self.source_reference, field="source_reference")
+        _safe_source_reference(self.source_reference, field="source_reference")
+        if self.target_reference is not None:
+            _safe_reference(self.target_reference, field="target_reference")
 
 
 @dataclass(frozen=True, slots=True)
