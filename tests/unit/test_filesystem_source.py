@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,7 +17,13 @@ from appcare.backups import (
     FilesystemSourceLimits,
     LinuxFilesystemBackupSource,
 )
-from appcare.revision import CapturedApplicationRevision, FilesystemBaselineCapturer
+from appcare.revision import (
+    BaselineEntry,
+    BaselinePolicy,
+    CapturedApplicationRevision,
+    FilesystemBaseline,
+    FilesystemBaselineCapturer,
+)
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="Linux/POSIX source is required")
 
@@ -47,6 +54,49 @@ def _source(
     root: Path, *, limits: FilesystemSourceLimits | None = None
 ) -> LinuxFilesystemBackupSource:
     return LinuxFilesystemBackupSource.for_fixture(_revision(root), limits=limits)
+
+
+def _hardlink_revision(root: Path) -> CapturedApplicationRevision:
+    entries: list[BaselineEntry] = []
+    root_metadata = root.stat()
+    entries.append(
+        BaselineEntry(
+            ".",
+            "directory",
+            root_metadata.st_size,
+            root_metadata.st_mode & 0o7777,
+            getattr(root_metadata, "st_uid", 0),
+            getattr(root_metadata, "st_gid", 0),
+        )
+    )
+    for path in sorted(root.iterdir(), key=lambda item: item.name):
+        metadata = path.stat()
+        payload = path.read_bytes()
+        entries.append(
+            BaselineEntry(
+                path.name,
+                "file",
+                metadata.st_size,
+                metadata.st_mode & 0o7777,
+                getattr(metadata, "st_uid", 0),
+                getattr(metadata, "st_gid", 0),
+                sha256=hashlib.sha256(payload).hexdigest(),
+            )
+        )
+    baseline = FilesystemBaseline(
+        root=root.as_posix(),
+        entries=tuple(entries),
+        policy=BaselinePolicy(),
+        root_identity=(root_metadata.st_dev, root_metadata.st_ino),
+    )
+    return CapturedApplicationRevision.from_filesystem_baseline(
+        baseline,
+        tenant_id="tenant-appcare-1",
+        application_id="appcare-test-app",
+        target_reference="target-appcare-test",
+        host_identity="slab-prompt-ola",
+        captured_at=datetime(2026, 9, 3, 12, 0, tzinfo=UTC),
+    )
 
 
 def test_capture_is_deterministic_and_excludes_secret_contents(tmp_path: Path) -> None:
@@ -93,9 +143,10 @@ def test_unsafe_entry_types_are_classified_without_following(tmp_path: Path) -> 
     root = tmp_path / "site"
     root.mkdir()
     (root / "safe.txt").write_text("safe", encoding="utf-8")
+    (root / "safe-target").mkdir()
     link = root / "escape"
     try:
-        link.symlink_to(tmp_path / "outside", target_is_directory=True)
+        link.symlink_to(root / "safe-target", target_is_directory=True)
     except OSError:
         pytest.skip("symlink creation is unavailable")
 
@@ -117,7 +168,10 @@ def test_hardlinks_and_oversized_files_are_not_read(tmp_path: Path) -> None:
     except OSError:
         hardlink_created = False
     (root / "too-large.txt").write_text("12345", encoding="utf-8")
-    source = _source(root, limits=FilesystemSourceLimits(max_file_bytes=4, max_total_bytes=100))
+    source = LinuxFilesystemBackupSource.for_fixture(
+        _hardlink_revision(root),
+        limits=FilesystemSourceLimits(max_file_bytes=4, max_total_bytes=100),
+    )
     entries = tuple(source.iter_entries(_target(root)))
 
     oversized = next(item for item in entries if item.relative_path == "too-large.txt")
