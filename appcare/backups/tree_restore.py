@@ -269,7 +269,9 @@ def _relative_parts(value: object) -> tuple[str, ...]:
         raise FilesystemTreeRestoreError("manifest path is invalid", code="manifest_invalid")
     parts = tuple(value.split("/"))
     if any(not part or part in {".", ".."} for part in parts):
-        raise FilesystemTreeRestoreError("manifest path escapes restore root", code="path_traversal")
+        raise FilesystemTreeRestoreError(
+            "manifest path escapes restore root", code="path_traversal"
+        )
     if any(any(ord(character) < 32 for character in part) for part in parts):
         raise FilesystemTreeRestoreError("manifest path is invalid", code="manifest_invalid")
     return parts
@@ -286,17 +288,23 @@ def _read_bounded(path: Path, maximum: int) -> bytes:
         descriptor = os.open(os.fspath(path), flags)
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > maximum:
-            raise FilesystemTreeRestoreError("artifact metadata exceeds its limit", code="artifact_invalid")
+            raise FilesystemTreeRestoreError(
+                "artifact metadata exceeds its limit", code="artifact_invalid"
+            )
         value = os.read(descriptor, maximum + 1)
     except FilesystemTreeRestoreError:
         raise
     except OSError as exc:
-        raise FilesystemTreeRestoreError("artifact metadata cannot be read", code="artifact_invalid") from exc
+        raise FilesystemTreeRestoreError(
+            "artifact metadata cannot be read", code="artifact_invalid"
+        ) from exc
     finally:
         if descriptor >= 0:
             os.close(descriptor)
     if len(value) > maximum:
-        raise FilesystemTreeRestoreError("artifact metadata exceeds its limit", code="artifact_invalid")
+        raise FilesystemTreeRestoreError(
+            "artifact metadata exceeds its limit", code="artifact_invalid"
+        )
     return value
 
 
@@ -312,7 +320,9 @@ def _open_directory(path: str | os.PathLike[str], *, dir_fd: int | None = None) 
     except FilesystemTreeRestoreError:
         raise
     except OSError as exc:
-        raise FilesystemTreeRestoreError("restore directory cannot be opened", code="path_race") from exc
+        raise FilesystemTreeRestoreError(
+            "restore directory cannot be opened", code="path_race"
+        ) from exc
 
 
 def _open_relative_directory(root_fd: int, parts: tuple[str, ...]) -> int:
@@ -364,7 +374,9 @@ def _open_new_file(parent_fd: int, name: str) -> int:
             "restore destination already contains an entry", code="restore_target_exists"
         ) from exc
     except OSError as exc:
-        raise FilesystemTreeRestoreError("restore file cannot be created", code="restore_io_failure") from exc
+        raise FilesystemTreeRestoreError(
+            "restore file cannot be created", code="restore_io_failure"
+        ) from exc
 
 
 def _write_all(descriptor: int, payload: bytes) -> None:
@@ -373,9 +385,13 @@ def _write_all(descriptor: int, payload: bytes) -> None:
         try:
             written = os.write(descriptor, payload[offset:])
         except OSError as exc:
-            raise FilesystemTreeRestoreError("restore file cannot be written", code="restore_io_failure") from exc
+            raise FilesystemTreeRestoreError(
+                "restore file cannot be written", code="restore_io_failure"
+            ) from exc
         if written <= 0:
-            raise FilesystemTreeRestoreError("restore file write made no progress", code="restore_io_failure")
+            raise FilesystemTreeRestoreError(
+                "restore file write made no progress", code="restore_io_failure"
+            )
         offset += written
 
 
@@ -400,25 +416,44 @@ def _fchmod(descriptor: int, mode: int) -> None:
     cast(Callable[[int, int], None], function)(descriptor, mode)
 
 
-def _load_manifest(artifact: object, scope: _RestoreScope, filesystem: BackupFilesystemBoundary, limits: FilesystemRestoreLimits) -> tuple[dict[str, object], bytes]:
+def _load_manifest(
+    artifact: object,
+    scope: _RestoreScope,
+    filesystem: BackupFilesystemBoundary,
+    limits: FilesystemRestoreLimits,
+) -> tuple[dict[str, object], bytes]:
     artifact_path = Path(getattr(artifact, "path", ""))
     expected_path = filesystem.staging_path(scope.backup_id)
     try:
-        if artifact_path != expected_path or artifact_path.is_symlink() or not artifact_path.is_dir():
-            raise FilesystemTreeRestoreError("artifact path is outside AppCare scope", code="wrong_scope")
+        if (
+            artifact_path != expected_path
+            or artifact_path.is_symlink()
+            or not artifact_path.is_dir()
+        ):
+            raise FilesystemTreeRestoreError(
+                "artifact path is outside AppCare scope", code="wrong_scope"
+            )
         if getattr(artifact, "backup_id", scope.backup_id) != scope.backup_id:
-            raise FilesystemTreeRestoreError("artifact backup binding is invalid", code="wrong_scope")
+            raise FilesystemTreeRestoreError(
+                "artifact backup binding is invalid", code="wrong_scope"
+            )
         manifest_bytes = _read_bounded(artifact_path / "manifest.json", limits.max_manifest_bytes)
         manifest = json.loads(manifest_bytes.decode("utf-8"))
     except FilesystemTreeRestoreError:
         raise
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise FilesystemTreeRestoreError("artifact manifest is malformed", code="manifest_invalid") from exc
+        raise FilesystemTreeRestoreError(
+            "artifact manifest is malformed", code="manifest_invalid"
+        ) from exc
     if not isinstance(manifest, dict) or _canonical_json(manifest) != manifest_bytes:
-        raise FilesystemTreeRestoreError("artifact manifest is not canonical", code="manifest_invalid")
+        raise FilesystemTreeRestoreError(
+            "artifact manifest is not canonical", code="manifest_invalid"
+        )
     manifest_digest = _digest(manifest_bytes)
     if getattr(artifact, "manifest_digest", manifest_digest) != manifest_digest:
-        raise FilesystemTreeRestoreError("artifact manifest digest does not match", code="artifact_invalid")
+        raise FilesystemTreeRestoreError(
+            "artifact manifest digest does not match", code="artifact_invalid"
+        )
     if (
         manifest.get("backup_id") != scope.backup_id
         or manifest.get("tenant_id") != scope.tenant_id
@@ -429,15 +464,27 @@ def _load_manifest(artifact: object, scope: _RestoreScope, filesystem: BackupFil
         or manifest.get("source_manifest_digest") != scope.source_manifest_digest
         or manifest.get("key_reference") != scope.key_reference
     ):
-        raise FilesystemTreeRestoreError("artifact scope binding does not match", code="wrong_scope")
-    if not isinstance(manifest.get("entries"), list) or not isinstance(manifest.get("chunks"), list):
-        raise FilesystemTreeRestoreError("artifact manifest records are malformed", code="manifest_invalid")
+        raise FilesystemTreeRestoreError(
+            "artifact scope binding does not match", code="wrong_scope"
+        )
+    if not isinstance(manifest.get("entries"), list) or not isinstance(
+        manifest.get("chunks"), list
+    ):
+        raise FilesystemTreeRestoreError(
+            "artifact manifest records are malformed", code="manifest_invalid"
+        )
     return manifest, manifest_bytes
 
 
-def _validate_entries(manifest: Mapping[str, object], limits: FilesystemRestoreLimits) -> tuple[dict[str, dict[str, object]], int]:
+def _validate_entries(
+    manifest: Mapping[str, object], limits: FilesystemRestoreLimits
+) -> tuple[dict[str, dict[str, object]], int]:
     raw_entries = manifest["entries"]
-    if not isinstance(raw_entries, list) or not raw_entries or len(raw_entries) > limits.max_entries:
+    if (
+        not isinstance(raw_entries, list)
+        or not raw_entries
+        or len(raw_entries) > limits.max_entries
+    ):
         raise FilesystemTreeRestoreError("artifact entry set is invalid", code="manifest_invalid")
     entries: dict[str, dict[str, object]] = {}
     ordered: list[str] = []
@@ -449,36 +496,51 @@ def _validate_entries(manifest: Mapping[str, object], limits: FilesystemRestoreL
         parts = _relative_parts(raw.get("relative_path"))
         path = _relative_key(parts)
         if path in entries or path.casefold() in folded:
-            raise FilesystemTreeRestoreError("artifact entries are duplicated", code="duplicate_entry")
+            raise FilesystemTreeRestoreError(
+                "artifact entries are duplicated", code="duplicate_entry"
+            )
         folded.add(path.casefold())
         ordered.append(path)
         classification = raw.get("classification")
         entry_type = raw.get("entry_type")
         if classification == "safe_directory" and entry_type == "directory":
             if raw.get("sha256") not in {None, ""}:
-                raise FilesystemTreeRestoreError("directory digest metadata is invalid", code="manifest_invalid")
+                raise FilesystemTreeRestoreError(
+                    "directory digest metadata is invalid", code="manifest_invalid"
+                )
         elif classification == "safe_file" and entry_type == "file":
             size = raw.get("size_bytes")
-            if isinstance(size, bool) or not isinstance(size, int) or not 0 <= size <= limits.max_file_bytes:
+            if (
+                isinstance(size, bool)
+                or not isinstance(size, int)
+                or not 0 <= size <= limits.max_file_bytes
+            ):
                 raise FilesystemTreeRestoreError("file size is outside bounds", code="size_limit")
             digest = _validated_digest(raw.get("sha256"), field="file digest")
             total_bytes += size
             if total_bytes > limits.max_total_bytes:
-                raise FilesystemTreeRestoreError("restore exceeds total size limit", code="size_limit")
+                raise FilesystemTreeRestoreError(
+                    "restore exceeds total size limit", code="size_limit"
+                )
             raw = dict(raw)
             raw["sha256"] = digest
         else:
             raise FilesystemTreeRestoreError(
-                "artifact contains a non-restoreable file classification", code="special_file_denied"
+                "artifact contains a non-restoreable file classification",
+                code="special_file_denied",
             )
         raw = dict(raw)
         raw["mode"] = _validate_mode(raw.get("mode"))
         entries[path] = raw
     if ordered != sorted(ordered):
-        raise FilesystemTreeRestoreError("artifact entries are not ordered", code="manifest_invalid")
+        raise FilesystemTreeRestoreError(
+            "artifact entries are not ordered", code="manifest_invalid"
+        )
     if "." not in entries or entries["."].get("classification") != "safe_directory":
         raise FilesystemTreeRestoreError("artifact tree is not rooted", code="missing_entry")
-    directories = {path for path, entry in entries.items() if entry["classification"] == "safe_directory"}
+    directories = {
+        path for path, entry in entries.items() if entry["classification"] == "safe_directory"
+    }
     for path in entries:
         if path == ".":
             continue
@@ -486,7 +548,9 @@ def _validate_entries(manifest: Mapping[str, object], limits: FilesystemRestoreL
         for index in range(1, len(path_parts)):
             parent = "/".join(path_parts[:index])
             if parent not in directories:
-                raise FilesystemTreeRestoreError("artifact tree has a missing directory", code="missing_entry")
+                raise FilesystemTreeRestoreError(
+                    "artifact tree has a missing directory", code="missing_entry"
+                )
     if not any(entry["classification"] == "safe_file" for entry in entries.values()):
         raise FilesystemTreeRestoreError(
             "artifact has no authenticated file entry", code="missing_entry"
@@ -511,13 +575,19 @@ def _hash_file_at(parent_fd: int, name: str, expected_size: int, expected_digest
             size += len(chunk)
             digest.update(chunk)
             if size > expected_size:
-                raise FilesystemTreeRestoreError("restored file exceeds manifest size", code="checksum_mismatch")
+                raise FilesystemTreeRestoreError(
+                    "restored file exceeds manifest size", code="checksum_mismatch"
+                )
         if size != expected_size or digest.hexdigest() != expected_digest:
-            raise FilesystemTreeRestoreError("restored file checksum mismatch", code="checksum_mismatch")
+            raise FilesystemTreeRestoreError(
+                "restored file checksum mismatch", code="checksum_mismatch"
+            )
     except FilesystemTreeRestoreError:
         raise
     except OSError as exc:
-        raise FilesystemTreeRestoreError("restored file cannot be read", code="restore_io_failure") from exc
+        raise FilesystemTreeRestoreError(
+            "restored file cannot be read", code="restore_io_failure"
+        ) from exc
     finally:
         if descriptor >= 0:
             os.close(descriptor)
@@ -540,33 +610,53 @@ def _tree_records(
             relative = (directory_path / name).relative_to(root).as_posix()
             metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
             if stat.S_ISLNK(metadata.st_mode):
-                raise FilesystemTreeRestoreError("restored tree contains a symlink", code="symlink_denied")
+                raise FilesystemTreeRestoreError(
+                    "restored tree contains a symlink", code="symlink_denied"
+                )
             if not stat.S_ISDIR(metadata.st_mode):
-                raise FilesystemTreeRestoreError("restored tree contains a special file", code="special_file_denied")
-            actual[relative] = {"classification": "safe_directory", "mode": stat.S_IMODE(metadata.st_mode)}
+                raise FilesystemTreeRestoreError(
+                    "restored tree contains a special file", code="special_file_denied"
+                )
+            actual[relative] = {
+                "classification": "safe_directory",
+                "mode": stat.S_IMODE(metadata.st_mode),
+            }
         for name in files:
             relative = (directory_path / name).relative_to(root).as_posix()
             metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
             if stat.S_ISLNK(metadata.st_mode):
-                raise FilesystemTreeRestoreError("restored tree contains a symlink", code="symlink_denied")
+                raise FilesystemTreeRestoreError(
+                    "restored tree contains a symlink", code="symlink_denied"
+                )
             if not stat.S_ISREG(metadata.st_mode):
-                raise FilesystemTreeRestoreError("restored tree contains a special file", code="special_file_denied")
+                raise FilesystemTreeRestoreError(
+                    "restored tree contains a special file", code="special_file_denied"
+                )
             expected_entry = expected.get(relative)
             if expected_entry is None or expected_entry.get("classification") != "safe_file":
-                raise FilesystemTreeRestoreError("restored tree contains an extra file", code="extra_entry")
+                raise FilesystemTreeRestoreError(
+                    "restored tree contains an extra file", code="extra_entry"
+                )
             _hash_file_at(
                 directory_fd,
                 name,
                 _validated_int(expected_entry.get("size_bytes"), field="file size"),
                 str(expected_entry["sha256"]),
             )
-            actual[relative] = {"classification": "safe_file", "mode": stat.S_IMODE(metadata.st_mode), "size_bytes": metadata.st_size, "sha256": str(expected_entry["sha256"])}
+            actual[relative] = {
+                "classification": "safe_file",
+                "mode": stat.S_IMODE(metadata.st_mode),
+                "size_bytes": metadata.st_size,
+                "sha256": str(expected_entry["sha256"]),
+            }
             total += metadata.st_size
     if set(actual) != set(expected):
         missing = set(expected) - set(actual)
         extra = set(actual) - set(expected)
         code = "missing_entry" if missing else "extra_entry"
-        raise FilesystemTreeRestoreError("restored tree does not reconcile with manifest", code=code)
+        raise FilesystemTreeRestoreError(
+            "restored tree does not reconcile with manifest", code=code
+        )
     for manifest_path, expected_entry in expected.items():
         if actual[manifest_path].get("classification") != expected_entry.get("classification"):
             raise FilesystemTreeRestoreError(
@@ -585,7 +675,9 @@ class FilesystemTreeRestorer:
         limits: FilesystemRestoreLimits | None = None,
     ) -> None:
         if not callable(getattr(reader, "iter_file_chunks", None)):
-            raise FilesystemTreeRestoreError("streaming reader contract is unavailable", code="reader_unavailable")
+            raise FilesystemTreeRestoreError(
+                "streaming reader contract is unavailable", code="reader_unavailable"
+            )
         self.reader = reader
         self.limits = limits or FilesystemRestoreLimits()
 
@@ -606,11 +698,14 @@ class FilesystemTreeRestorer:
                 or not hasattr(os, "fwalk")
             ):
                 raise FilesystemTreeRestoreError(
-                    "descriptor-relative restore requires POSIX", code="unsupported_restore_platform"
+                    "descriptor-relative restore requires POSIX",
+                    code="unsupported_restore_platform",
                 )
             filesystem = request.filesystem
             if filesystem is None:
-                raise FilesystemTreeRestoreError("restore filesystem boundary is missing", code="wrong_scope")
+                raise FilesystemTreeRestoreError(
+                    "restore filesystem boundary is missing", code="wrong_scope"
+                )
             manifest, _manifest_bytes = _load_manifest(artifact, scope, filesystem, self.limits)
             entries, total_bytes = _validate_entries(manifest, self.limits)
             root = filesystem.restore_rehearsal_path(
@@ -619,7 +714,11 @@ class FilesystemTreeRestorer:
             root_fd = self._create_root(filesystem, scope, request.restore_job_id)
             root_created = True
             directories = sorted(
-                (path for path, entry in entries.items() if entry["classification"] == "safe_directory"),
+                (
+                    path
+                    for path, entry in entries.items()
+                    if entry["classification"] == "safe_directory"
+                ),
                 key=lambda path: (path.count("/"), path),
             )
             for path in directories:
@@ -644,41 +743,61 @@ class FilesystemTreeRestorer:
                     digest = hashlib.sha256()
                     written = 0
                     chunk_count = 0
-                    chunks = self.reader.iter_file_chunks(
-                        artifact, request.streaming_request, path
-                    )
+                    chunks = self.reader.iter_file_chunks(artifact, request.streaming_request, path)
                     for chunk in chunks:
                         chunk_count += 1
                         if chunk_count > self.limits.max_chunks:
                             raise FilesystemTreeRestoreError(
                                 "streaming artifact exceeds chunk limit", code="size_limit"
                             )
-                        if not isinstance(chunk, bytes) or not chunk or len(chunk) > self.limits.max_chunk_bytes:
-                            raise FilesystemTreeRestoreError("streaming chunk is invalid", code="chunk_invalid")
+                        if (
+                            not isinstance(chunk, bytes)
+                            or not chunk
+                            or len(chunk) > self.limits.max_chunk_bytes
+                        ):
+                            raise FilesystemTreeRestoreError(
+                                "streaming chunk is invalid", code="chunk_invalid"
+                            )
                         written += len(chunk)
                         if written > _validated_int(entry.get("size_bytes"), field="file size"):
-                            raise FilesystemTreeRestoreError("streaming file exceeds manifest size", code="checksum_mismatch")
+                            raise FilesystemTreeRestoreError(
+                                "streaming file exceeds manifest size", code="checksum_mismatch"
+                            )
                         digest.update(chunk)
                         _write_all(descriptor, chunk)
-                    if written != _validated_int(entry.get("size_bytes"), field="file size") or digest.hexdigest() != str(entry["sha256"]):
-                        raise FilesystemTreeRestoreError("restored file checksum mismatch", code="checksum_mismatch")
+                    if written != _validated_int(
+                        entry.get("size_bytes"), field="file size"
+                    ) or digest.hexdigest() != str(entry["sha256"]):
+                        raise FilesystemTreeRestoreError(
+                            "restored file checksum mismatch", code="checksum_mismatch"
+                        )
                     os.fsync(descriptor)
                     mode = _validated_int(entry.get("mode"), field="file mode")
                     _fchmod(descriptor, mode)
                     metadata = os.fstat(descriptor)
-                    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1 or stat.S_IMODE(metadata.st_mode) != mode:
-                        raise FilesystemTreeRestoreError("restored file metadata changed", code="path_race")
+                    if (
+                        not stat.S_ISREG(metadata.st_mode)
+                        or metadata.st_nlink != 1
+                        or stat.S_IMODE(metadata.st_mode) != mode
+                    ):
+                        raise FilesystemTreeRestoreError(
+                            "restored file metadata changed", code="path_race"
+                        )
                 except FilesystemTreeRestoreError:
                     raise
                 except OSError as exc:
-                    raise FilesystemTreeRestoreError("restore file operation failed", code="restore_io_failure") from exc
+                    raise FilesystemTreeRestoreError(
+                        "restore file operation failed", code="restore_io_failure"
+                    ) from exc
                 finally:
                     if descriptor >= 0:
                         os.close(descriptor)
                     os.close(parent_fd)
             actual, actual_bytes = _tree_records(root, entries)
             if actual_bytes != total_bytes:
-                raise FilesystemTreeRestoreError("restored byte count does not reconcile", code="checksum_mismatch")
+                raise FilesystemTreeRestoreError(
+                    "restored byte count does not reconcile", code="checksum_mismatch"
+                )
             tree_digest = self._apply_modes_and_digest(root_fd, root, entries, actual)
             self._verify_root_identity(root, root_fd)
             os.fsync(root_fd)
@@ -699,8 +818,7 @@ class FilesystemTreeRestorer:
         except Exception as exc:
             code = (
                 exc.code
-                if isinstance(exc, FilesystemTreeRestoreError)
-                and exc.code in _SAFE_FAILURE_CODES
+                if isinstance(exc, FilesystemTreeRestoreError) and exc.code in _SAFE_FAILURE_CODES
                 else "restore_failed"
             )
             if root_fd >= 0:
@@ -737,7 +855,9 @@ class FilesystemTreeRestorer:
                 os.close(root_fd)
 
     @staticmethod
-    def _create_root(filesystem: BackupFilesystemBoundary, scope: _RestoreScope, job_id: str) -> int:
+    def _create_root(
+        filesystem: BackupFilesystemBoundary, scope: _RestoreScope, job_id: str
+    ) -> int:
         filesystem.ensure_data_dirs()
         base = filesystem._static_subdirectory("restore-rehearsal")
         base_fd = _open_directory(base)
@@ -809,9 +929,12 @@ class FilesystemTreeRestorer:
         filesystem = request.filesystem
         if filesystem is None:
             return None
-        failure_id = "restore-" + _digest(
-            f"{scope.tenant_id}\0{scope.application_id}\0{request.restore_job_id}\0{time.monotonic_ns()}".encode()
-        )[:32]
+        failure_id = (
+            "restore-"
+            + _digest(
+                f"{scope.tenant_id}\0{scope.application_id}\0{request.restore_job_id}\0{time.monotonic_ns()}".encode()
+            )[:32]
+        )
         try:
             filesystem.ensure_data_dirs()
             directory = filesystem.failed_path(failure_id)
@@ -856,7 +979,11 @@ class FilesystemTreeRestorer:
         actual: Mapping[str, Mapping[str, object]],
     ) -> str:
         for path in sorted(
-            (path for path in entries if path != "." and entries[path]["classification"] == "safe_directory"),
+            (
+                path
+                for path in entries
+                if path != "." and entries[path]["classification"] == "safe_directory"
+            ),
             key=lambda value: (value.count("/"), value),
             reverse=True,
         ):
@@ -866,7 +993,9 @@ class FilesystemTreeRestorer:
                 mode = _validated_int(entries[path].get("mode"), field="directory mode")
                 _fchmod(descriptor, mode)
                 if stat.S_IMODE(os.fstat(descriptor).st_mode) != mode:
-                    raise FilesystemTreeRestoreError("directory mode was not restored", code="mode_denied")
+                    raise FilesystemTreeRestoreError(
+                        "directory mode was not restored", code="mode_denied"
+                    )
             finally:
                 os.close(descriptor)
         root_mode = _validated_int(entries["."].get("mode"), field="root mode")

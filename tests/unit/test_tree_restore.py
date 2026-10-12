@@ -25,7 +25,9 @@ POSIX_ONLY = pytest.mark.skipif(
 )
 
 
-def _request(*, filesystem: BackupFilesystemBoundary, environment: str = "test") -> FilesystemRestoreRequest:
+def _request(
+    *, filesystem: BackupFilesystemBoundary, environment: str = "test"
+) -> FilesystemRestoreRequest:
     target = SimpleNamespace(
         tenant_id="tenant-a",
         application_id="application-a",
@@ -138,7 +140,9 @@ class _Reader:
 
 
 @POSIX_ONLY
-def test_restore_reconciles_tree_restores_modes_and_returns_deterministic_digest(tmp_path: Path) -> None:
+def test_restore_reconciles_tree_restores_modes_and_returns_deterministic_digest(
+    tmp_path: Path,
+) -> None:
     filesystem = BackupFilesystemBoundary.for_test(tmp_path / "boundary")
     request = _request(filesystem=filesystem)
     artifact, payloads = _artifact(filesystem, request)
