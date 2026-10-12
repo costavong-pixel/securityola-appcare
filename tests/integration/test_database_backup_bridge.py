@@ -172,7 +172,9 @@ class _DumpBroker:
         )
 
 
-def _bridge(tmp_path: Path, *, broker: _DumpBroker | None = None) -> tuple[ApplicationDatabaseBackupBridge, _DumpBroker]:
+def _bridge(
+    tmp_path: Path, *, broker: _DumpBroker | None = None
+) -> tuple[ApplicationDatabaseBackupBridge, _DumpBroker]:
     filesystem = BackupFilesystemBoundary.for_test(tmp_path / "backup-boundary")
     active_broker = broker or _DumpBroker()
     adapter = MariaDBAdapter(

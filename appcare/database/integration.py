@@ -86,9 +86,7 @@ class DatabaseIdentityAttestation:
         object.__setattr__(
             self,
             "logical_database_name",
-            validate_database_name(
-                self.logical_database_name, field_name="logical_database_name"
-            ),
+            validate_database_name(self.logical_database_name, field_name="logical_database_name"),
         )
         if (
             not isinstance(self.database_version, str)
@@ -100,10 +98,14 @@ class DatabaseIdentityAttestation:
             self, "credential_reference", validate_evidence_reference(self.credential_reference)
         )
         object.__setattr__(
-            self, "baseline_digest", validate_digest(self.baseline_digest, field_name="baseline_digest")
+            self,
+            "baseline_digest",
+            validate_digest(self.baseline_digest, field_name="baseline_digest"),
         )
         object.__setattr__(
-            self, "manifest_digest", validate_digest(self.manifest_digest, field_name="manifest_digest")
+            self,
+            "manifest_digest",
+            validate_digest(self.manifest_digest, field_name="manifest_digest"),
         )
         object.__setattr__(
             self, "evidence_reference", validate_evidence_reference(self.evidence_reference)
@@ -122,7 +124,9 @@ class DatabaseIdentityAttestation:
             or revision.application_id != target.application_id
             or revision.target_reference != target.transport.target_reference
         ):
-            raise DatabaseIdentityAttestationError("application or target scope does not match revision")
+            raise DatabaseIdentityAttestationError(
+                "application or target scope does not match revision"
+            )
         if (
             self.tenant_id != revision.tenant_id
             or self.application_id != revision.application_id
@@ -136,7 +140,9 @@ class DatabaseIdentityAttestation:
             or self.baseline_digest != revision.baseline_digest
             or self.manifest_digest != revision.manifest_digest
         ):
-            raise DatabaseIdentityAttestationError("database identity is not bound to target revision")
+            raise DatabaseIdentityAttestationError(
+                "database identity is not bound to target revision"
+            )
 
         metadata: Mapping[str, object] = revision.database_metadata
         expected_metadata = {
@@ -154,7 +160,9 @@ class DatabaseIdentityAttestation:
             "identity_evidence_reference": self.evidence_reference,
         }
         if any(metadata.get(key) != value for key, value in expected_metadata.items()):
-            raise DatabaseIdentityAttestationError("database identity/version does not match revision")
+            raise DatabaseIdentityAttestationError(
+                "database identity/version does not match revision"
+            )
 
 
 @dataclass(frozen=True, slots=True)
