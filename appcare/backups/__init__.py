@@ -48,12 +48,12 @@ from .stores import (
     VaultError,
 )
 from .streaming import (
-    ChunkRecord,
     ChunkedBackupArtifact,
     ChunkedBackupLimits,
     ChunkedBackupReader,
     ChunkedBackupRequest,
     ChunkedBackupWriter,
+    ChunkRecord,
     StreamingBackupError,
     StreamingBackupSource,
 )
