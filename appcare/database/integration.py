@@ -5,6 +5,9 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+import re
+from dataclasses import dataclass
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Protocol
 
@@ -13,14 +16,224 @@ from ..readiness.contracts import (
     CapabilityEvidence,
     CapabilityStatus,
     CoordinatorApproval,
+    validate_digest,
+    validate_evidence_reference,
+    validate_scope_segment,
 )
 from ..readiness.registry import ApplicationCapabilityRegistry
+from ..revision.contracts import CapturedApplicationRevision
+from .adapters import LogicalDatabaseAdapter
 from .contracts import (
     DatabaseArtifactError,
     DatabaseDumpArtifact,
+    DatabaseDumpRequest,
+    DatabaseKind,
     DatabaseOperationStatus,
     DatabaseRestoreEvidence,
+    DatabaseTarget,
+    validate_database_name,
 )
+
+
+class DatabaseIdentityAttestationError(DatabaseArtifactError):
+    """A database identity did not match the application revision context."""
+
+
+_DATABASE_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:+-]{0,63}$")
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseIdentityAttestation:
+    """Sanitized identity observed for one revision-bound database target.
+
+    This object carries no credential material.  It is deliberately only an
+    identity assertion: the bridge accepts it when every field matches the
+    existing typed target and captured application revision.
+    """
+
+    tenant_id: str
+    application_id: str
+    stack_id: str
+    target_reference: str
+    engine_family: DatabaseKind
+    database_identifier: str
+    logical_database_name: str
+    database_version: str
+    credential_reference: str
+    baseline_id: str
+    baseline_digest: str
+    manifest_digest: str
+    evidence_reference: str
+
+    def __post_init__(self) -> None:
+        for name in ("tenant_id", "application_id", "stack_id", "baseline_id"):
+            object.__setattr__(
+                self, name, validate_scope_segment(getattr(self, name), field_name=name)
+            )
+        object.__setattr__(
+            self, "target_reference", validate_evidence_reference(self.target_reference)
+        )
+        if not isinstance(self.engine_family, DatabaseKind):
+            try:
+                object.__setattr__(self, "engine_family", DatabaseKind(str(self.engine_family)))
+            except ValueError as exc:
+                raise DatabaseIdentityAttestationError("database engine is invalid") from exc
+        object.__setattr__(
+            self,
+            "database_identifier",
+            validate_database_name(self.database_identifier, field_name="database_identifier"),
+        )
+        object.__setattr__(
+            self,
+            "logical_database_name",
+            validate_database_name(
+                self.logical_database_name, field_name="logical_database_name"
+            ),
+        )
+        if (
+            not isinstance(self.database_version, str)
+            or _DATABASE_VERSION.fullmatch(self.database_version.strip()) is None
+        ):
+            raise DatabaseIdentityAttestationError("database version is invalid")
+        object.__setattr__(self, "database_version", self.database_version.strip())
+        object.__setattr__(
+            self, "credential_reference", validate_evidence_reference(self.credential_reference)
+        )
+        object.__setattr__(
+            self, "baseline_digest", validate_digest(self.baseline_digest, field_name="baseline_digest")
+        )
+        object.__setattr__(
+            self, "manifest_digest", validate_digest(self.manifest_digest, field_name="manifest_digest")
+        )
+        object.__setattr__(
+            self, "evidence_reference", validate_evidence_reference(self.evidence_reference)
+        )
+
+    def validate_for(
+        self,
+        *,
+        revision: CapturedApplicationRevision,
+        target: DatabaseTarget,
+    ) -> None:
+        """Fail closed unless identity and revision bindings are exact."""
+
+        if (
+            revision.tenant_id != target.tenant_id
+            or revision.application_id != target.application_id
+            or revision.target_reference != target.transport.target_reference
+        ):
+            raise DatabaseIdentityAttestationError("application or target scope does not match revision")
+        if (
+            self.tenant_id != revision.tenant_id
+            or self.application_id != revision.application_id
+            or self.stack_id != target.stack_id
+            or self.target_reference != target.target_reference
+            or self.engine_family != target.engine_family
+            or self.database_identifier != target.database_identifier
+            or self.logical_database_name != target.logical_database_name
+            or self.credential_reference != target.credential.reference
+            or self.baseline_id != revision.baseline_id
+            or self.baseline_digest != revision.baseline_digest
+            or self.manifest_digest != revision.manifest_digest
+        ):
+            raise DatabaseIdentityAttestationError("database identity is not bound to target revision")
+
+        metadata: Mapping[str, object] = revision.database_metadata
+        expected_metadata = {
+            "stack_id": target.stack_id,
+            "engine_family": target.engine_family.value,
+            "database_identifier": target.database_identifier,
+            "logical_database_name": target.logical_database_name,
+            "database_version": self.database_version,
+            # Revision metadata may carry only a non-reversible binding for
+            # the opaque reference; the reference itself stays out of the
+            # captured application record.
+            "db_auth_fingerprint": hashlib.sha256(
+                target.credential.reference.encode("utf-8")
+            ).hexdigest(),
+            "identity_evidence_reference": self.evidence_reference,
+        }
+        if any(metadata.get(key) != value for key, value in expected_metadata.items()):
+            raise DatabaseIdentityAttestationError("database identity/version does not match revision")
+
+
+@dataclass(frozen=True, slots=True)
+class ApplicationDatabaseBackupContext:
+    """Existing application/revision/target context for one DB backup."""
+
+    revision: CapturedApplicationRevision
+    target: DatabaseTarget
+    identity: DatabaseIdentityAttestation
+
+    def validate(self) -> None:
+        self.identity.validate_for(revision=self.revision, target=self.target)
+
+
+class ApplicationDatabaseBackupBridge:
+    """Thin application-to-database backup orchestration boundary.
+
+    The existing logical adapter remains responsible for command construction,
+    credential custody, staging, checksum sealing, cleanup, and the operation
+    ledger.  This bridge only supplies and verifies the application revision
+    identity before and after that adapter call.
+    """
+
+    def __init__(self, adapter: LogicalDatabaseAdapter) -> None:
+        self.adapter = adapter
+
+    def dump(
+        self,
+        context: ApplicationDatabaseBackupContext,
+        *,
+        backup_id: str,
+        idempotency_key: str,
+        job_id: str,
+        now: datetime | None = None,
+        cancel_event: object | None = None,
+    ):
+        context.validate()
+        requested_at = now or datetime.now(UTC)
+        revision = context.revision
+        request = DatabaseDumpRequest(
+            target=context.target,
+            backup_id=backup_id,
+            idempotency_key=idempotency_key,
+            job_id=job_id,
+            source_revision=revision.source_revision or revision.baseline_digest,
+            application_artifact_digest=revision.mirror_digest or revision.baseline_digest,
+            requested_at=requested_at,
+        )
+        result = self.adapter.dump(
+            request,
+            now=requested_at,
+            cancel_event=cancel_event,
+        )
+        if result.artifact is not None:
+            _validate_artifact_revision_binding(result.artifact, context)
+        return result
+
+
+def _validate_artifact_revision_binding(
+    artifact: DatabaseDumpArtifact,
+    context: ApplicationDatabaseBackupContext,
+) -> None:
+    """Reject adapter output that is not bound to the exact revision."""
+
+    revision = context.revision
+    manifest = artifact.manifest
+    expected_source_revision = revision.source_revision or revision.baseline_digest
+    expected_artifact_digest = revision.mirror_digest or revision.baseline_digest
+    if (
+        manifest.tenant_id != revision.tenant_id
+        or manifest.application_id != revision.application_id
+        or manifest.target_reference != context.target.target_reference
+        or manifest.engine_family != context.target.engine_family
+        or manifest.database_identifier != context.target.database_identifier
+        or manifest.logical_database_name != context.target.logical_database_name
+        or manifest.source_revision != expected_source_revision
+        or manifest.application_artifact_digest != expected_artifact_digest
+    ):
+        raise DatabaseArtifactError("database artifact is not bound to application revision")
 
 
 class CapabilityEvidenceSink(Protocol):
@@ -177,7 +390,11 @@ def restore_supporting_evidence(restore: DatabaseRestoreEvidence) -> dict[str, o
 
 
 __all__ = [
+    "ApplicationDatabaseBackupContext",
+    "ApplicationDatabaseBackupBridge",
     "CapabilityEvidenceSink",
+    "DatabaseIdentityAttestation",
+    "DatabaseIdentityAttestationError",
     "database_artifact_component",
     "database_capability_evidence",
     "register_database_capability_evidence",
