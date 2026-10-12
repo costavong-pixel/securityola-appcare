@@ -212,6 +212,19 @@ class FilesystemCapture:
     manifest_digest: str
 
 
+@dataclass(slots=True)
+class _CaptureByteBudget:
+    """Account every byte read while one capture classifies and digests files."""
+
+    max_bytes: int
+    consumed_bytes: int = 0
+
+    def account(self, amount: int) -> None:
+        self.consumed_bytes += amount
+        if self.consumed_bytes > self.max_bytes:
+            raise FilesystemSourceError("filesystem capture exceeds total size limit")
+
+
 def _validate_relative_path(value: str) -> str:
     if not isinstance(value, str) or not value or "\\" in value:
         raise FilesystemSourceError("filesystem relative path is invalid")
@@ -601,6 +614,44 @@ class LinuxFilesystemBackupSource:
         finally:
             os.close(descriptor)
 
+    def _capture_file(
+        self,
+        target: BackupTarget,
+        entry: FilesystemEntry,
+        budget: _CaptureByteBudget,
+    ) -> tuple[bool, int, str]:
+        """Classify and digest one file in one bounded read pass."""
+
+        self._validate_target(target)
+        descriptor = _open_relative_regular_file(self._root_fd, entry.relative_path)
+        try:
+            before = os.fstat(descriptor)
+            _validate_file_identity(entry, before)
+            if before.st_size > self.limits.max_file_bytes:
+                raise FilesystemSourceError("filesystem file exceeds size limit")
+            digest = hashlib.sha256()
+            total = 0
+            tail = b""
+            contains_secret = False
+            while True:
+                chunk = os.read(descriptor, self.limits.chunk_bytes)
+                if not chunk:
+                    break
+                budget.account(len(chunk))
+                digest.update(chunk)
+                total += len(chunk)
+                window = tail + chunk
+                if any(pattern.search(window) for pattern in _SECRET_CONTENT_PATTERNS):
+                    contains_secret = True
+                tail = window[-_SECRET_SCAN_TAIL_BYTES:]
+            after = os.fstat(descriptor)
+            _validate_file_identity(entry, after)
+            if total != before.st_size:
+                raise FilesystemSourceError("filesystem file changed during capture")
+            return contains_secret, total, digest.hexdigest()
+        finally:
+            os.close(descriptor)
+
     def read_file(self, target: BackupTarget, entry: FilesystemEntry) -> bytes:
         """Read one safe file with a bounded allocation and identity check."""
 
@@ -668,25 +719,20 @@ class LinuxFilesystemBackupSource:
 
         entries: list[FilesystemEntry] = []
         included_bytes = 0
+        budget = _CaptureByteBudget(self.limits.max_total_bytes)
         for entry in self.iter_entries(target):
             if entry.classification is FilesystemEntryClass.SAFE_FILE:
-                if self._contains_secret(target, entry):
+                contains_secret, size, digest = self._capture_file(target, entry, budget)
+                if contains_secret:
                     entries.append(
                         replace(entry, classification=FilesystemEntryClass.SECRET_EXCLUDED)
                     )
                     continue
-                digest = hashlib.sha256()
-                size = 0
-                for chunk in self.iter_file_chunks(target, entry):
-                    digest.update(chunk)
-                    size += len(chunk)
-                entry = replace(entry, size_bytes=size, sha256=digest.hexdigest())
+                entry = replace(entry, size_bytes=size, sha256=digest)
                 baseline = self._revision_entries[entry.relative_path]
                 if baseline.sha256 is not None and entry.sha256 != baseline.sha256:
                     raise FilesystemSourceError("filesystem content differs from captured revision")
                 included_bytes += size
-                if included_bytes > self.limits.max_total_bytes:
-                    raise FilesystemSourceError("filesystem capture exceeds total size limit")
             entries.append(entry)
         payload = "\n".join(
             _canonical_entry_bytes(entry).decode("utf-8") for entry in entries

@@ -219,11 +219,14 @@ class RestoreTarget:
     environment: Literal["development", "staging", "test"]
     root: Path
     isolation_id: str
+    target_reference: str | None = None
     filesystem: BackupFilesystemBoundary | None = None
 
     def __post_init__(self) -> None:
         _safe_identifier(self.tenant_id, field="restore tenant_id")
         _safe_identifier(self.application_id, field="restore application_id")
+        if self.target_reference is not None:
+            _safe_reference(self.target_reference, field="restore target_reference")
         if self.environment not in {"development", "staging", "test"}:
             raise BackupBoundaryError("restore target cannot be production")
         _safe_identifier(self.isolation_id, field="isolation_id")
@@ -278,8 +281,9 @@ class BackupVault(Protocol):
         *,
         tenant_id: str,
         application_id: str,
+        target_reference: str | None,
     ) -> BackupArtifact:
-        """Read one artifact inside the caller's tenant/application scope."""
+        """Read one artifact inside the caller's tenant/application/target scope."""
 
     def delete(
         self,
@@ -287,6 +291,7 @@ class BackupVault(Protocol):
         *,
         tenant_id: str,
         application_id: str,
+        target_reference: str | None,
         now: datetime,
     ) -> None:
         """Delete only after retention expiry; locked deletion must fail."""

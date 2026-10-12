@@ -268,6 +268,24 @@ def test_structured_secret_is_excluded_even_when_filename_is_unremarkable(
     assert entry.sha256 is None
 
 
+def test_secret_classification_reads_count_toward_capture_limit(tmp_path: Path) -> None:
+    root = tmp_path / "site"
+    root.mkdir()
+    secret_file = root / "notes.txt"
+    secret_file.write_bytes(b"x" * 64 + b" password=fixture-secret-value")
+    source = _source(
+        root,
+        limits=FilesystemSourceLimits(
+            max_file_bytes=256,
+            max_total_bytes=64,
+            chunk_bytes=17,
+        ),
+    )
+
+    with pytest.raises(FilesystemSourceError, match="total size limit"):
+        source.capture(_target(root))
+
+
 def test_same_size_in_place_mutation_is_rejected(tmp_path: Path) -> None:
     root = tmp_path / "site"
     root.mkdir()

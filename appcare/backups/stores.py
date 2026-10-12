@@ -12,6 +12,7 @@ from .contracts import (
     BackupBoundaryError,
     BackupDestination,
     BackupTarget,
+    _safe_reference,
     utc,
     validate_backup_id,
     validate_path_segment,
@@ -46,12 +47,20 @@ def _now(value: datetime | None) -> datetime:
     return utc(value or datetime.now(UTC))
 
 
-def _scope(backup_id: str, tenant_id: str, application_id: str) -> tuple[str, str, str]:
+def _scope(
+    backup_id: str,
+    tenant_id: str,
+    application_id: str,
+    target_reference: str | None,
+) -> tuple[str, str, str, str | None]:
     try:
+        if target_reference is not None:
+            _safe_reference(target_reference, field="vault target_reference")
         return (
             validate_path_segment(tenant_id, field="vault tenant_id"),
             validate_path_segment(application_id, field="vault application_id"),
             validate_backup_id(backup_id),
+            target_reference,
         )
     except BackupBoundaryError as exc:
         raise VaultError(str(exc)) from exc
@@ -84,20 +93,26 @@ class InMemoryImmutableVault:
         if destination.provider != "isolated-test-vault":
             raise ValueError("in-memory vault is only for the isolated test provider")
         self.destination = destination
-        self._artifacts: dict[tuple[str, str, str], BackupArtifact] = {}
-        self._idempotency: dict[str, tuple[str, str, str]] = {}
+        self._artifacts: dict[tuple[str, str, str, str | None], BackupArtifact] = {}
+        self._idempotency: dict[str, tuple[str, str, str, str | None]] = {}
 
     def put(self, artifact: BackupArtifact, *, idempotency_key: str) -> VaultReceipt:
         scope = _scope(
             artifact.manifest.backup_id,
             artifact.manifest.target.tenant_id,
             artifact.manifest.target.application_id,
+            artifact.manifest.target.target_reference,
         )
         existing_scope = self._idempotency.get(idempotency_key)
         if existing_scope is not None and existing_scope != scope:
             raise DuplicateArtifactError("idempotency key already belongs to another backup")
         existing = self._artifacts.get(scope)
         if existing is not None:
+            if (
+                existing.manifest.target.target_reference
+                != artifact.manifest.target.target_reference
+            ):
+                raise DuplicateArtifactError("backup ID already belongs to another target")
             if existing.artifact_digest != artifact.artifact_digest:
                 raise DuplicateArtifactError("backup ID already belongs to another artifact")
             return VaultReceipt(
@@ -124,12 +139,16 @@ class InMemoryImmutableVault:
         *,
         tenant_id: str,
         application_id: str,
+        target_reference: str | None,
     ) -> BackupArtifact:
-        scope = _scope(backup_id, tenant_id, application_id)
+        scope = _scope(backup_id, tenant_id, application_id, target_reference)
         try:
-            return self._artifacts[scope]
+            artifact = self._artifacts[scope]
         except KeyError as exc:
             raise VaultError("backup artifact not found in tenant scope") from exc
+        if artifact.manifest.target.target_reference != target_reference:
+            raise VaultError("backup artifact target scope mismatch")
+        return artifact
 
     def delete(
         self,
@@ -137,13 +156,15 @@ class InMemoryImmutableVault:
         *,
         tenant_id: str,
         application_id: str,
+        target_reference: str | None,
         now: datetime,
     ) -> None:
-        scope = _scope(backup_id, tenant_id, application_id)
+        scope = _scope(backup_id, tenant_id, application_id, target_reference)
         artifact = self.get(
             backup_id,
             tenant_id=tenant_id,
             application_id=application_id,
+            target_reference=target_reference,
         )
         if _now(now) < _now(artifact.manifest.destination.retention_until):
             raise RetentionLockedError("backup retention is still locked")
@@ -175,8 +196,9 @@ class UnavailableCloudVault:
         *,
         tenant_id: str,
         application_id: str,
+        target_reference: str | None,
     ) -> BackupArtifact:
-        del tenant_id, application_id
+        del tenant_id, application_id, target_reference
         raise VaultUnavailableError(self.failure_code)
 
     def delete(
@@ -185,9 +207,10 @@ class UnavailableCloudVault:
         *,
         tenant_id: str,
         application_id: str,
+        target_reference: str | None,
         now: datetime,
     ) -> None:
-        del tenant_id, application_id, now
+        del tenant_id, application_id, target_reference, now
         raise VaultUnavailableError(self.failure_code)
 
 
@@ -250,9 +273,15 @@ class FilesystemImmutableVault:
         *,
         tenant_id: str,
         application_id: str,
+        target_reference: str | None,
     ) -> BackupArtifact:
-        scope = _scope(backup_id, tenant_id, application_id)
-        backup_id, tenant_id, application_id = scope[2], scope[0], scope[1]
+        scope = _scope(backup_id, tenant_id, application_id, target_reference)
+        backup_id, tenant_id, application_id, target_reference = (
+            scope[2],
+            scope[0],
+            scope[1],
+            scope[3],
+        )
         directory = self._artifact_dir(backup_id, tenant_id, application_id)
         manifest_path = self._manifest_path(backup_id, tenant_id, application_id)
         envelope_path = self._artifact_file(
@@ -281,8 +310,13 @@ class FilesystemImmutableVault:
                 target_data["source_reference"],
                 target_data.get("target_reference"),
             )
-            if target.tenant_id != tenant_id or target.application_id != application_id:
+            if (
+                target.tenant_id != tenant_id
+                or target.application_id != application_id
+            ):
                 raise VaultError("backup artifact tenant scope mismatch")
+            if target.target_reference != target_reference:
+                raise VaultError("backup artifact target scope mismatch")
             destination = BackupDestination(
                 destination_data["provider"],
                 destination_data["namespace"],
@@ -339,7 +373,8 @@ class FilesystemImmutableVault:
             artifact.manifest.backup_id,
             artifact.manifest.target.tenant_id,
             artifact.manifest.target.application_id,
-        )
+            artifact.manifest.target.target_reference,
+        )[:3]
         path = self._artifact_dir(backup_id, tenant_id, application_id)
         manifest_path = self._manifest_path(backup_id, tenant_id, application_id)
         if path.exists() or manifest_path.exists():
@@ -347,6 +382,7 @@ class FilesystemImmutableVault:
                 backup_id,
                 tenant_id=tenant_id,
                 application_id=application_id,
+                target_reference=artifact.manifest.target.target_reference,
             )
             if existing.artifact_digest != artifact.artifact_digest:
                 raise DuplicateArtifactError("backup ID already belongs to another artifact")
@@ -380,11 +416,13 @@ class FilesystemImmutableVault:
         *,
         tenant_id: str,
         application_id: str,
+        target_reference: str | None,
     ) -> BackupArtifact:
         return self._read_artifact(
             backup_id,
             tenant_id=tenant_id,
             application_id=application_id,
+            target_reference=target_reference,
         )
 
     def delete(
@@ -393,13 +431,17 @@ class FilesystemImmutableVault:
         *,
         tenant_id: str,
         application_id: str,
+        target_reference: str | None,
         now: datetime,
     ) -> None:
-        tenant_id, application_id, backup_id = _scope(backup_id, tenant_id, application_id)
+        tenant_id, application_id, backup_id, target_reference = _scope(
+            backup_id, tenant_id, application_id, target_reference
+        )
         artifact = self._read_artifact(
             backup_id,
             tenant_id=tenant_id,
             application_id=application_id,
+            target_reference=target_reference,
         )
         if _now(now) < _now(artifact.manifest.destination.retention_until):
             raise RetentionLockedError("backup retention is still locked")
