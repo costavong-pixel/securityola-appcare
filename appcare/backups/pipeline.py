@@ -249,8 +249,7 @@ class BackupCoordinator:
             if (
                 stored.manifest.target.tenant_id != request.target.tenant_id
                 or stored.manifest.target.application_id != request.target.application_id
-                or stored.manifest.target.target_reference
-                != request.target.target_reference
+                or stored.manifest.target.target_reference != request.target.target_reference
             ):
                 raise ArtifactIntegrityError("stored artifact target does not match request")
             if stored.manifest.destination != vault.destination:
