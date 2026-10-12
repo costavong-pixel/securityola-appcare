@@ -248,6 +248,42 @@ def test_writer_rejects_replay_and_cleans_interrupted_capture(tmp_path: Path) ->
     assert not tuple(staging.parent.glob("backup-stream-2-tmp-*"))
 
 
+def test_writer_does_not_replace_completed_artifact_and_requires_completion_marker(
+    tmp_path: Path,
+) -> None:
+    boundary, writer = _writer(tmp_path)
+    request = _request()
+    artifact = writer.write(request, source=_source())
+    manifest_before = (artifact.path / "manifest.json").read_bytes()
+
+    with pytest.raises(StreamingBackupError):
+        writer.write(request, source=_source())
+    assert (artifact.path / "manifest.json").read_bytes() == manifest_before
+
+    (artifact.path / "COMPLETE").unlink()
+    reader = ChunkedBackupReader(boundary, b"k" * 32, limits=writer.limits)
+    with pytest.raises(StreamingBackupError):
+        list(reader.iter_file_chunks(artifact, request, "public/index.html"))
+
+
+def test_writer_rejects_manifest_budget_before_chunk_staging(tmp_path: Path) -> None:
+    boundary = BackupFilesystemBoundary.for_test(tmp_path / "boundary")
+    writer = ChunkedBackupWriter(
+        boundary,
+        b"k" * 32,
+        limits=ChunkedBackupLimits(
+            chunk_bytes=5,
+            max_chunks=20,
+            max_total_bytes=100,
+            max_manifest_bytes=512,
+        ),
+    )
+
+    with pytest.raises(StreamingBackupError, match="manifest exceeds size limit"):
+        writer.write(_request(), source=_source())
+    assert not boundary.staging_path("backup-stream-1").exists()
+
+
 def test_request_requires_a_bound_target_reference(tmp_path: Path) -> None:
     target = BackupTarget(
         "tenant-appcare-1",

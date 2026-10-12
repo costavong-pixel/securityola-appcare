@@ -3,8 +3,8 @@
 The legacy backup coordinator intentionally remains an in-memory fixture path.
 This module is the repository-side contract for large filesystem captures: a
 source is observed once, each safe file is encrypted in bounded chunks, and a
-sealed artifact directory is promoted atomically only after every chunk and
-the final manifest have been verified.
+reserved artifact directory becomes readable only after every chunk and the
+final manifest have been verified.
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ import hmac
 import json
 import os
 import re
-import secrets
 import shutil
 import stat
 from collections.abc import Iterator, Mapping
@@ -48,6 +47,7 @@ _MAX_CHUNK_BYTES: Final = 8 * 1024 * 1024
 _MAX_TOTAL_BYTES: Final = 2 * 1024 * 1024 * 1024
 _CHUNK_FILE = re.compile(r"^[0-9]{12}\.bin$")
 _SAFE_SOURCE_REVISION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$")
+_COMPLETE_MARKER = b"securityola-appcare-streaming-complete-v1\n"
 
 
 def _canonical_json(value: object) -> bytes:
@@ -114,6 +114,22 @@ def _ensure_private_directory(path: Path) -> None:
         path.chmod(0o700)
     except OSError as exc:
         raise StreamingBackupError("streaming artifact directory cannot be created") from exc
+
+
+def _reserve_private_directory(path: Path) -> None:
+    """Reserve a final artifact directory without an overwrite race.
+
+    The directory is intentionally visible while it is being assembled, but
+    it is not a readable artifact until the complete marker is written. Using
+    mkdir with ``exist_ok=False`` makes same-ID publication a no-replace
+    operation instead of a check followed by overwrite-capable rename.
+    """
+
+    try:
+        path.mkdir(parents=False, exist_ok=False, mode=0o700)
+        path.chmod(0o700)
+    except OSError as exc:
+        raise StreamingBackupError("streaming artifact directory cannot be reserved") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,18 +296,38 @@ class ChunkedBackupWriter:
             raise StreamingBackupError("streaming source contract is unavailable")
         self.filesystem.ensure_data_dirs()
         final_path = self.filesystem.staging_path(request.backup_id)
-        if final_path.exists() or final_path.is_symlink():
-            raise StreamingBackupError("streaming artifact already exists")
-        temp_id = f"{request.backup_id[:80]}-tmp-{secrets.token_hex(12)}"
-        temp_path = self.filesystem.staging_path(temp_id)
-        chunk_path = temp_path / "chunks"
+        _reserve_private_directory(final_path)
+        chunk_path = final_path / "chunks"
         committed = False
         try:
-            _ensure_private_directory(temp_path)
             _ensure_private_directory(chunk_path)
             capture = source.capture(request.target)
             self._validate_capture(capture, request)
             entries = tuple(sorted(capture.entries, key=lambda entry: entry.relative_path))
+            manifest_base = {
+                "schema_version": _SCHEMA_VERSION,
+                "algorithm": _ALGORITHM,
+                "backup_id": request.backup_id,
+                "tenant_id": request.target.tenant_id,
+                "application_id": request.target.application_id,
+                "target_reference": request.target.target_reference,
+                "source_reference": request.target.source_reference,
+                "source_revision": request.source_revision,
+                "source_manifest_digest": request.source_manifest_digest,
+                "capture_manifest_digest": capture.manifest_digest,
+                "created_at": utc(request.created_at).isoformat(),
+                "key_reference": request.key_reference,
+                "entries": [_entry_payload(entry) for entry in entries],
+                "chunks": [],
+                # Reserve the maximum decimal width while projecting the
+                # manifest budget; the final value is replaced with the exact
+                # captured total after all chunks are accepted.
+                "total_plaintext_bytes": self.limits.max_total_bytes,
+            }
+            manifest_base_bytes = _canonical_json(manifest_base)
+            if len(manifest_base_bytes) > self.limits.max_manifest_bytes:
+                raise StreamingBackupError("streaming manifest exceeds size limit")
+            projected_chunk_bytes = 2
             records: list[ChunkRecord] = []
             total_bytes = 0
             for entry in entries:
@@ -324,46 +360,42 @@ class ChunkedBackupWriter:
                     )
                     ciphertext = AESGCM(self._key).encrypt(_chunk_nonce(aad), plaintext, aad)
                     filename = f"{len(records):012d}.bin"
-                    _write_private(chunk_path / filename, ciphertext)
-                    records.append(
-                        ChunkRecord(
-                            entry.relative_path,
-                            sequence,
-                            len(plaintext),
-                            len(ciphertext),
-                            _digest(ciphertext),
-                            filename,
-                        )
+                    record = ChunkRecord(
+                        entry.relative_path,
+                        sequence,
+                        len(plaintext),
+                        len(ciphertext),
+                        _digest(ciphertext),
+                        filename,
                     )
+                    next_projected_chunk_bytes = projected_chunk_bytes + len(
+                        _canonical_json(record.as_dict())
+                    )
+                    if records:
+                        next_projected_chunk_bytes += 1
+                    if (
+                        len(manifest_base_bytes) - 2 + next_projected_chunk_bytes
+                        > self.limits.max_manifest_bytes
+                    ):
+                        raise StreamingBackupError("streaming manifest exceeds size limit")
+                    _write_private(chunk_path / filename, ciphertext)
+                    records.append(record)
+                    projected_chunk_bytes = next_projected_chunk_bytes
                 if file_total != entry.size_bytes or file_digest.hexdigest() != entry.sha256:
                     raise StreamingBackupError("source file changed during streaming capture")
 
-            manifest = {
-                "schema_version": _SCHEMA_VERSION,
-                "algorithm": _ALGORITHM,
-                "backup_id": request.backup_id,
-                "tenant_id": request.target.tenant_id,
-                "application_id": request.target.application_id,
-                "target_reference": request.target.target_reference,
-                "source_reference": request.target.source_reference,
-                "source_revision": request.source_revision,
-                "source_manifest_digest": request.source_manifest_digest,
-                "capture_manifest_digest": capture.manifest_digest,
-                "created_at": utc(request.created_at).isoformat(),
-                "key_reference": request.key_reference,
-                "entries": [_entry_payload(entry) for entry in entries],
-                "chunks": [record.as_dict() for record in records],
-                "total_plaintext_bytes": total_bytes,
-            }
+            manifest = dict(manifest_base)
+            manifest["chunks"] = [record.as_dict() for record in records]
+            manifest["total_plaintext_bytes"] = total_bytes
             manifest_bytes = _canonical_json(manifest)
             if len(manifest_bytes) > self.limits.max_manifest_bytes:
                 raise StreamingBackupError("streaming manifest exceeds size limit")
             manifest_digest = _digest(manifest_bytes)
             artifact_digest = _artifact_digest(manifest_bytes, tuple(records))
-            _write_private(temp_path / "manifest.json", manifest_bytes)
-            _write_private(temp_path / "artifact.sha256", artifact_digest.encode("ascii"))
+            _write_private(final_path / "manifest.json", manifest_bytes)
+            _write_private(final_path / "artifact.sha256", artifact_digest.encode("ascii"))
             _write_private(
-                temp_path / "seal.json",
+                final_path / "seal.json",
                 _canonical_json(
                     {
                         "schema_version": _SCHEMA_VERSION,
@@ -375,8 +407,8 @@ class ChunkedBackupWriter:
                     }
                 ),
             )
-            self._fsync_directory(temp_path)
-            os.replace(temp_path, final_path)
+            _write_private(final_path / "COMPLETE", _COMPLETE_MARKER)
+            self._fsync_directory(final_path)
             self._fsync_directory(final_path.parent)
             committed = True
             return ChunkedBackupArtifact(
@@ -388,8 +420,8 @@ class ChunkedBackupWriter:
                 request.target.application_id,
             )
         finally:
-            if not committed and temp_path.exists():
-                shutil.rmtree(temp_path, ignore_errors=True)
+            if not committed and final_path.exists() and not final_path.is_symlink():
+                shutil.rmtree(final_path, ignore_errors=True)
 
     @staticmethod
     def _validate_capture(capture: FilesystemCapture, request: ChunkedBackupRequest) -> None:
@@ -509,10 +541,13 @@ class ChunkedBackupReader:
         manifest_path = artifact.path / "manifest.json"
         seal_path = artifact.path / "seal.json"
         digest_path = artifact.path / "artifact.sha256"
-        for path in (manifest_path, seal_path, digest_path):
+        complete_path = artifact.path / "COMPLETE"
+        for path in (manifest_path, seal_path, digest_path, complete_path):
             if path.is_symlink() or not path.is_file():
                 raise StreamingBackupError("streaming artifact seal is incomplete")
         try:
+            if self._read_bounded(complete_path, len(_COMPLETE_MARKER)) != _COMPLETE_MARKER:
+                raise StreamingBackupError("streaming artifact completion marker is invalid")
             manifest_bytes = self._read_bounded(manifest_path, self.limits.max_manifest_bytes)
             seal = json.loads(self._read_bounded(seal_path, 4096).decode("utf-8"))
             artifact_digest = self._read_bounded(digest_path, 128).decode("ascii").strip()
