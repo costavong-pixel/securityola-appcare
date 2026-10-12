@@ -464,7 +464,13 @@ class ChunkedBackupReader:
         _validate_relative_path(entry_path)
         expected = [record for record in records if record.entry_path == entry_path]
         if not expected:
-            entries = {entry["relative_path"]: entry for entry in manifest["entries"]}
+            manifest_entries = manifest.get("entries")
+            if not isinstance(manifest_entries, list):
+                raise StreamingBackupError("streaming artifact entries are malformed")
+            entries: dict[str, Mapping[str, object]] = {}
+            for payload in manifest_entries:
+                if isinstance(payload, Mapping) and isinstance(payload.get("relative_path"), str):
+                    entries[payload["relative_path"]] = payload
             entry = entries.get(entry_path)
             if not isinstance(entry, Mapping) or entry.get("classification") != "safe_file":
                 raise StreamingBackupError("requested artifact entry is not a safe file")
@@ -555,11 +561,11 @@ class ChunkedBackupReader:
         for payload in entries:
             if not isinstance(payload, dict):
                 raise StreamingBackupError("streaming entry record is malformed")
-            path = _validate_relative_path(payload.get("relative_path"))
-            if path in entry_map:
+            entry_path = _validate_relative_path(payload.get("relative_path"))
+            if entry_path in entry_map:
                 raise StreamingBackupError("streaming entry record is duplicated")
-            entry_map[path] = payload
-            entry_paths.append(path)
+            entry_map[entry_path] = payload
+            entry_paths.append(entry_path)
         if entry_paths != sorted(entry_paths):
             raise StreamingBackupError("streaming entries are not deterministically ordered")
         if len(chunks_payload) > self.limits.max_chunks:
@@ -604,11 +610,11 @@ class ChunkedBackupReader:
         ):
             raise StreamingBackupError("streaming chunks are not deterministically ordered")
         total_plaintext = 0
-        for path, entry in entry_map.items():
+        for entry_path, entry in entry_map.items():
             entry_size = entry.get("size_bytes")
             if isinstance(entry_size, bool) or not isinstance(entry_size, int) or entry_size < 0:
                 raise StreamingBackupError("streaming entry size is invalid")
-            path_records = [record for record in records if record.entry_path == path]
+            path_records = [record for record in records if record.entry_path == entry_path]
             if entry.get("classification") == FilesystemEntryClass.SAFE_FILE.value:
                 if entry_size == 0 and path_records:
                     raise StreamingBackupError("zero-length safe file has chunks")
