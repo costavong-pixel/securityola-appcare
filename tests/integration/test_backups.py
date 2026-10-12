@@ -350,10 +350,16 @@ def test_filesystem_vault_reads_persisted_artifact_after_reopen(tmp_path: Path) 
         target_reference="target-appcare-test",
     )
     assert filesystem.snapshot_path(
-        "tenant-appcare-1", "appcare-test-app", "backup-beta04-1"
+        "tenant-appcare-1",
+        "appcare-test-app",
+        "backup-beta04-1",
+        target_reference="target-appcare-test",
     ).is_dir()
     assert filesystem.manifest_path(
-        "tenant-appcare-1", "appcare-test-app", "backup-beta04-1"
+        "tenant-appcare-1",
+        "appcare-test-app",
+        "backup-beta04-1",
+        target_reference="target-appcare-test",
     ).is_file()
     assert restored.artifact_digest == outcome.evidence.artifact_digest
     assert restored.manifest_bytes == restored.manifest.canonical_bytes()
@@ -425,6 +431,74 @@ def test_filesystem_vault_rejects_foreign_tenant_scope(tmp_path: Path) -> None:
         )
 
 
+def test_filesystem_vault_namespaces_same_backup_id_by_target(tmp_path: Path) -> None:
+    destination = _destination()
+    filesystem = BackupFilesystemBoundary.for_test(tmp_path / "target-namespace-boundary")
+    vault = FilesystemImmutableVault(filesystem, destination)
+    coordinator = BackupCoordinator()
+    targets = (
+        "target-appcare-test",
+        "target-appcare-other",
+    )
+
+    for target_reference in targets:
+        target = BackupTarget(
+            "tenant-appcare-1",
+            "appcare-test-app",
+            "test",
+            "synthetic://appcare/test-app",
+            target_reference,
+        )
+        outcome = coordinator.create_backup(
+            BackupRequest(
+                target,
+                destination,
+                "backup-shared-id",
+                f"job-{target_reference}",
+                NOW - timedelta(hours=1),
+            ),
+            source=SyntheticAppSource(),
+            vault=vault,
+            encryptor=_encryptor(),
+            now=NOW,
+        )
+        assert outcome.healthy is True
+
+    first_path = filesystem.snapshot_path(
+        "tenant-appcare-1",
+        "appcare-test-app",
+        "backup-shared-id",
+        target_reference=targets[0],
+    )
+    second_path = filesystem.snapshot_path(
+        "tenant-appcare-1",
+        "appcare-test-app",
+        "backup-shared-id",
+        target_reference=targets[1],
+    )
+    assert first_path.is_dir()
+    assert second_path.is_dir()
+    assert first_path != second_path
+    assert (
+        vault.get(
+            "backup-shared-id",
+            tenant_id="tenant-appcare-1",
+            application_id="appcare-test-app",
+            target_reference=targets[0],
+        ).manifest.target.target_reference
+        == targets[0]
+    )
+    assert (
+        vault.get(
+            "backup-shared-id",
+            tenant_id="tenant-appcare-1",
+            application_id="appcare-test-app",
+            target_reference=targets[1],
+        ).manifest.target.target_reference
+        == targets[1]
+    )
+
+
 def test_vault_target_scope_rejects_cross_target_retrieval_and_restore(
     tmp_path: Path,
 ) -> None:
@@ -441,7 +515,7 @@ def test_vault_target_scope_rejects_cross_target_retrieval_and_restore(
     )
     assert outcome.healthy is True
 
-    with pytest.raises(VaultError, match="target scope"):
+    with pytest.raises(VaultError):
         vault.get(
             "backup-beta04-1",
             tenant_id="tenant-appcare-1",

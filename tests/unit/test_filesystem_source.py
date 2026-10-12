@@ -277,7 +277,7 @@ def test_secret_classification_reads_count_toward_capture_limit(tmp_path: Path) 
         root,
         limits=FilesystemSourceLimits(
             max_file_bytes=256,
-            max_total_bytes=64,
+            max_total_bytes=90,
             chunk_bytes=17,
         ),
     )

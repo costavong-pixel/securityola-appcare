@@ -592,25 +592,77 @@ class LinuxFilesystemBackupSource:
         )
 
     def _contains_secret(self, target: BackupTarget, entry: FilesystemEntry) -> bool:
+        """Bound the preflight scan used before yielding streaming chunks."""
+
         self._validate_target(target)
         if entry.classification is not FilesystemEntryClass.SAFE_FILE:
             return False
         descriptor = _open_relative_regular_file(self._root_fd, entry.relative_path)
+        budget = _CaptureByteBudget(self.limits.max_file_bytes)
         try:
             before = os.fstat(descriptor)
             _validate_file_identity(entry, before)
+            if before.st_size > self.limits.max_file_bytes:
+                raise FilesystemSourceError("filesystem file exceeds size limit")
             tail = b""
+            contains_secret = False
             while True:
                 chunk = os.read(descriptor, self.limits.chunk_bytes)
                 if not chunk:
                     break
+                budget.account(len(chunk))
                 window = tail + chunk
                 if any(pattern.search(window) for pattern in _SECRET_CONTENT_PATTERNS):
-                    return True
+                    contains_secret = True
                 tail = window[-_SECRET_SCAN_TAIL_BYTES:]
             after = os.fstat(descriptor)
             _validate_file_identity(entry, after)
-            return False
+            if before.st_size != budget.consumed_bytes:
+                raise FilesystemSourceError("filesystem file changed during capture")
+            return contains_secret
+        finally:
+            os.close(descriptor)
+
+    def _read_file_once(
+        self,
+        target: BackupTarget,
+        entry: FilesystemEntry,
+        budget: _CaptureByteBudget,
+    ) -> tuple[bytes, bool]:
+        """Read one bounded file while classifying its content in one pass."""
+
+        self._validate_target(target)
+        if entry.classification is not FilesystemEntryClass.SAFE_FILE:
+            raise FilesystemSourceError("filesystem entry is not readable")
+        descriptor = _open_relative_regular_file(self._root_fd, entry.relative_path)
+        try:
+            before = os.fstat(descriptor)
+            _validate_file_identity(entry, before)
+            if before.st_size > self.limits.max_file_bytes:
+                raise FilesystemSourceError("filesystem file exceeds size limit")
+            content = bytearray()
+            tail = b""
+            contains_secret = False
+            while True:
+                chunk = os.read(
+                    descriptor,
+                    min(self.limits.chunk_bytes, self.limits.max_file_bytes + 1),
+                )
+                if not chunk:
+                    break
+                budget.account(len(chunk))
+                content.extend(chunk)
+                if len(content) > self.limits.max_file_bytes:
+                    raise FilesystemSourceError("filesystem file exceeds size limit")
+                window = tail + chunk
+                if any(pattern.search(window) for pattern in _SECRET_CONTENT_PATTERNS):
+                    contains_secret = True
+                tail = window[-_SECRET_SCAN_TAIL_BYTES:]
+            after = os.fstat(descriptor)
+            _validate_file_identity(entry, after)
+            if len(content) != before.st_size:
+                raise FilesystemSourceError("filesystem file changed during capture")
+            return bytes(content), contains_secret
         finally:
             os.close(descriptor)
 
@@ -658,31 +710,14 @@ class LinuxFilesystemBackupSource:
         self._validate_target(target)
         if entry.classification is not FilesystemEntryClass.SAFE_FILE:
             raise FilesystemSourceError("filesystem entry is not readable")
-        if self._contains_secret(target, entry):
+        content, contains_secret = self._read_file_once(
+            target,
+            entry,
+            _CaptureByteBudget(self.limits.max_total_bytes),
+        )
+        if contains_secret:
             raise FilesystemSourceError("filesystem file contains excluded secret material")
-        descriptor = _open_relative_regular_file(self._root_fd, entry.relative_path)
-        try:
-            before = os.fstat(descriptor)
-            _validate_file_identity(entry, before)
-            if before.st_size > self.limits.max_file_bytes:
-                raise FilesystemSourceError("filesystem file exceeds size limit")
-            content = bytearray()
-            while True:
-                chunk = os.read(
-                    descriptor, min(self.limits.chunk_bytes, self.limits.max_file_bytes + 1)
-                )
-                if not chunk:
-                    break
-                content.extend(chunk)
-                if len(content) > self.limits.max_file_bytes:
-                    raise FilesystemSourceError("filesystem file exceeds size limit")
-            after = os.fstat(descriptor)
-            _validate_file_identity(entry, after)
-            if len(content) != before.st_size:
-                raise FilesystemSourceError("filesystem file changed during capture")
-            return bytes(content)
-        finally:
-            os.close(descriptor)
+        return content
 
     def iter_file_chunks(self, target: BackupTarget, entry: FilesystemEntry) -> Iterator[bytes]:
         """Stream one safe file with fixed-size chunks and no full-file buffer."""
@@ -750,17 +785,14 @@ class LinuxFilesystemBackupSource:
         """Compatibility snapshot for small fixtures; never use for large sites."""
 
         components: list[BackupComponent] = []
-        total = 0
         index = 0
+        budget = _CaptureByteBudget(self.limits.max_total_bytes)
         for entry in self.iter_entries(target):
             if entry.classification is not FilesystemEntryClass.SAFE_FILE:
                 continue
-            if self._contains_secret(target, entry):
+            payload, contains_secret = self._read_file_once(target, entry, budget)
+            if contains_secret:
                 continue
-            payload = self.read_file(target, entry)
-            total += len(payload)
-            if total > self.limits.max_total_bytes:
-                raise FilesystemSourceError("filesystem snapshot exceeds total size limit")
             components.append(
                 BackupComponent(
                     name=f"file-{index:06d}",

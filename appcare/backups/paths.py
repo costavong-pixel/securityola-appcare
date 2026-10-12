@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
-from .contracts import BackupBoundaryError, validate_path_segment
+from .contracts import BackupBoundaryError, _safe_reference, validate_path_segment
 
 BACKUP_ROOT: Final = Path("/var/lib/securityola/appcare/backups")
 BACKUP_LOG_ROOT: Final = Path("/var/log/securityola/appcare/backups")
@@ -165,10 +166,37 @@ class BackupFilesystemBoundary:
             field="backup staging path",
         )
 
-    def snapshot_path(self, tenant_id: str, application_id: str, backup_id: str) -> Path:
+    def snapshot_path(
+        self,
+        tenant_id: str,
+        application_id: str,
+        backup_id: str,
+        *,
+        target_reference: str | None = None,
+    ) -> Path:
+        return self._snapshot_path(
+            tenant_id,
+            application_id,
+            backup_id,
+            target_reference=target_reference,
+        )
+
+    def _snapshot_path(
+        self,
+        tenant_id: str,
+        application_id: str,
+        backup_id: str,
+        *,
+        target_reference: str | None,
+    ) -> Path:
         return _safe_join(
             self._static_subdirectory("snapshots"),
-            (tenant_id, application_id, backup_id),
+            (
+                tenant_id,
+                application_id,
+                *self._target_scope_segments(target_reference),
+                backup_id,
+            ),
             field="backup snapshot path",
         )
 
@@ -178,20 +206,56 @@ class BackupFilesystemBoundary:
         application_id: str,
         backup_id: str,
         filename: str,
+        *,
+        target_reference: str | None = None,
     ) -> Path:
         return _safe_join(
-            self.snapshot_path(tenant_id, application_id, backup_id),
+            self._snapshot_path(
+                tenant_id,
+                application_id,
+                backup_id,
+                target_reference=target_reference,
+            ),
             (filename,),
             field="backup snapshot file",
         )
 
-    def manifest_path(self, tenant_id: str, application_id: str, backup_id: str) -> Path:
+    def manifest_path(
+        self,
+        tenant_id: str,
+        application_id: str,
+        backup_id: str,
+        *,
+        target_reference: str | None = None,
+    ) -> Path:
         validate_path_segment(backup_id, field="manifest backup_id")
         return _safe_join(
             self._static_subdirectory("manifests"),
-            (tenant_id, application_id, f"{backup_id}.json"),
+            (
+                tenant_id,
+                application_id,
+                *self._target_scope_segments(target_reference),
+                f"{backup_id}.json",
+            ),
             field="backup manifest path",
         )
+
+    @staticmethod
+    def _target_scope_segments(target_reference: str | None) -> tuple[str, ...]:
+        """Return a stable, path-safe namespace for a target reference.
+
+        The reference itself may contain URI separators, so persist only a
+        validated digest in the filesystem path. The canonical manifest still
+        carries the original reference for independent scope verification.
+        ``None`` is retained only for direct legacy path-helper callers; the
+        filesystem vault rejects unscoped new artifacts.
+        """
+
+        if target_reference is None:
+            return ()
+        normalized = _safe_reference(target_reference, field="target_reference")
+        digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        return (f"target-{digest}",)
 
     def restore_rehearsal_path(
         self,
