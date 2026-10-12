@@ -38,6 +38,14 @@ from .stores import (
     UnavailableCloudVault,
     VaultError,
 )
+from .tree_restore import (
+    ChunkedBackupReaderProtocol,
+    FilesystemRestoreLimits,
+    FilesystemRestoreRequest,
+    FilesystemTreeRestoreEvidence,
+    FilesystemTreeRestoreError,
+    FilesystemTreeRestorer,
+)
 
 __all__ = [
     "AesGcmEnvelopeEncryptor",
@@ -72,4 +80,10 @@ __all__ = [
     "UnavailableCloudVault",
     "VaultError",
     "VaultReceipt",
+    "ChunkedBackupReaderProtocol",
+    "FilesystemRestoreLimits",
+    "FilesystemRestoreRequest",
+    "FilesystemTreeRestoreEvidence",
+    "FilesystemTreeRestoreError",
+    "FilesystemTreeRestorer",
 ]
