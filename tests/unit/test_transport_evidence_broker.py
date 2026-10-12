@@ -58,7 +58,9 @@ def _target(**changes: object) -> LinuxTarget:
     return LinuxTarget(**cast(Any, values))
 
 
-def _record(target: LinuxTarget, source: str, record_type: str, identity: str, metadata: dict[str, object]) -> InventoryRecord:
+def _record(
+    target: LinuxTarget, source: str, record_type: str, identity: str, metadata: dict[str, object]
+) -> InventoryRecord:
     return InventoryRecord(
         tenant_id=target.tenant_id,
         application_id=target.application_id,
@@ -166,7 +168,9 @@ def _snapshot(target: LinuxTarget | None = None) -> LinuxInventorySnapshot:
     return LinuxInventorySnapshot(target, connection, inventory, records)
 
 
-def _broker(tmp_path: Path, snapshot: LinuxInventorySnapshot | None = None) -> tuple[TrustedOperationEvidenceBroker, LinuxInventorySnapshot]:
+def _broker(
+    tmp_path: Path, snapshot: LinuxInventorySnapshot | None = None
+) -> tuple[TrustedOperationEvidenceBroker, LinuxInventorySnapshot]:
     snapshot = snapshot or _snapshot()
     broker = TrustedOperationEvidenceBroker(
         snapshot.target,
@@ -219,25 +223,41 @@ def test_foreign_scope_wrong_hostname_and_run_mismatch_fail_closed(tmp_path: Pat
         LinuxInventorySnapshot(snapshot.target, snapshot.connection, foreign, snapshot.records)
 
     wrong_host = list(snapshot.records)
-    wrong_host[0] = replace(wrong_host[0], identity="wrong.internal", metadata={"hostname": "wrong.internal"})
+    wrong_host[0] = replace(
+        wrong_host[0], identity="wrong.internal", metadata={"hostname": "wrong.internal"}
+    )
     wrong_inventory = replace(snapshot.inventory, records=tuple(wrong_host))
     object.__setattr__(wrong_inventory, "_transport_authority", broker._authority)
     with pytest.raises(TransportEvidenceBrokerError):
-        broker.publish(LinuxInventorySnapshot(snapshot.target, snapshot.connection, wrong_inventory, tuple(wrong_host)))
+        broker.publish(
+            LinuxInventorySnapshot(
+                snapshot.target, snapshot.connection, wrong_inventory, tuple(wrong_host)
+            )
+        )
 
     mismatched = replace(snapshot.inventory, operation_id="different:inventory")
     object.__setattr__(mismatched, "_transport_authority", broker._authority)
     with pytest.raises(TransportEvidenceBrokerError, match="run binding"):
-        broker.publish(LinuxInventorySnapshot(snapshot.target, snapshot.connection, mismatched, snapshot.records))
+        broker.publish(
+            LinuxInventorySnapshot(
+                snapshot.target, snapshot.connection, mismatched, snapshot.records
+            )
+        )
 
 
 def test_partial_missing_and_unverified_root_inventory_is_rejected(tmp_path: Path) -> None:
     broker, snapshot = _broker(tmp_path)
-    missing = tuple(record for record in snapshot.records if record.identity != snapshot.target.expected_hostname)
+    missing = tuple(
+        record
+        for record in snapshot.records
+        if record.identity != snapshot.target.expected_hostname
+    )
     inventory = replace(snapshot.inventory, records=missing)
     object.__setattr__(inventory, "_transport_authority", broker._authority)
     with pytest.raises(TransportEvidenceBrokerError, match="incomplete"):
-        broker.publish(LinuxInventorySnapshot(snapshot.target, snapshot.connection, inventory, missing))
+        broker.publish(
+            LinuxInventorySnapshot(snapshot.target, snapshot.connection, inventory, missing)
+        )
 
     unverified = tuple(
         replace(record, metadata={**record.metadata, "device": None})
@@ -248,7 +268,9 @@ def test_partial_missing_and_unverified_root_inventory_is_rejected(tmp_path: Pat
     inventory = replace(snapshot.inventory, records=unverified)
     object.__setattr__(inventory, "_transport_authority", broker._authority)
     with pytest.raises(TransportEvidenceBrokerError):
-        broker.publish(LinuxInventorySnapshot(snapshot.target, snapshot.connection, inventory, unverified))
+        broker.publish(
+            LinuxInventorySnapshot(snapshot.target, snapshot.connection, inventory, unverified)
+        )
 
 
 def test_replay_is_rejected_and_file_is_canonical_and_atomic(tmp_path: Path) -> None:
@@ -259,7 +281,12 @@ def test_replay_is_rejected_and_file_is_canonical_and_atomic(tmp_path: Path) -> 
 
     path = tmp_path / "operation-evidence.json"
     raw = path.read_bytes()
-    assert raw == json.dumps(json.loads(raw), sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+    assert (
+        raw
+        == json.dumps(
+            json.loads(raw), sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode()
+    )
     assert not tuple(tmp_path.glob(".operation-evidence.json.tmp-*"))
     if os.name == "posix":
         assert os.stat(path).st_mode & 0o077 == 0
@@ -288,7 +315,9 @@ def test_symlink_unsafe_mode_and_size_boundaries_fail_closed(tmp_path: Path) -> 
                 evidence_path=unsafe_parent / "evidence.json",
             )
 
-    broker, snapshot = _broker(tmp_path / "bounded") if (tmp_path / "bounded").mkdir() is None else (None, None)
+    broker, snapshot = (
+        _broker(tmp_path / "bounded") if (tmp_path / "bounded").mkdir() is None else (None, None)
+    )
     assert broker is not None and snapshot is not None
     bounded = TrustedOperationEvidenceBroker(
         snapshot.target,
@@ -320,8 +349,13 @@ def test_concurrent_publication_has_one_winner(tmp_path: Path) -> None:
 def test_published_schema_is_readable_by_attestor_store(tmp_path: Path) -> None:
     broker, snapshot = _broker(tmp_path)
     broker.publish(snapshot)
-    store = __import__("appcare.connectors.live_inventory_attestor", fromlist=["JsonTrustedOperationEvidenceStore"]).JsonTrustedOperationEvidenceStore(
+    store = __import__(
+        "appcare.connectors.live_inventory_attestor", fromlist=["JsonTrustedOperationEvidenceStore"]
+    ).JsonTrustedOperationEvidenceStore(
         tmp_path / "operation-evidence.json",
         replay_ledger=SqliteAttestorReplayLedger(tmp_path / "attestor-replay.db"),
     )
-    assert isinstance(store.lookup(target_reference="target-a", operation_id="run-1:inventory"), TrustedOperationEvidence)
+    assert isinstance(
+        store.lookup(target_reference="target-a", operation_id="run-1:inventory"),
+        TrustedOperationEvidence,
+    )

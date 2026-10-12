@@ -83,7 +83,11 @@ class TrustedOperationEvidenceBroker:
             raise TransportEvidenceBrokerError("live evidence requires a durable operation ledger")
         self._target = target
         self._path = self._validate_path(evidence_path)
-        if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or not 1024 <= max_bytes <= ATTESTOR_MAX_EVIDENCE_BYTES:
+        if (
+            isinstance(max_bytes, bool)
+            or not isinstance(max_bytes, int)
+            or not 1024 <= max_bytes <= ATTESTOR_MAX_EVIDENCE_BYTES
+        ):
             raise TransportEvidenceBrokerError("evidence size limit is invalid")
         self._max_bytes = max_bytes
         self._operation_ledger = operation_ledger
@@ -281,16 +285,14 @@ class TrustedOperationEvidenceBroker:
             "observed_at": item.observed_at.astimezone(UTC).isoformat(),
         }
 
-    def _encode(
-        self, operations: Sequence[TrustedOperationEvidence]
-    ) -> bytes:
+    def _encode(self, operations: Sequence[TrustedOperationEvidence]) -> bytes:
         payload = {
             "schema_version": _EVIDENCE_SCHEMA_VERSION,
             "operations": [self._operation_payload(item) for item in operations],
         }
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
-            "utf-8"
-        )
+        encoded = json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode("utf-8")
         if len(encoded) > self._max_bytes:
             raise TransportEvidenceBrokerError("operation evidence is too large")
         return encoded
@@ -318,9 +320,12 @@ class TrustedOperationEvidenceBroker:
         operations = value.get("operations")
         if not isinstance(operations, list) or len(operations) > 4096:
             raise TransportEvidenceBrokerError("operation evidence operation list is invalid")
-        if json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
-            "utf-8"
-        ) != raw:
+        if (
+            json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+                "utf-8"
+            )
+            != raw
+        ):
             raise TransportEvidenceBrokerError("operation evidence is not canonical")
         try:
             records = tuple(
@@ -345,7 +350,10 @@ class TrustedOperationEvidenceBroker:
         descriptor = -1
         try:
             for attempt in range(16):
-                candidate = parent / f".{self._path.name}.tmp-{os.getpid()}-{threading.get_ident()}-{attempt}"
+                candidate = (
+                    parent
+                    / f".{self._path.name}.tmp-{os.getpid()}-{threading.get_ident()}-{attempt}"
+                )
                 try:
                     descriptor = os.open(
                         candidate,
@@ -357,7 +365,9 @@ class TrustedOperationEvidenceBroker:
                 except FileExistsError:
                     continue
             if descriptor < 0 or temp_path is None:
-                raise TransportEvidenceBrokerError("operation evidence temporary file is unavailable")
+                raise TransportEvidenceBrokerError(
+                    "operation evidence temporary file is unavailable"
+                )
             metadata = os.fstat(descriptor)
             if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
                 raise TransportEvidenceBrokerError("operation evidence temporary file is unsafe")
@@ -381,8 +391,7 @@ class TrustedOperationEvidenceBroker:
                     "operation evidence destination is unavailable"
                 ) from exc
             if destination_metadata is not None and (
-                stat.S_ISLNK(destination_metadata.st_mode)
-                or not self._trusted_file(self._path)
+                stat.S_ISLNK(destination_metadata.st_mode) or not self._trusted_file(self._path)
             ):
                 raise TransportEvidenceBrokerError("operation evidence destination is unsafe")
             os.replace(temp_path, self._path)
@@ -452,7 +461,9 @@ class TrustedOperationEvidenceBroker:
             try:
                 metadata = current.lstat()
             except OSError as exc:
-                raise TransportEvidenceBrokerError("operation evidence parent is unavailable") from exc
+                raise TransportEvidenceBrokerError(
+                    "operation evidence parent is unavailable"
+                ) from exc
             if not stat.S_ISDIR(metadata.st_mode) or (
                 os.name == "posix" and stat.S_IMODE(metadata.st_mode) & 0o022
             ):
@@ -469,11 +480,16 @@ class TrustedOperationEvidenceBroker:
         try:
             descriptor = os.open(path, os.O_RDONLY | _O_NOFOLLOW | _O_CLOEXEC)
             metadata = os.fstat(descriptor)
-            if not cls._trusted_open_file(descriptor, allow_empty=False) or metadata.st_size > ATTESTOR_MAX_EVIDENCE_BYTES:
+            if (
+                not cls._trusted_open_file(descriptor, allow_empty=False)
+                or metadata.st_size > ATTESTOR_MAX_EVIDENCE_BYTES
+            ):
                 raise TransportEvidenceBrokerError("operation evidence file is unsafe")
             content = bytearray()
             while len(content) <= ATTESTOR_MAX_EVIDENCE_BYTES:
-                chunk = os.read(descriptor, min(8192, ATTESTOR_MAX_EVIDENCE_BYTES + 1 - len(content)))
+                chunk = os.read(
+                    descriptor, min(8192, ATTESTOR_MAX_EVIDENCE_BYTES + 1 - len(content))
+                )
                 if not chunk:
                     break
                 content.extend(chunk)
