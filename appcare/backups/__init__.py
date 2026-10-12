@@ -47,6 +47,16 @@ from .stores import (
     UnavailableCloudVault,
     VaultError,
 )
+from .streaming import (
+    ChunkRecord,
+    ChunkedBackupArtifact,
+    ChunkedBackupLimits,
+    ChunkedBackupReader,
+    ChunkedBackupRequest,
+    ChunkedBackupWriter,
+    StreamingBackupError,
+    StreamingBackupSource,
+)
 
 __all__ = [
     "AesGcmEnvelopeEncryptor",
@@ -88,4 +98,12 @@ __all__ = [
     "UnavailableCloudVault",
     "VaultError",
     "VaultReceipt",
+    "ChunkRecord",
+    "ChunkedBackupArtifact",
+    "ChunkedBackupLimits",
+    "ChunkedBackupReader",
+    "ChunkedBackupRequest",
+    "ChunkedBackupWriter",
+    "StreamingBackupError",
+    "StreamingBackupSource",
 ]
