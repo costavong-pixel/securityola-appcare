@@ -279,6 +279,7 @@ class FilesystemImmutableVault:
                 target_data["application_id"],
                 target_data["environment"],
                 target_data["source_reference"],
+                target_data.get("target_reference"),
             )
             if target.tenant_id != tenant_id or target.application_id != application_id:
                 raise VaultError("backup artifact tenant scope mismatch")

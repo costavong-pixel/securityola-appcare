@@ -192,6 +192,7 @@ class BackupCoordinator:
             request.target.application_id,
             request.target.environment,
             request.target.source_reference,
+            request.target.target_reference,
         )
         existing = self._outcomes.get(request.idempotency_key)
         if existing is not None:

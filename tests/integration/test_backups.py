@@ -344,6 +344,42 @@ def test_filesystem_vault_reads_persisted_artifact_after_reopen(tmp_path: Path) 
     assert restored.manifest_bytes == restored.manifest.canonical_bytes()
 
 
+def test_filesystem_vault_preserves_target_reference_in_manifest(tmp_path: Path) -> None:
+    destination = _destination()
+    filesystem = BackupFilesystemBoundary.for_test(tmp_path / "target-reference-boundary")
+    target = BackupTarget(
+        "tenant-appcare-1",
+        "appcare-test-app",
+        "test",
+        "synthetic://appcare/test-app",
+        "target-reference-1",
+    )
+    request = BackupRequest(
+        target,
+        destination,
+        "backup-target-reference-1",
+        "job-target-reference-1",
+        NOW - timedelta(hours=1),
+    )
+    vault = FilesystemImmutableVault(filesystem, destination)
+    outcome = BackupCoordinator().create_backup(
+        request,
+        source=SyntheticAppSource(),
+        vault=vault,
+        encryptor=_encryptor(),
+        now=NOW,
+    )
+
+    assert outcome.healthy is True
+    restored = vault.get(
+        "backup-target-reference-1",
+        tenant_id="tenant-appcare-1",
+        application_id="appcare-test-app",
+    )
+    assert restored.manifest.target.target_reference == "target-reference-1"
+    assert restored.manifest_bytes == restored.manifest.canonical_bytes()
+
+
 def test_filesystem_vault_rejects_foreign_tenant_scope(tmp_path: Path) -> None:
     destination = _destination()
     filesystem = BackupFilesystemBoundary.for_test(tmp_path / "tenant-boundary")
