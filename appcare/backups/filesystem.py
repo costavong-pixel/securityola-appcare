@@ -20,7 +20,7 @@ from pathlib import Path, PurePosixPath
 from typing import Final, cast
 
 from ..revision import CapturedApplicationRevision, EvidenceClass
-from .contracts import BackupBoundaryError, BackupTarget
+from .contracts import BackupBoundaryError, BackupTarget, validate_path_segment
 from .models import BackupComponent
 from .paths import validate_read_only_source
 
@@ -231,6 +231,33 @@ def _relative(root: Path, path: str | Path) -> str:
     return relative.as_posix() if relative.parts else "."
 
 
+def filesystem_source_reference(
+    root: Path,
+    *,
+    tenant_id: str,
+    application_id: str,
+    target_reference: str,
+) -> str:
+    """Return a safe opaque reference bound to one approved source root.
+
+    ``BackupTarget.source_reference`` is deliberately not a raw filesystem
+    path: its contract rejects absolute paths and credential-like material.
+    The source root remains bound by the captured revision and root identity;
+    this reference adds a deterministic, non-disclosing path binding for the
+    target contract without putting the path itself into a serialized target.
+    """
+
+    for value, field in (
+        (tenant_id, "filesystem source tenant_id"),
+        (application_id, "filesystem source application_id"),
+        (target_reference, "filesystem source target_reference"),
+    ):
+        validate_path_segment(value, field=field)
+    canonical_root = validate_read_only_source(root)
+    root_digest = hashlib.sha256(canonical_root.as_posix().encode("utf-8")).hexdigest()[:32]
+    return f"filesystem://{tenant_id}/{application_id}/{target_reference}/{root_digest}"
+
+
 def _is_secret_path(relative_path: str) -> bool:
     parts = PurePosixPath(relative_path).parts
     lowered = tuple(part.casefold() for part in parts)
@@ -384,11 +411,17 @@ class LinuxFilesystemBackupSource:
     def _validate_target(self, target: BackupTarget) -> None:
         if not isinstance(target, BackupTarget):
             raise FilesystemSourceError("backup target is invalid")
+        expected_source_reference = filesystem_source_reference(
+            self.root,
+            tenant_id=self.revision.tenant_id,
+            application_id=self.revision.application_id,
+            target_reference=self.revision.target_reference,
+        )
         if (
             target.tenant_id != self.revision.tenant_id
             or target.application_id != self.revision.application_id
             or target.target_reference != self.revision.target_reference
-            or target.source_reference != self.root.as_posix()
+            or target.source_reference != expected_source_reference
         ):
             raise FilesystemSourceError("backup target is not bound to the filesystem root")
 
@@ -789,4 +822,5 @@ __all__ = [
     "FilesystemSourceError",
     "FilesystemSourceLimits",
     "LinuxFilesystemBackupSource",
+    "filesystem_source_reference",
 ]
