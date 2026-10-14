@@ -307,12 +307,12 @@ class FilesystemImmutableVault:
     ) -> BackupArtifact:
         target_reference = self._require_target_reference(target_reference)
         scope = _scope(backup_id, tenant_id, application_id, target_reference)
-        backup_id, tenant_id, application_id, target_reference = (
-            scope[2],
-            scope[0],
-            scope[1],
-            scope[3],
-        )
+        # Keep the validated value returned by _require_target_reference.  The
+        # shared scope helper accepts nullable references for the in-memory and
+        # cloud vault contracts, so reassigning scope[3] would discard this
+        # local non-null narrowing even though this filesystem vault rejects
+        # nullable target references above.
+        tenant_id, application_id, backup_id = scope[:3]
         directory = self._artifact_dir(backup_id, tenant_id, application_id, target_reference)
         manifest_path = self._manifest_path(backup_id, tenant_id, application_id, target_reference)
         envelope_path = self._artifact_file(
