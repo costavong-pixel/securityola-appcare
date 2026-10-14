@@ -15,15 +15,19 @@ from appcare.database import (
     ApplicationDatabaseBackupContext,
     DatabaseBrokerResult,
     DatabaseCredentialReference,
+    DatabaseDumpRequest,
     DatabaseIdentityAttestation,
     DatabaseIdentityAttestationError,
     DatabaseKind,
     DatabaseOperationKind,
     DatabaseOperationLedger,
     DatabaseOperationStatus,
+    DatabaseProbe,
     DatabaseRestoreError,
+    DatabaseRestoreRequest,
     DatabaseRestoreTarget,
     DatabaseTarget,
+    DatabaseVerifyRequest,
     MariaDBAdapter,
 )
 from appcare.revision.contracts import (
@@ -141,7 +145,10 @@ class _DumpBroker:
 
     def run(
         self,
-        operation: object,
+        operation: DatabaseProbe
+        | DatabaseDumpRequest
+        | DatabaseRestoreRequest
+        | DatabaseVerifyRequest,
         *,
         target: DatabaseTarget,
         output_path: Path | None = None,
@@ -198,8 +205,10 @@ def test_bridge_binds_dump_to_revision_and_canonical_artifact_path(tmp_path: Pat
 
     assert result.passed
     assert result.artifact is not None
+    artifact_filesystem = result.artifact.filesystem
+    assert artifact_filesystem is not None
     assert result.artifact.artifact_path == (
-        result.artifact.filesystem.staging_path("bridge-job") / "database.sql"
+        artifact_filesystem.staging_path("bridge-job") / "database.sql"
     )
     assert result.artifact.manifest.target_reference == context.target.target_reference
     assert result.artifact.manifest.source_revision == context.revision.baseline_digest
