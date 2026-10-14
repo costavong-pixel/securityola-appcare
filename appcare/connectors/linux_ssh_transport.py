@@ -64,6 +64,7 @@ from .linux_ssh_contracts import (
     validate_operation_id,
     validate_string,
 )
+from .live_inventory_attestor import ATTESTOR_EVIDENCE_PATH, TrustedOperationEvidencePublisher
 
 DEFAULT_KNOWN_HOSTS_ROOT = Path("/var/lib/securityola/appcare/ssh/known_hosts")
 _ALLOWED_CUSTODY_ROOTS = tuple(
@@ -435,6 +436,7 @@ class LinuxSSHClient:
         operation_ledger: OperationLedger | None = None,
         command_registry: CommandRegistry | None = None,
         live_receipt_attestor: LiveReceiptAttestor | None = None,
+        trusted_evidence_publisher: TrustedOperationEvidencePublisher | None = None,
     ) -> None:
         self.target = target
         self._credential_provider = credential_provider
@@ -445,6 +447,7 @@ class LinuxSSHClient:
         self._ledger = operation_ledger or InMemoryOperationLedger()
         self._commands = command_registry or CommandRegistry()
         self._live_receipt_attestor = live_receipt_attestor
+        self._trusted_evidence_publisher = trusted_evidence_publisher
         self._evidence_class = EvidenceClass.FIXTURE
 
     @classmethod
@@ -457,6 +460,7 @@ class LinuxSSHClient:
         limits: BoundedLimits | None = None,
         operation_ledger: OperationLedger | None = None,
         live_receipt_attestor: LiveReceiptAttestor | None = None,
+        trusted_evidence_publisher: TrustedOperationEvidencePublisher | None = None,
     ) -> LinuxSSHClient:
         if (
             type(operation_ledger) is not SqliteOperationLedger
@@ -471,6 +475,16 @@ class LinuxSSHClient:
             live_receipt_attestor = RootControlledLiveReceiptAttestor()
         elif type(live_receipt_attestor) is not RootControlledLiveReceiptAttestor:
             raise HostKeyVerificationError("live SSH requires the root-controlled receipt attestor")
+        if trusted_evidence_publisher is None:
+            trusted_evidence_publisher = TrustedOperationEvidencePublisher()
+        elif type(trusted_evidence_publisher) is not TrustedOperationEvidencePublisher:
+            raise HostKeyVerificationError(
+                "live SSH requires the trusted operation evidence publisher"
+            )
+        if trusted_evidence_publisher.evidence_path != ATTESTOR_EVIDENCE_PATH:
+            raise HostKeyVerificationError(
+                "live SSH requires the canonical operation evidence path"
+            )
         runner = OpenSSHProcessRunner()
         client = cls(
             target,
@@ -481,6 +495,7 @@ class LinuxSSHClient:
             limits=limits,
             operation_ledger=operation_ledger,
             live_receipt_attestor=live_receipt_attestor,
+            trusted_evidence_publisher=trusted_evidence_publisher,
         )
         if not any(
             known_hosts_root == root or root in known_hosts_root.parents
@@ -649,6 +664,17 @@ class LinuxSSHClient:
     ) -> LinuxInventorySnapshot:
         if self._evidence_class is not EvidenceClass.REAL_TARGET:
             return snapshot
+        publisher = self._trusted_evidence_publisher
+        if publisher is None:
+            raise HostKeyVerificationError(
+                "live inventory requires a trusted operation evidence publisher"
+            )
+        try:
+            publisher.publish(snapshot)
+        except (OSError, TypeError, ValueError) as exc:
+            raise HostKeyVerificationError(
+                "live inventory operation evidence publication failed"
+            ) from exc
         receipt_path = live_snapshot_receipt_path(self.target, operation_id)
         payload = _live_snapshot_receipt_payload(
             snapshot.target,

@@ -13,6 +13,7 @@ this module are test fixtures only.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -21,7 +22,8 @@ import socket
 import sqlite3
 import stat
 import struct
-from collections.abc import Callable, Mapping, Sequence
+import threading
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -33,12 +35,23 @@ from ..readiness.contracts import EvidenceClass, validate_scope_segment
 from .linux_ssh_contracts import (
     LIVE_INVENTORY_RECEIPT_ATTESTOR_SOCKET,
     LIVE_RECEIPT_SIGNATURE_ALGORITHM,
+    InventoryRecord,
+    LinuxInventorySnapshot,
     LinuxTarget,
     OperationKind,
     OperationStatus,
+    RemoteExecutionResult,
+    _live_transport_run_id,
+    _trusted_receipt_ancestry,
     live_snapshot_receipt_path,
+    required_inventory_records_complete,
     validate_operation_id,
 )
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Linux is the supported runtime.
+    fcntl = None  # type: ignore[assignment]
 
 ATTESTOR_PRIVATE_KEY_PATH: Final = Path(
     "/etc/securityola/appcare/live-inventory/receipt-signing-private-key"
@@ -59,6 +72,13 @@ ATTESTOR_MAX_EVIDENCE_AGE: Final = timedelta(minutes=10)
 _SHA256_HEX_LENGTH = 64
 _ED25519_PRIVATE_BYTES = 32
 _SO_PEERCRED = getattr(socket, "SO_PEERCRED", 17)
+
+
+def _current_uid() -> int:
+    if os.name != "posix":
+        return -1
+    getuid = cast(Callable[[], int], getattr(os, "getuid"))  # noqa: B009
+    return getuid()
 
 
 class AttestorError(ValueError):
@@ -248,6 +268,25 @@ class TrustedOperationEvidence:
             observed_at=parsed_time,
         )
 
+    def to_dict(self) -> dict[str, object]:
+        """Return the canonical schema representation consumed by the attestor."""
+
+        return {
+            "operation_id": self.operation_id,
+            "operation": self.operation.value,
+            "tenant_id": self.tenant_id,
+            "application_id": self.application_id,
+            "target_reference": self.target_reference,
+            "status": self.status.value,
+            "evidence_digest": self.evidence_digest,
+            "transport_run_id": self.transport_run_id,
+            "record_evidence_digests": list(self.record_evidence_digests),
+            "host_identity": self.host_identity,
+            "root_bindings": [item.to_dict() for item in self.root_bindings],
+            "evidence_class": self.evidence_class.value,
+            "observed_at": self.observed_at.astimezone(UTC).isoformat(),
+        }
+
 
 class InMemoryTrustedOperationEvidenceStore:
     """Fixture-only evidence store; never use this class for live service state."""
@@ -363,6 +402,377 @@ class JsonTrustedOperationEvidenceStore:
         if len(identities) != len(records):
             raise AttestorError("attestor evidence contains duplicate operations")
         return records
+
+
+_EVIDENCE_PUBLISH_LOCK = threading.RLock()
+_EVIDENCE_PUBLISH_TEMP_PREFIX = ".operation-evidence.json."
+_EVIDENCE_PUBLISH_TEMP_SUFFIX = ".tmp"
+_EVIDENCE_PUBLISH_LOCK_SUFFIX = ".lock"
+_EVIDENCE_FILE_MODE = 0o600
+_MAX_PUBLISHED_OPERATIONS = 4096
+
+
+class TrustedOperationEvidencePublisher:
+    """Publish transport-derived live operation evidence for the root attestor.
+
+    This publisher is intentionally downstream of typed SSH collection and
+    upstream of receipt attestation.  It does not accept caller-supplied host,
+    root, lineage, or evidence-class claims; those values are derived from the
+    validated target and typed transport results.
+    """
+
+    def __init__(self, evidence_path: Path | None = None) -> None:
+        path = evidence_path if evidence_path is not None else ATTESTOR_EVIDENCE_PATH
+        self._path = _validate_evidence_publish_path(path)
+
+    @property
+    def evidence_path(self) -> Path:
+        return self._path
+
+    def publish(self, snapshot: LinuxInventorySnapshot) -> tuple[TrustedOperationEvidence, ...]:
+        """Atomically append the connection and inventory evidence for a live run."""
+
+        operations = self._derive_operations(snapshot)
+        with _EVIDENCE_PUBLISH_LOCK, self._exclusive_lock():
+            existing = self._read_existing()
+            existing_ids = {(item.target_reference, item.operation_id) for item in existing}
+            incoming_ids = {(item.target_reference, item.operation_id) for item in operations}
+            if len(incoming_ids) != len(operations) or existing_ids & incoming_ids:
+                raise AttestorError("operation evidence contains a duplicate operation")
+            combined = existing + operations
+            if len(combined) > _MAX_PUBLISHED_OPERATIONS:
+                raise AttestorError("operation evidence operation list is too large")
+            encoded = _canonical_json(
+                {
+                    "schema_version": 1,
+                    "operations": [item.to_dict() for item in combined],
+                }
+            )
+            if len(encoded) > ATTESTOR_MAX_EVIDENCE_BYTES:
+                raise AttestorError("operation evidence is too large")
+            self._atomic_write(encoded)
+        return operations
+
+    @contextlib.contextmanager
+    def _exclusive_lock(self) -> Iterator[None]:
+        """Serialize publishers across threads and independent processes."""
+
+        _validate_evidence_publish_parent(self._path.parent)
+        lock_path = self._path.with_name(self._path.name + _EVIDENCE_PUBLISH_LOCK_SUFFIX)
+        descriptor = -1
+        try:
+            descriptor = os.open(
+                lock_path,
+                os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+                _EVIDENCE_FILE_MODE,
+            )
+            metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+                or (os.name == "posix" and stat.S_IMODE(metadata.st_mode) != _EVIDENCE_FILE_MODE)
+                or (os.name == "posix" and metadata.st_uid not in {0, _current_uid()})
+            ):
+                raise AttestorError("operation evidence lock permissions are unsafe")
+            if fcntl is not None:
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+            yield
+        except AttestorError:
+            raise
+        except OSError as exc:
+            raise AttestorError("operation evidence lock is unavailable") from exc
+        finally:
+            if descriptor >= 0:
+                if fcntl is not None:
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+                os.close(descriptor)
+
+    def _derive_operations(
+        self, snapshot: LinuxInventorySnapshot
+    ) -> tuple[TrustedOperationEvidence, TrustedOperationEvidence]:
+        if not isinstance(snapshot, LinuxInventorySnapshot):
+            raise AttestorError("operation evidence requires a typed inventory snapshot")
+        target = snapshot.target
+        connection = snapshot.connection
+        inventory = snapshot.inventory
+        if (
+            not isinstance(target, LinuxTarget)
+            or not isinstance(connection, RemoteExecutionResult)
+            or not isinstance(inventory, RemoteExecutionResult)
+        ):
+            raise AttestorError("operation evidence input types are invalid")
+        if (
+            snapshot.evidence_class != EvidenceClass.REAL_TARGET
+            or connection.evidence_class != EvidenceClass.REAL_TARGET
+            or inventory.evidence_class != EvidenceClass.REAL_TARGET
+            or not snapshot.complete
+        ):
+            raise AttestorError("only complete real-target evidence may be published")
+        if (
+            connection.operation != OperationKind.CONNECTION_PROBE
+            or inventory.operation != OperationKind.HOST_INVENTORY
+            or not connection.passed
+            or not inventory.passed
+            or inventory.records != snapshot.records
+            or connection.records
+        ):
+            raise AttestorError("operation evidence results are invalid")
+        if not _result_matches_target(connection, target) or not _result_matches_target(
+            inventory, target
+        ):
+            raise AttestorError("operation evidence scope does not match target")
+        if not all(
+            isinstance(record, InventoryRecord)
+            and record.evidence_class == EvidenceClass.REAL_TARGET
+            and _record_matches_target(record, target)
+            for record in snapshot.records
+        ) or not required_inventory_records_complete(target, snapshot.records):
+            raise AttestorError("operation evidence inventory is incomplete or out of scope")
+        transport_run_id = _live_transport_run_id(
+            connection.operation_id,
+            inventory.operation_id,
+        )
+        if transport_run_id is None:
+            raise AttestorError("operation evidence lineage is invalid")
+
+        host_records = tuple(
+            record
+            for record in snapshot.records
+            if record.source_reference == "linux-ssh/host_inventory/hostname"
+            and record.record_type == "host_identity"
+            and record.identity == target.expected_hostname
+        )
+        if (
+            len(host_records) != 1
+            or host_records[0].metadata.get("hostname") != target.expected_hostname
+        ):
+            raise AttestorError("operation evidence host identity is invalid")
+        root_bindings: list[RootBinding] = []
+        for approved_root in target.approved_application_roots:
+            root_records = tuple(
+                record
+                for record in snapshot.records
+                if record.source_reference == "linux-ssh/filesystem_metadata_read/metadata"
+                and record.record_type == "filesystem"
+                and record.identity == approved_root
+            )
+            if len(root_records) != 1:
+                raise AttestorError("operation evidence root binding is invalid")
+            metadata = root_records[0].metadata
+            device = metadata.get("device")
+            inode = metadata.get("inode")
+            if (
+                isinstance(device, bool)
+                or not isinstance(device, int)
+                or device < 0
+                or isinstance(inode, bool)
+                or not isinstance(inode, int)
+                or inode < 0
+            ):
+                raise AttestorError("operation evidence root identity is invalid")
+            root_bindings.append(
+                RootBinding(
+                    approved_root=approved_root,
+                    device=device,
+                    inode=inode,
+                    record_evidence_digest=root_records[0].evidence_digest,
+                )
+            )
+
+        connection_evidence = TrustedOperationEvidence(
+            operation_id=connection.operation_id,
+            operation=connection.operation,
+            tenant_id=target.tenant_id,
+            application_id=target.application_id,
+            target_reference=target.target_reference,
+            status=connection.status,
+            evidence_digest=connection.evidence_digest,
+            transport_run_id=transport_run_id,
+            record_evidence_digests=(),
+            host_identity=target.expected_hostname,
+            root_bindings=(),
+            evidence_class=EvidenceClass.REAL_TARGET,
+            observed_at=connection.observed_at,
+        )
+        inventory_evidence = TrustedOperationEvidence(
+            operation_id=inventory.operation_id,
+            operation=inventory.operation,
+            tenant_id=target.tenant_id,
+            application_id=target.application_id,
+            target_reference=target.target_reference,
+            status=inventory.status,
+            evidence_digest=inventory.evidence_digest,
+            transport_run_id=transport_run_id,
+            record_evidence_digests=tuple(record.evidence_digest for record in snapshot.records),
+            host_identity=host_records[0].identity,
+            root_bindings=tuple(root_bindings),
+            evidence_class=EvidenceClass.REAL_TARGET,
+            observed_at=inventory.observed_at,
+        )
+        return connection_evidence, inventory_evidence
+
+    def _read_existing(self) -> tuple[TrustedOperationEvidence, ...]:
+        _validate_evidence_publish_parent(self._path.parent)
+        try:
+            metadata = self._path.lstat()
+        except FileNotFoundError:
+            return ()
+        except OSError as exc:
+            raise AttestorError("operation evidence path is unavailable") from exc
+        _validate_evidence_publish_file_metadata(metadata)
+        raw = _read_trusted_file(self._path, ATTESTOR_MAX_EVIDENCE_BYTES, "operation evidence")
+        try:
+            value = _json_loads_strict(raw)
+        except (AttestorError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise AttestorError("operation evidence is invalid") from exc
+        if not isinstance(value, Mapping) or set(value) != {"schema_version", "operations"}:
+            raise AttestorError("operation evidence schema is invalid")
+        operations = value.get("operations")
+        if (
+            value.get("schema_version") != 1
+            or not isinstance(operations, list)
+            or len(operations) > _MAX_PUBLISHED_OPERATIONS
+            or any(not isinstance(item, Mapping) for item in operations)
+        ):
+            raise AttestorError("operation evidence schema is invalid")
+        records = tuple(
+            TrustedOperationEvidence.from_mapping(cast(Mapping[str, object], item))
+            for item in operations
+        )
+        identities = {(item.target_reference, item.operation_id) for item in records}
+        if len(identities) != len(records):
+            raise AttestorError("operation evidence contains duplicate operations")
+        if _canonical_json(value) != raw:
+            raise AttestorError("operation evidence is not canonical")
+        return records
+
+    def _atomic_write(self, encoded: bytes) -> None:
+        _validate_evidence_publish_parent(self._path.parent)
+        temp_path: Path | None = None
+        descriptor = -1
+        try:
+            for _ in range(8):
+                candidate = self._path.parent / (
+                    f"{_EVIDENCE_PUBLISH_TEMP_PREFIX}{secrets.token_hex(12)}"
+                    f"{_EVIDENCE_PUBLISH_TEMP_SUFFIX}"
+                )
+                try:
+                    descriptor = os.open(
+                        candidate,
+                        os.O_WRONLY
+                        | os.O_CREAT
+                        | os.O_EXCL
+                        | getattr(os, "O_NOFOLLOW", 0)
+                        | getattr(os, "O_CLOEXEC", 0),
+                        _EVIDENCE_FILE_MODE,
+                    )
+                    temp_path = candidate
+                    break
+                except FileExistsError:
+                    continue
+            if descriptor < 0 or temp_path is None:
+                raise AttestorError("operation evidence temporary path is unavailable")
+            view = memoryview(encoded)
+            while view:
+                written = os.write(descriptor, view)
+                if written <= 0:
+                    raise OSError("operation evidence write made no progress")
+                view = view[written:]
+            os.fsync(descriptor)
+            os.close(descriptor)
+            descriptor = -1
+            os.chmod(temp_path, _EVIDENCE_FILE_MODE)
+            _validate_evidence_publish_file_metadata(temp_path.lstat())
+            try:
+                existing = self._path.lstat()
+            except FileNotFoundError:
+                existing = None
+            if existing is not None:
+                _validate_evidence_publish_file_metadata(existing)
+            os.replace(temp_path, self._path)
+            temp_path = None
+            _validate_evidence_publish_file_metadata(self._path.lstat())
+            if os.name == "posix":
+                directory_descriptor = os.open(
+                    self._path.parent,
+                    os.O_RDONLY
+                    | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_NOFOLLOW", 0)
+                    | getattr(os, "O_CLOEXEC", 0),
+                )
+                try:
+                    os.fsync(directory_descriptor)
+                finally:
+                    os.close(directory_descriptor)
+        except (AttestorError, OSError) as exc:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if temp_path is not None:
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
+            if isinstance(exc, AttestorError):
+                raise
+            raise AttestorError("operation evidence publication failed") from exc
+
+
+def _validate_evidence_publish_path(path: object) -> Path:
+    if (
+        not isinstance(path, Path)
+        or not path.is_absolute()
+        or any(part in {".", ".."} for part in path.parts)
+        or path.name != "operation-evidence.json"
+    ):
+        raise AttestorError("operation evidence path is unsafe")
+    return path
+
+
+def _validate_evidence_publish_parent(path: Path) -> None:
+    if os.name == "posix" and not _trusted_receipt_ancestry(path):
+        raise AttestorError("operation evidence parent is unsafe")
+    if os.name != "posix":
+        current = path
+        while True:
+            try:
+                metadata = current.lstat()
+            except OSError as exc:
+                raise AttestorError("operation evidence parent is unavailable") from exc
+            if not stat.S_ISDIR(metadata.st_mode) or current.is_symlink():
+                raise AttestorError("operation evidence parent is unsafe")
+            if current == Path(current.anchor):
+                break
+            current = current.parent
+    metadata = path.lstat()
+    if os.name == "posix" and stat.S_IMODE(metadata.st_mode) & 0o022:
+        raise AttestorError("operation evidence parent permissions are unsafe")
+
+
+def _validate_evidence_publish_file_metadata(metadata: os.stat_result) -> None:
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+        or metadata.st_size > ATTESTOR_MAX_EVIDENCE_BYTES
+        or (os.name == "posix" and stat.S_IMODE(metadata.st_mode) != _EVIDENCE_FILE_MODE)
+        or (os.name == "posix" and metadata.st_uid not in {0, _current_uid()})
+    ):
+        raise AttestorError("operation evidence file permissions or type are unsafe")
+
+
+def _result_matches_target(result: RemoteExecutionResult, target: LinuxTarget) -> bool:
+    return (
+        result.tenant_id == target.tenant_id
+        and result.application_id == target.application_id
+        and result.target_reference == target.target_reference
+    )
+
+
+def _record_matches_target(record: InventoryRecord, target: LinuxTarget) -> bool:
+    return (
+        record.tenant_id == target.tenant_id
+        and record.application_id == target.application_id
+        and record.target_reference == target.target_reference
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -981,6 +1391,7 @@ __all__ = [
     "RootControlledLiveInventoryAttestor",
     "SqliteAttestorReplayLedger",
     "TrustedOperationEvidence",
+    "TrustedOperationEvidencePublisher",
     "TrustedOperationEvidenceStore",
     "UnixSocketAttestorServer",
     "load_policy",
