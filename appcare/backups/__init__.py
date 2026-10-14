@@ -17,6 +17,7 @@ from .filesystem import (
     FilesystemSourceError,
     FilesystemSourceLimits,
     LinuxFilesystemBackupSource,
+    filesystem_source_reference,
 )
 from .models import (
     BackupArtifact,
@@ -80,6 +81,7 @@ __all__ = [
     "FilesystemSourceError",
     "FilesystemSourceLimits",
     "LinuxFilesystemBackupSource",
+    "filesystem_source_reference",
     "InMemoryImmutableVault",
     "FilesystemImmutableVault",
     "RestoreEvidence",

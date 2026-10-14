@@ -16,6 +16,7 @@ from appcare.backups import (
     FilesystemSourceError,
     FilesystemSourceLimits,
     LinuxFilesystemBackupSource,
+    filesystem_source_reference,
 )
 from appcare.revision import (
     BaselineEntry,
@@ -33,7 +34,12 @@ def _target(root: Path) -> BackupTarget:
         tenant_id="tenant-appcare-1",
         application_id="appcare-test-app",
         environment="test",
-        source_reference=root.as_posix(),
+        source_reference=filesystem_source_reference(
+            root,
+            tenant_id="tenant-appcare-1",
+            application_id="appcare-test-app",
+            target_reference="target-appcare-test",
+        ),
         target_reference="target-appcare-test",
     )
 
@@ -201,7 +207,12 @@ def test_snapshot_requires_at_least_one_safe_file_and_binds_target(tmp_path: Pat
                 "tenant-appcare-1",
                 "appcare-test-app",
                 "test",
-                (root / "other").as_posix(),
+                filesystem_source_reference(
+                    root / "other",
+                    tenant_id="tenant-appcare-1",
+                    application_id="appcare-test-app",
+                    target_reference="target-appcare-test",
+                ),
                 "target-appcare-test",
             )
         )
@@ -227,7 +238,12 @@ def test_revision_and_target_scope_are_required(tmp_path: Path) -> None:
                 "tenant-appcare-1",
                 "appcare-test-app",
                 "test",
-                root_a.as_posix(),
+                filesystem_source_reference(
+                    root_a,
+                    tenant_id="tenant-appcare-1",
+                    application_id="appcare-test-app",
+                    target_reference="other-target",
+                ),
                 "other-target",
             )
         )
