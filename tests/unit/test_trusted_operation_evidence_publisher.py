@@ -12,7 +12,6 @@ from typing import Any, cast
 
 import pytest
 
-import appcare.connectors.live_inventory_attestor as publisher_module
 from appcare.connectors.linux_ssh_contracts import (
     EvidenceClass,
     InventoryRecord,
@@ -299,7 +298,7 @@ def test_failed_atomic_publish_cleans_only_temporary_file(
     def fail_replace(_source: Path, _destination: Path) -> None:
         raise OSError("simulated rename failure")
 
-    monkeypatch.setattr(publisher_module.os, "replace", fail_replace)
+    monkeypatch.setattr(os, "replace", fail_replace)
     with pytest.raises(AttestorError):
         TrustedOperationEvidencePublisher(path).publish(_snapshot())
     assert not path.exists()
