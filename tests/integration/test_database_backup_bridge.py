@@ -33,7 +33,6 @@ from appcare.revision.contracts import (
     FilesystemBaseline,
 )
 
-
 STAMP = datetime(2026, 8, 29, tzinfo=UTC)
 HOST_KEY = b"p05-bridge-host-key"
 FINGERPRINT = "SHA256:" + base64.b64encode(hashlib.sha256(HOST_KEY).digest()).decode().rstrip("=")
