@@ -22,8 +22,8 @@ from typing import Literal, Protocol, cast
 
 from ..services.security import contains_credential_like, is_safe_credential_reference
 from .contracts import (
-    BackupBoundaryError,
     _FORBIDDEN_MARKERS,
+    BackupBoundaryError,
     validate_backup_id,
     validate_path_segment,
 )
@@ -600,7 +600,7 @@ def _tree_records(
     total = 0
     fwalk = cast(
         Callable[..., Iterator[tuple[str, list[str], list[str], int]]],
-        getattr(os, "fwalk"),
+        os.fwalk,
     )
     for directory, directories, files, directory_fd in fwalk(
         root, topdown=True, follow_symlinks=False
@@ -652,7 +652,6 @@ def _tree_records(
             total += metadata.st_size
     if set(actual) != set(expected):
         missing = set(expected) - set(actual)
-        extra = set(actual) - set(expected)
         code = "missing_entry" if missing else "extra_entry"
         raise FilesystemTreeRestoreError(
             "restored tree does not reconcile with manifest", code=code

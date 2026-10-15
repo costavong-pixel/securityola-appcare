@@ -6,9 +6,10 @@ import hashlib
 import json
 import os
 import stat
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Iterator, cast
+from typing import Any, cast
 
 import pytest
 
@@ -18,7 +19,6 @@ from appcare.backups import (
     FilesystemTreeRestoreError,
     FilesystemTreeRestorer,
 )
-
 
 POSIX_ONLY = pytest.mark.skipif(
     os.name != "posix", reason="P04 tree restore requires POSIX descriptor-relative APIs"
