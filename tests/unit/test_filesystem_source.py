@@ -177,9 +177,7 @@ def test_revision_and_target_scope_are_required(tmp_path: Path) -> None:
         source.capture(
             _target(
                 root_a,
-                source_reference=(
-                    "filesystem://tenant-appcare-1/appcare-test-app/other-source"
-                ),
+                source_reference=("filesystem://tenant-appcare-1/appcare-test-app/other-source"),
             )
         )
     with pytest.raises(FilesystemSourceError):
