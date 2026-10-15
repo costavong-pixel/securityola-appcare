@@ -121,6 +121,10 @@ class _SecretContentScanner:
         self._identifier = bytearray()
         self._identifier_overflow = False
         self._waiting_for_open = False
+        self._pending_comment_slash = False
+        self._line_comment = False
+        self._block_comment = False
+        self._block_comment_star = False
         self._in_define_call = False
         self._define_depth = 0
         self._quote: int | None = None
@@ -175,11 +179,35 @@ class _SecretContentScanner:
                 continue
 
             if self._waiting_for_open:
+                if self._line_comment:
+                    if byte in (ord("\r"), ord("\n")):
+                        self._line_comment = False
+                    index += 1
+                    continue
+                if self._block_comment:
+                    if self._block_comment_star and byte == ord("/"):
+                        self._block_comment = False
+                        self._block_comment_star = False
+                    else:
+                        self._block_comment_star = byte == ord("*")
+                    index += 1
+                    continue
+                if self._pending_comment_slash:
+                    self._pending_comment_slash = False
+                    if byte == ord("/"):
+                        self._line_comment = True
+                        index += 1
+                        continue
+                    if byte == ord("*"):
+                        self._block_comment = True
+                        self._block_comment_star = False
+                        index += 1
+                        continue
                 if byte in _WHITESPACE_BYTES:
                     index += 1
                     continue
-                self._waiting_for_open = False
                 if byte == ord("("):
+                    self._waiting_for_open = False
                     self._in_define_call = True
                     self._define_depth = 1
                     self._quote = None
@@ -188,6 +216,15 @@ class _SecretContentScanner:
                     index += 1
                     segment_start = index
                     continue
+                if byte == ord("/"):
+                    self._pending_comment_slash = True
+                    index += 1
+                    continue
+                if byte == ord("#"):
+                    self._line_comment = True
+                    index += 1
+                    continue
+                self._waiting_for_open = False
 
             if byte in _IDENTIFIER_BYTES:
                 if len(self._identifier) < len(b"define"):
@@ -212,6 +249,12 @@ class _SecretContentScanner:
                     continue
                 if byte in _WHITESPACE_BYTES:
                     self._waiting_for_open = True
+                elif byte == ord("/"):
+                    self._waiting_for_open = True
+                    self._pending_comment_slash = True
+                elif byte == ord("#"):
+                    self._waiting_for_open = True
+                    self._line_comment = True
             index += 1
 
         if self._in_define_call:

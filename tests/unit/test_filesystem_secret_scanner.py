@@ -23,6 +23,18 @@ def test_define_secret_identifier_split_across_chunk_boundary() -> None:
     assert _scan_in_chunks(content, chunk_size=7)
 
 
+def test_define_secret_name_with_comments_before_open_paren() -> None:
+    block_comment = b"<?php define /*" + b"comment" * 40 + b"*/ ('DB_PASSWORD', 'fixture-value');"
+    adjacent_comment = b"<?php define/* comment */('DB_PASSWORD', 'fixture-value');"
+    line_comment = b"<?php define // comment\n ('DB_PASSWORD', 'fixture-value');"
+    hash_comment = b"<?php define # comment\n ('DB_PASSWORD', 'fixture-value');"
+
+    assert _scan_in_chunks(block_comment, chunk_size=11)
+    assert _scan_in_chunks(adjacent_comment, chunk_size=5)
+    assert _scan_in_chunks(line_comment, chunk_size=9)
+    assert _scan_in_chunks(hash_comment, chunk_size=9)
+
+
 def test_non_secret_define_is_not_classified_by_define_scanner() -> None:
     content = b"<?php define('APP_ROOT', '/srv/app');"
 
