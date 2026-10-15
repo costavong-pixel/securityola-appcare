@@ -21,12 +21,16 @@ from appcare.revision import CapturedApplicationRevision, FilesystemBaselineCapt
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="Linux/POSIX source is required")
 
 
-def _target(root: Path) -> BackupTarget:
+def _target(
+    _root: Path,
+    *,
+    source_reference: str = "filesystem://tenant-appcare-1/appcare-test-app/target-appcare-test",
+) -> BackupTarget:
     return BackupTarget(
         tenant_id="tenant-appcare-1",
         application_id="appcare-test-app",
         environment="test",
-        source_reference=root.as_posix(),
+        source_reference=source_reference,
         target_reference="target-appcare-test",
     )
 
@@ -89,42 +93,50 @@ def test_streaming_file_chunks_are_bounded_and_identity_bound(tmp_path: Path) ->
     assert source.read_file(_target(root), entry) == payload
 
 
-def test_unsafe_entry_types_are_classified_without_following(tmp_path: Path) -> None:
+def test_post_baseline_symlink_is_rejected_without_following(tmp_path: Path) -> None:
     root = tmp_path / "site"
     root.mkdir()
     (root / "safe.txt").write_text("safe", encoding="utf-8")
+    source = _source(root)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "marker.txt").write_text("outside", encoding="utf-8")
     link = root / "escape"
     try:
-        link.symlink_to(tmp_path / "outside", target_is_directory=True)
+        link.symlink_to(outside, target_is_directory=True)
     except OSError:
         pytest.skip("symlink creation is unavailable")
 
-    entries = tuple(_source(root).iter_entries(_target(root)))
-
-    escaped = next(item for item in entries if item.relative_path == "escape")
-    assert escaped.entry_type is FilesystemEntryType.SYMLINK
-    assert escaped.classification is FilesystemEntryClass.SYMLINK_DENIED
+    with pytest.raises(FilesystemSourceError):
+        tuple(source.iter_entries(_target(root)))
+    assert (outside / "marker.txt").read_text(encoding="utf-8") == "outside"
 
 
-def test_hardlinks_and_oversized_files_are_not_read(tmp_path: Path) -> None:
+def test_oversized_files_are_not_read(tmp_path: Path) -> None:
     root = tmp_path / "site"
     root.mkdir()
-    original = root / "original.txt"
-    original.write_text("content", encoding="utf-8")
-    hardlink_created = True
-    try:
-        os.link(original, root / "linked.txt")
-    except OSError:
-        hardlink_created = False
     (root / "too-large.txt").write_text("12345", encoding="utf-8")
     source = _source(root, limits=FilesystemSourceLimits(max_file_bytes=4, max_total_bytes=100))
+
     entries = tuple(source.iter_entries(_target(root)))
 
     oversized = next(item for item in entries if item.relative_path == "too-large.txt")
     assert oversized.classification is FilesystemEntryClass.OVERSIZED_DENIED
-    if hardlink_created and os.name == "posix":
-        linked = next(item for item in entries if item.relative_path == "linked.txt")
-        assert linked.classification is FilesystemEntryClass.HARDLINK_DENIED
+
+
+def test_post_baseline_hardlink_is_rejected(tmp_path: Path) -> None:
+    root = tmp_path / "site"
+    root.mkdir()
+    original = root / "original.txt"
+    original.write_text("content", encoding="utf-8")
+    source = _source(root)
+    try:
+        os.link(original, root / "linked.txt")
+    except OSError:
+        pytest.skip("hardlink creation is unavailable")
+
+    with pytest.raises(FilesystemSourceError):
+        tuple(source.iter_entries(_target(root)))
 
 
 def test_snapshot_requires_at_least_one_safe_file_and_binds_target(tmp_path: Path) -> None:
@@ -153,9 +165,7 @@ def test_snapshot_requires_at_least_one_safe_file_and_binds_target(tmp_path: Pat
 
 def test_revision_and_target_scope_are_required(tmp_path: Path) -> None:
     root_a = tmp_path / "tenant-a"
-    root_b = tmp_path / "tenant-b"
     root_a.mkdir()
-    root_b.mkdir()
     revision = _revision(root_a)
 
     with pytest.raises(FilesystemSourceError, match="live filesystem revision"):
@@ -164,7 +174,14 @@ def test_revision_and_target_scope_are_required(tmp_path: Path) -> None:
     source = LinuxFilesystemBackupSource.for_fixture(revision)
 
     with pytest.raises(FilesystemSourceError):
-        source.capture(_target(root_b))
+        source.capture(
+            _target(
+                root_a,
+                source_reference=(
+                    "filesystem://tenant-appcare-1/appcare-test-app/other-source"
+                ),
+            )
+        )
     with pytest.raises(FilesystemSourceError):
         source.capture(
             BackupTarget(

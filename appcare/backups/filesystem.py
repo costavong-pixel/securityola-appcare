@@ -330,6 +330,10 @@ class LinuxFilesystemBackupSource:
         if revision._source_root_identity is None:
             raise FilesystemSourceError("filesystem revision lacks root identity")
         self.revision = revision
+        self.source_reference = (
+            f"filesystem://{revision.tenant_id}/{revision.application_id}/"
+            f"{revision.target_reference}"
+        )
         self._revision_entries = {entry.relative_path: entry for entry in revision.manifest}
         if os.name != "posix" or not hasattr(os, "fwalk") or not hasattr(os, "O_NOFOLLOW"):
             raise FilesystemSourceError("Linux/POSIX descriptor-relative source is required")
@@ -388,7 +392,7 @@ class LinuxFilesystemBackupSource:
             target.tenant_id != self.revision.tenant_id
             or target.application_id != self.revision.application_id
             or target.target_reference != self.revision.target_reference
-            or target.source_reference != self.root.as_posix()
+            or target.source_reference != self.source_reference
         ):
             raise FilesystemSourceError("backup target is not bound to the filesystem root")
 
@@ -685,7 +689,7 @@ class LinuxFilesystemBackupSource:
             _canonical_entry_bytes(entry).decode("utf-8") for entry in entries
         ).encode("utf-8")
         return FilesystemCapture(
-            root=self.root.as_posix(),
+            root=self.source_reference,
             root_device=self._root_identity[0],
             root_inode=self._root_identity[1],
             entries=tuple(entries),
