@@ -4,6 +4,8 @@ import base64
 import hashlib
 import json
 import os
+import tempfile
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -35,6 +37,20 @@ from appcare.readiness.contracts import ReadinessValidationError
 NOW = datetime(2026, 9, 4, 12, 0, tzinfo=UTC)
 KEY = b"broker-host-key"
 FINGERPRINT = "SHA256:" + base64.b64encode(hashlib.sha256(KEY).digest()).decode().rstrip("=")
+
+
+@pytest.fixture(name="tmp_path")
+def _trusted_tmp_path() -> Iterator[Path]:
+    """Keep evidence tests below a non-world-writable checkout ancestry."""
+
+    with tempfile.TemporaryDirectory(
+        prefix=".appcare-evidence-test-",
+        dir=Path.cwd(),
+    ) as directory:
+        path = Path(directory)
+        if os.name == "posix":
+            path.chmod(0o700)
+        yield path
 
 
 def _target(**changes: object) -> LinuxTarget:
