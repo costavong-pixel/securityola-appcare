@@ -156,7 +156,7 @@ def test_snapshot_requires_at_least_one_safe_file_and_binds_target(tmp_path: Pat
                 "tenant-appcare-1",
                 "appcare-test-app",
                 "test",
-                (root / "other").as_posix(),
+                "filesystem://tenant-appcare-1/appcare-test-app/other-source",
                 "target-appcare-test",
             )
         )
