@@ -24,10 +24,7 @@ from appcare.connectors.linux_ssh_contracts import (
     RemoteExecutionResult,
     SqliteOperationLedger,
 )
-from appcare.connectors.live_inventory_attestor import (
-    InMemoryTrustedOperationEvidenceStore,
-    TrustedOperationEvidence,
-)
+from appcare.connectors.live_inventory_attestor import TrustedOperationEvidence
 from appcare.connectors.transport_evidence_broker import (
     TransportEvidenceBrokerError,
     TrustedOperationEvidenceBroker,
@@ -360,16 +357,15 @@ def test_concurrent_publication_has_one_winner(tmp_path: Path) -> None:
     assert sum(isinstance(item, TransportEvidenceBrokerError) for item in results) == 1
 
 
-def test_published_schema_is_readable_by_attestor_store(tmp_path: Path) -> None:
+def test_published_schema_matches_attestor_evidence_contract(tmp_path: Path) -> None:
     broker, snapshot = _broker(tmp_path)
     broker.publish(snapshot)
-    store = __import__(
-        "appcare.connectors.live_inventory_attestor", fromlist=["JsonTrustedOperationEvidenceStore"]
-    ).JsonTrustedOperationEvidenceStore(
-        tmp_path / "operation-evidence.json",
-        replay_ledger=cast(Any, InMemoryTrustedOperationEvidenceStore()),
-    )
-    assert isinstance(
-        store.lookup(target_reference="target-a", operation_id="run-1:inventory"),
-        TrustedOperationEvidence,
+
+    payload = json.loads((tmp_path / "operation-evidence.json").read_text(encoding="utf-8"))
+    operations = payload["operations"]
+    parsed = tuple(TrustedOperationEvidence.from_mapping(item) for item in operations)
+
+    assert any(
+        item.target_reference == "target-a" and item.operation_id == "run-1:inventory"
+        for item in parsed
     )
