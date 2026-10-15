@@ -23,7 +23,6 @@ from appcare.connectors.linux_ssh_contracts import (
     SqliteOperationLedger,
 )
 from appcare.connectors.live_inventory_attestor import (
-    ATTESTOR_MAX_EVIDENCE_BYTES,
     SqliteAttestorReplayLedger,
     TrustedOperationEvidence,
 )
