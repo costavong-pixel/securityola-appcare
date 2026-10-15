@@ -11,7 +11,6 @@ import pytest
 from appcare.backups import (
     BackupTarget,
     FilesystemEntryClass,
-    FilesystemEntryType,
     FilesystemSourceError,
     FilesystemSourceLimits,
     LinuxFilesystemBackupSource,
