@@ -9,6 +9,15 @@ from .contracts import (
     RestoreTarget,
 )
 from .crypto import AesGcmEnvelopeEncryptor, EnvelopeEncryptionError
+from .filesystem import (
+    FilesystemCapture,
+    FilesystemEntry,
+    FilesystemEntryClass,
+    FilesystemEntryType,
+    FilesystemSourceError,
+    FilesystemSourceLimits,
+    LinuxFilesystemBackupSource,
+)
 from .models import (
     BackupArtifact,
     BackupComponent,
@@ -38,6 +47,16 @@ from .stores import (
     UnavailableCloudVault,
     VaultError,
 )
+from .streaming import (
+    ChunkedBackupArtifact,
+    ChunkedBackupLimits,
+    ChunkedBackupReader,
+    ChunkedBackupRequest,
+    ChunkedBackupWriter,
+    ChunkRecord,
+    StreamingBackupError,
+    StreamingBackupSource,
+)
 
 __all__ = [
     "AesGcmEnvelopeEncryptor",
@@ -64,6 +83,13 @@ __all__ = [
     "EncryptedEnvelope",
     "EnvelopeEncryptor",
     "EnvelopeEncryptionError",
+    "FilesystemCapture",
+    "FilesystemEntry",
+    "FilesystemEntryClass",
+    "FilesystemEntryType",
+    "FilesystemSourceError",
+    "FilesystemSourceLimits",
+    "LinuxFilesystemBackupSource",
     "InMemoryImmutableVault",
     "FilesystemImmutableVault",
     "RestoreEvidence",
@@ -72,4 +98,12 @@ __all__ = [
     "UnavailableCloudVault",
     "VaultError",
     "VaultReceipt",
+    "ChunkRecord",
+    "ChunkedBackupArtifact",
+    "ChunkedBackupLimits",
+    "ChunkedBackupReader",
+    "ChunkedBackupRequest",
+    "ChunkedBackupWriter",
+    "StreamingBackupError",
+    "StreamingBackupSource",
 ]
