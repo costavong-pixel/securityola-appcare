@@ -314,10 +314,9 @@ def test_symlink_unsafe_mode_and_size_boundaries_fail_closed(tmp_path: Path) -> 
                 evidence_path=unsafe_parent / "evidence.json",
             )
 
-    broker, snapshot = (
-        _broker(tmp_path / "bounded") if (tmp_path / "bounded").mkdir() is None else (None, None)
-    )
-    assert broker is not None and snapshot is not None
+    bounded_root = tmp_path / "bounded"
+    bounded_root.mkdir()
+    broker, snapshot = _broker(bounded_root)
     bounded = TrustedOperationEvidenceBroker(
         snapshot.target,
         operation_ledger=SqliteOperationLedger(tmp_path / "bounded-ledger.db"),
