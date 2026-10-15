@@ -305,14 +305,10 @@ class FilesystemImmutableVault:
         application_id: str,
         target_reference: str | None,
     ) -> BackupArtifact:
-        target_reference = self._require_target_reference(target_reference)
-        scope = _scope(backup_id, tenant_id, application_id, target_reference)
-        backup_id, tenant_id, application_id, target_reference = (
-            scope[2],
-            scope[0],
-            scope[1],
-            scope[3],
-        )
+        required_target_reference = self._require_target_reference(target_reference)
+        scope = _scope(backup_id, tenant_id, application_id, required_target_reference)
+        backup_id, tenant_id, application_id = scope[2], scope[0], scope[1]
+        target_reference = self._require_target_reference(scope[3])
         directory = self._artifact_dir(backup_id, tenant_id, application_id, target_reference)
         manifest_path = self._manifest_path(backup_id, tenant_id, application_id, target_reference)
         envelope_path = self._artifact_file(
