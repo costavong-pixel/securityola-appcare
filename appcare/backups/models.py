@@ -101,14 +101,17 @@ class BackupManifest:
         utc(self.source_captured_at)
 
     def as_dict(self) -> dict[str, object]:
+        target = {
+            "tenant_id": self.target.tenant_id,
+            "application_id": self.target.application_id,
+            "environment": self.target.environment,
+            "source_reference": self.target.source_reference,
+        }
+        if self.target.target_reference is not None:
+            target["target_reference"] = self.target.target_reference
         return {
             "backup_id": self.backup_id,
-            "target": {
-                "tenant_id": self.target.tenant_id,
-                "application_id": self.target.application_id,
-                "environment": self.target.environment,
-                "source_reference": self.target.source_reference,
-            },
+            "target": target,
             "destination": {
                 "provider": self.destination.provider,
                 "namespace": self.destination.namespace,
