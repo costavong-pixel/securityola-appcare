@@ -25,7 +25,7 @@ from appcare.connectors.linux_ssh_contracts import (
     SqliteOperationLedger,
 )
 from appcare.connectors.live_inventory_attestor import (
-    SqliteAttestorReplayLedger,
+    InMemoryTrustedOperationEvidenceStore,
     TrustedOperationEvidence,
 )
 from appcare.connectors.transport_evidence_broker import (
@@ -367,7 +367,7 @@ def test_published_schema_is_readable_by_attestor_store(tmp_path: Path) -> None:
         "appcare.connectors.live_inventory_attestor", fromlist=["JsonTrustedOperationEvidenceStore"]
     ).JsonTrustedOperationEvidenceStore(
         tmp_path / "operation-evidence.json",
-        replay_ledger=SqliteAttestorReplayLedger(tmp_path / "attestor-replay.db"),
+        replay_ledger=cast(Any, InMemoryTrustedOperationEvidenceStore()),
     )
     assert isinstance(
         store.lookup(target_reference="target-a", operation_id="run-1:inventory"),
