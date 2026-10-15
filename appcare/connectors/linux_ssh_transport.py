@@ -64,6 +64,7 @@ from .linux_ssh_contracts import (
     validate_operation_id,
     validate_string,
 )
+from .transport_evidence_broker import TrustedOperationEvidenceBroker
 
 DEFAULT_KNOWN_HOSTS_ROOT = Path("/var/lib/securityola/appcare/ssh/known_hosts")
 _ALLOWED_CUSTODY_ROOTS = tuple(
@@ -435,6 +436,7 @@ class LinuxSSHClient:
         operation_ledger: OperationLedger | None = None,
         command_registry: CommandRegistry | None = None,
         live_receipt_attestor: LiveReceiptAttestor | None = None,
+        live_evidence_broker: TrustedOperationEvidenceBroker | None = None,
     ) -> None:
         self.target = target
         self._credential_provider = credential_provider
@@ -445,6 +447,7 @@ class LinuxSSHClient:
         self._ledger = operation_ledger or InMemoryOperationLedger()
         self._commands = command_registry or CommandRegistry()
         self._live_receipt_attestor = live_receipt_attestor
+        self._live_evidence_broker = live_evidence_broker
         self._evidence_class = EvidenceClass.FIXTURE
 
     @classmethod
@@ -457,6 +460,7 @@ class LinuxSSHClient:
         limits: BoundedLimits | None = None,
         operation_ledger: OperationLedger | None = None,
         live_receipt_attestor: LiveReceiptAttestor | None = None,
+        live_evidence_broker: TrustedOperationEvidenceBroker | None = None,
     ) -> LinuxSSHClient:
         if (
             type(operation_ledger) is not SqliteOperationLedger
@@ -471,6 +475,22 @@ class LinuxSSHClient:
             live_receipt_attestor = RootControlledLiveReceiptAttestor()
         elif type(live_receipt_attestor) is not RootControlledLiveReceiptAttestor:
             raise HostKeyVerificationError("live SSH requires the root-controlled receipt attestor")
+        if live_evidence_broker is None:
+            try:
+                live_evidence_broker = TrustedOperationEvidenceBroker(
+                    target,
+                    operation_ledger=operation_ledger,
+                )
+            except (OSError, TypeError, ValueError) as exc:
+                raise HostKeyVerificationError(
+                    "live SSH requires the root-controlled operation evidence broker"
+                ) from exc
+        elif type(live_evidence_broker) is not TrustedOperationEvidenceBroker:
+            raise HostKeyVerificationError(
+                "live SSH requires the root-controlled operation evidence broker"
+            )
+        if live_evidence_broker.target != target:
+            raise HostKeyVerificationError("live evidence broker target does not match SSH target")
         runner = OpenSSHProcessRunner()
         client = cls(
             target,
@@ -481,6 +501,7 @@ class LinuxSSHClient:
             limits=limits,
             operation_ledger=operation_ledger,
             live_receipt_attestor=live_receipt_attestor,
+            live_evidence_broker=live_evidence_broker,
         )
         if not any(
             known_hosts_root == root or root in known_hosts_root.parents
@@ -649,6 +670,17 @@ class LinuxSSHClient:
     ) -> LinuxInventorySnapshot:
         if self._evidence_class is not EvidenceClass.REAL_TARGET:
             return snapshot
+        broker = self._live_evidence_broker
+        if broker is None:
+            raise HostKeyVerificationError(
+                "live inventory requires a root-controlled operation evidence broker"
+            )
+        try:
+            broker.publish(snapshot)
+        except (OSError, TypeError, ValueError) as exc:
+            raise HostKeyVerificationError(
+                "live inventory operation evidence publication failed"
+            ) from exc
         receipt_path = live_snapshot_receipt_path(self.target, operation_id)
         payload = _live_snapshot_receipt_payload(
             snapshot.target,
@@ -1147,7 +1179,7 @@ class LinuxSSHClient:
         stdout_bytes: int = 0,
         stderr_bytes: int = 0,
     ) -> RemoteExecutionResult:
-        return RemoteExecutionResult(
+        result = RemoteExecutionResult(
             operation_id=operation.operation_id,
             operation=operation.kind,
             tenant_id=self.target.tenant_id,
@@ -1160,6 +1192,9 @@ class LinuxSSHClient:
             stderr_bytes=stderr_bytes,
             evidence_class=self._evidence_class,
         )
+        if self._live_evidence_broker is not None:
+            self._live_evidence_broker._mark_transport_result(result)
+        return result
 
     def _validate_credential_handle(self, identity_file: str) -> None:
         path = Path(identity_file)

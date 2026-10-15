@@ -1218,6 +1218,7 @@ class RemoteExecutionResult:
     stderr_bytes: int = 0
     evidence_class: EvidenceClass = EvidenceClass.FIXTURE
     observed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    _transport_authority: object | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "operation_id", validate_operation_id(self.operation_id))

@@ -69,6 +69,9 @@ from .linux_ssh import (
     SqliteOperationLedger,
     StorageMetadataRead,
     TargetValidationError,
+    TransportEvidenceBroker,
+    TransportEvidenceBrokerError,
+    TrustedOperationEvidenceBroker,
     WebServerMetadataRead,
 )
 from .linux_ssh import (
@@ -198,6 +201,9 @@ __all__ = [
     "SqliteOperationLedger",
     "StorageMetadataRead",
     "TargetValidationError",
+    "TransportEvidenceBroker",
+    "TransportEvidenceBrokerError",
+    "TrustedOperationEvidenceBroker",
     "VaultCredentialProvider",
     "VaultCredentialRecord",
     "VaultCredentialStatus",

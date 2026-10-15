@@ -66,6 +66,11 @@ from .linux_ssh_transport import (
     VerifiedHostKey,
     verify_host_key,
 )
+from .transport_evidence_broker import (
+    TransportEvidenceBroker,
+    TransportEvidenceBrokerError,
+    TrustedOperationEvidenceBroker,
+)
 
 __all__ = [
     "ApplicationRootVerification",
@@ -115,6 +120,9 @@ __all__ = [
     "StorageMetadataRead",
     "SYSTEM_METADATA_PATHS",
     "TargetValidationError",
+    "TransportEvidenceBroker",
+    "TransportEvidenceBrokerError",
+    "TrustedOperationEvidenceBroker",
     "VerifiedHostKey",
     "WebServerMetadataRead",
     "join_approved_path",
