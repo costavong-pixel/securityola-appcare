@@ -94,14 +94,132 @@ _SECRET_CONTENT_PATTERNS: Final = (
     ),
     re.compile(rb"(?i)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"),
     re.compile(rb"(?i)\bAKIA[0-9A-Z]{16}\b"),
-    re.compile(
-        rb"(?is)\bdefine\s*\(\s*['\"][^'\"]*"
-        rb"(?:password|passwd|secret|token|api[_-]?key|private[_-]?key|"
-        rb"database[_-]?url)"
-        rb"[^'\"]*['\"]\s*,"
-    ),
 )
 _SECRET_SCAN_TAIL_BYTES: Final = 4096
+_DEFINE_SECRET_IDENTIFIER_PATTERN: Final = re.compile(
+    rb"(?i)(?:password|passwd|secret|token|api[_-]?key|private[_-]?key|"
+    rb"client[_-]?secret|database[_-]?url|authorization)"
+)
+_DEFINE_SECRET_TAIL_BYTES: Final = 12
+_IDENTIFIER_BYTES: Final = frozenset(
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_"
+)
+_WHITESPACE_BYTES: Final = frozenset(b" \t\r\n\f\v")
+
+
+class _SecretContentScanner:
+    """Scan bounded chunks, including long PHP ``define`` expressions.
+
+    The ordinary patterns use a fixed overlap. PHP define calls are parsed with
+    constant state so an arbitrarily long argument cannot move a secret-like
+    constant name beyond that overlap. A sensitive identifier anywhere inside
+    a define call is conservatively excluded.
+    """
+
+    def __init__(self) -> None:
+        self._tail = b""
+        self._identifier = bytearray()
+        self._identifier_overflow = False
+        self._waiting_for_open = False
+        self._in_define_call = False
+        self._define_depth = 0
+        self._quote: int | None = None
+        self._escaped = False
+        self._call_tail = b""
+        self._found = False
+
+    def feed(self, chunk: bytes) -> bool:
+        """Consume one bounded chunk and report whether it contains a secret."""
+
+        if self._found:
+            return True
+        window = self._tail + chunk
+        if any(pattern.search(window) for pattern in _SECRET_CONTENT_PATTERNS):
+            self._found = True
+            return True
+        self._found = self._scan_define_calls(chunk)
+        self._tail = window[-_SECRET_SCAN_TAIL_BYTES:]
+        return self._found
+
+    def _scan_define_calls(self, chunk: bytes) -> bool:
+        segment_start = 0
+        index = 0
+        while index < len(chunk):
+            byte = chunk[index]
+            if self._in_define_call:
+                if self._quote is not None:
+                    if self._escaped:
+                        self._escaped = False
+                    elif byte == ord("\\"):
+                        self._escaped = True
+                    elif byte == self._quote:
+                        self._quote = None
+                elif byte in (ord("'"), ord('"')):
+                    self._quote = byte
+                elif byte == ord("("):
+                    self._define_depth += 1
+                elif byte == ord(")"):
+                    self._define_depth -= 1
+                    if self._define_depth == 0:
+                        call_window = self._call_tail + chunk[segment_start:index]
+                        if _DEFINE_SECRET_IDENTIFIER_PATTERN.search(call_window):
+                            return True
+                        self._in_define_call = False
+                        self._quote = None
+                        self._escaped = False
+                        self._call_tail = b""
+                        index += 1
+                        segment_start = index
+                        continue
+                index += 1
+                continue
+
+            if self._waiting_for_open:
+                if byte in _WHITESPACE_BYTES:
+                    index += 1
+                    continue
+                self._waiting_for_open = False
+                if byte == ord("("):
+                    self._in_define_call = True
+                    self._define_depth = 1
+                    self._quote = None
+                    self._escaped = False
+                    self._call_tail = b""
+                    index += 1
+                    segment_start = index
+                    continue
+
+            if byte in _IDENTIFIER_BYTES:
+                if len(self._identifier) < len(b"define"):
+                    self._identifier.append(byte + 0x20 if ord("A") <= byte <= ord("Z") else byte)
+                else:
+                    self._identifier_overflow = True
+                index += 1
+                continue
+
+            is_define = not self._identifier_overflow and self._identifier == b"define"
+            self._identifier.clear()
+            self._identifier_overflow = False
+            if is_define:
+                if byte == ord("("):
+                    self._in_define_call = True
+                    self._define_depth = 1
+                    self._quote = None
+                    self._escaped = False
+                    self._call_tail = b""
+                    index += 1
+                    segment_start = index
+                    continue
+                if byte in _WHITESPACE_BYTES:
+                    self._waiting_for_open = True
+            index += 1
+
+        if self._in_define_call:
+            call_window = self._call_tail + chunk[segment_start:]
+            if _DEFINE_SECRET_IDENTIFIER_PATTERN.search(call_window):
+                return True
+            self._call_tail = call_window[-_DEFINE_SECRET_TAIL_BYTES:]
+        return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -637,17 +755,14 @@ class LinuxFilesystemBackupSource:
             _validate_file_identity(entry, before)
             if before.st_size > self.limits.max_file_bytes:
                 raise FilesystemSourceError("filesystem file exceeds size limit")
-            tail = b""
+            secret_scanner = _SecretContentScanner()
             contains_secret = False
             while True:
                 chunk = os.read(descriptor, self.limits.chunk_bytes)
                 if not chunk:
                     break
                 budget.account(len(chunk))
-                window = tail + chunk
-                if any(pattern.search(window) for pattern in _SECRET_CONTENT_PATTERNS):
-                    contains_secret = True
-                tail = window[-_SECRET_SCAN_TAIL_BYTES:]
+                contains_secret = secret_scanner.feed(chunk) or contains_secret
             after = os.fstat(descriptor)
             _validate_file_identity(entry, after)
             if before.st_size != budget.consumed_bytes:
@@ -674,7 +789,7 @@ class LinuxFilesystemBackupSource:
             if before.st_size > self.limits.max_file_bytes:
                 raise FilesystemSourceError("filesystem file exceeds size limit")
             content = bytearray()
-            tail = b""
+            secret_scanner = _SecretContentScanner()
             contains_secret = False
             while True:
                 chunk = os.read(
@@ -687,10 +802,7 @@ class LinuxFilesystemBackupSource:
                 content.extend(chunk)
                 if len(content) > self.limits.max_file_bytes:
                     raise FilesystemSourceError("filesystem file exceeds size limit")
-                window = tail + chunk
-                if any(pattern.search(window) for pattern in _SECRET_CONTENT_PATTERNS):
-                    contains_secret = True
-                tail = window[-_SECRET_SCAN_TAIL_BYTES:]
+                contains_secret = secret_scanner.feed(chunk) or contains_secret
             after = os.fstat(descriptor)
             _validate_file_identity(entry, after)
             if len(content) != before.st_size:
@@ -716,7 +828,7 @@ class LinuxFilesystemBackupSource:
                 raise FilesystemSourceError("filesystem file exceeds size limit")
             digest = hashlib.sha256()
             total = 0
-            tail = b""
+            secret_scanner = _SecretContentScanner()
             contains_secret = False
             while True:
                 chunk = os.read(descriptor, self.limits.chunk_bytes)
@@ -725,10 +837,7 @@ class LinuxFilesystemBackupSource:
                 budget.account(len(chunk))
                 digest.update(chunk)
                 total += len(chunk)
-                window = tail + chunk
-                if any(pattern.search(window) for pattern in _SECRET_CONTENT_PATTERNS):
-                    contains_secret = True
-                tail = window[-_SECRET_SCAN_TAIL_BYTES:]
+                contains_secret = secret_scanner.feed(chunk) or contains_secret
             after = os.fstat(descriptor)
             _validate_file_identity(entry, after)
             if total != before.st_size:

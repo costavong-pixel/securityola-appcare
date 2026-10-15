@@ -284,6 +284,32 @@ def test_structured_secret_is_excluded_even_when_filename_is_unremarkable(
     assert entry.sha256 is None
 
 
+def test_long_php_define_secret_is_excluded_across_chunk_windows(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "site"
+    root.mkdir()
+    secret_file = root / "notes.txt"
+    secret_file.write_bytes(
+        b"<?php define(" + b" " * 5000 + b"'DB_PASSWORD', 'fixture-secret-value');"
+    )
+    source = _source(root, limits=FilesystemSourceLimits(chunk_bytes=257))
+
+    capture = source.capture(_target(root))
+
+    entry = next(item for item in capture.entries if item.relative_path == "notes.txt")
+    assert entry.classification is FilesystemEntryClass.SECRET_EXCLUDED
+    assert entry.sha256 is None
+
+    raw_entry = next(
+        item for item in source.iter_entries(_target(root)) if item.relative_path == "notes.txt"
+    )
+    with pytest.raises(FilesystemSourceError, match="excluded secret"):
+        source.read_file(_target(root), raw_entry)
+    with pytest.raises(FilesystemSourceError, match="excluded secret"):
+        tuple(source.iter_file_chunks(_target(root), raw_entry))
+
+
 def test_secret_classification_reads_count_toward_capture_limit(tmp_path: Path) -> None:
     root = tmp_path / "site"
     root.mkdir()
