@@ -185,7 +185,7 @@ def test_revision_and_target_scope_are_required(tmp_path: Path) -> None:
                 "tenant-appcare-1",
                 "appcare-test-app",
                 "test",
-                root_a.as_posix(),
+                "filesystem://tenant-appcare-1/appcare-test-app/target-appcare-test",
                 "other-target",
             )
         )
