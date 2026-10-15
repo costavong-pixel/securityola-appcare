@@ -493,6 +493,13 @@ class LogicalDatabaseAdapter:
                     broker_result.reason_code,
                     broker=broker_result,
                 )
+                if output_path is not None:
+                    _safe_cleanup_file(output_path)
+                if job_path is not None:
+                    try:
+                        job_path.rmdir()
+                    except OSError:
+                        pass
                 self.ledger.complete(
                     scope=scope, idempotency_key=request.idempotency_key, outcome=result
                 )

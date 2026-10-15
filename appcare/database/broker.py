@@ -629,7 +629,7 @@ class SubprocessDatabaseBroker(DatabaseExecutionBroker):
         tmp_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         _validate_private_directory(tmp_root, field_name="database temporary root")
         broker_root = tmp_root / "database-broker"
-        broker_root.mkdir(mode=0o700, exist_ok=True)
+        broker_root.mkdir(mode=0o700, parents=True, exist_ok=True)
         _validate_private_directory(broker_root, field_name="database broker root")
         unique = hashlib.sha256(f"{target.target_reference}:{operation_id}".encode()).hexdigest()[
             :32
