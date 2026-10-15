@@ -198,6 +198,7 @@ def test_bridge_binds_dump_to_revision_and_canonical_artifact_path(tmp_path: Pat
 
     assert result.passed
     assert result.artifact is not None
+    assert result.artifact.filesystem is not None
     assert result.artifact.artifact_path == (
         result.artifact.filesystem.staging_path("bridge-job") / "database.sql"
     )
