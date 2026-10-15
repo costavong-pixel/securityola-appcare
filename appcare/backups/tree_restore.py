@@ -707,9 +707,15 @@ class FilesystemTreeRestorer:
                 )
             manifest, _manifest_bytes = _load_manifest(artifact, scope, filesystem, self.limits)
             entries, total_bytes = _validate_entries(manifest, self.limits)
-            root = filesystem.restore_rehearsal_path(
-                scope.tenant_id, scope.application_id, request.restore_job_id
-            )
+            try:
+                root = filesystem.restore_rehearsal_path(
+                    scope.tenant_id, scope.application_id, request.restore_job_id
+                )
+            except BackupBoundaryError as exc:
+                raise FilesystemTreeRestoreError(
+                    "restore target is already occupied or unsafe",
+                    code="restore_target_exists",
+                ) from exc
             root_fd = self._create_root(filesystem, scope, request.restore_job_id)
             root_created = True
             directories = sorted(
