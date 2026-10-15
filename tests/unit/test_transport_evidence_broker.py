@@ -12,11 +12,6 @@ from typing import Any, cast
 
 import pytest
 
-from appcare.connectors.live_inventory_attestor import (
-    ATTESTOR_MAX_EVIDENCE_BYTES,
-    SqliteAttestorReplayLedger,
-    TrustedOperationEvidence,
-)
 from appcare.connectors.linux_ssh_contracts import (
     EvidenceClass,
     InventoryRecord,
@@ -27,11 +22,16 @@ from appcare.connectors.linux_ssh_contracts import (
     RemoteExecutionResult,
     SqliteOperationLedger,
 )
-from appcare.readiness.contracts import ReadinessValidationError
+from appcare.connectors.live_inventory_attestor import (
+    ATTESTOR_MAX_EVIDENCE_BYTES,
+    SqliteAttestorReplayLedger,
+    TrustedOperationEvidence,
+)
 from appcare.connectors.transport_evidence_broker import (
     TransportEvidenceBrokerError,
     TrustedOperationEvidenceBroker,
 )
+from appcare.readiness.contracts import ReadinessValidationError
 
 NOW = datetime(2026, 9, 4, 12, 0, tzinfo=UTC)
 KEY = b"broker-host-key"

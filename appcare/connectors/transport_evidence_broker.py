@@ -13,18 +13,12 @@ import json
 import os
 import stat
 import threading
-from contextlib import contextmanager
 from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from datetime import UTC
 from pathlib import Path
 from typing import Final, cast
 
-from .live_inventory_attestor import (
-    ATTESTOR_EVIDENCE_PATH,
-    ATTESTOR_MAX_EVIDENCE_BYTES,
-    RootBinding,
-    TrustedOperationEvidence,
-)
 from .linux_ssh_contracts import (
     EvidenceClass,
     InventoryRecord,
@@ -37,6 +31,12 @@ from .linux_ssh_contracts import (
     _live_transport_run_id,
     required_inventory_records_complete,
     validate_operation_id,
+)
+from .live_inventory_attestor import (
+    ATTESTOR_EVIDENCE_PATH,
+    ATTESTOR_MAX_EVIDENCE_BYTES,
+    RootBinding,
+    TrustedOperationEvidence,
 )
 
 _EVIDENCE_SCHEMA_VERSION: Final = 1
