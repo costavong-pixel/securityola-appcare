@@ -141,7 +141,7 @@ class _DumpBroker:
 
     def run(
         self,
-        operation: object,
+        operation: Any,
         *,
         target: DatabaseTarget,
         output_path: Path | None = None,

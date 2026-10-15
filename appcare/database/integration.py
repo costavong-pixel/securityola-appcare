@@ -27,6 +27,7 @@ from .contracts import (
     DatabaseArtifactError,
     DatabaseDumpArtifact,
     DatabaseDumpRequest,
+    DatabaseDumpResult,
     DatabaseKind,
     DatabaseOperationStatus,
     DatabaseRestoreEvidence,
@@ -198,7 +199,7 @@ class ApplicationDatabaseBackupBridge:
         job_id: str,
         now: datetime | None = None,
         cancel_event: object | None = None,
-    ):
+    ) -> DatabaseDumpResult:
         context.validate()
         requested_at = now or datetime.now(UTC)
         revision = context.revision
