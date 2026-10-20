@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import os
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+import appcare.backups.filesystem as filesystem
 from appcare.backups import (
     BackupTarget,
     FilesystemEntryClass,
@@ -315,15 +317,19 @@ def test_secret_classification_reads_count_toward_capture_limit(tmp_path: Path) 
     root.mkdir()
     secret_file = root / "notes.txt"
     secret_file.write_bytes(b"x" * 64 + b" password=fixture-secret-value")
+    (root / "public.txt").write_bytes(b"public" * 10)
+    (root / "other.txt").write_bytes(b"public" * 20)
     source = _source(
         root,
         limits=FilesystemSourceLimits(
             max_file_bytes=256,
-            max_total_bytes=90,
+            max_total_bytes=256,
             chunk_bytes=17,
         ),
     )
 
+    # Each file is individually below the cap; classification I/O, including
+    # excluded content, must consume the shared aggregate budget.
     with pytest.raises(FilesystemSourceError, match="total size limit"):
         source.capture(_target(root))
 
@@ -353,3 +359,187 @@ def test_root_rename_is_rejected_after_source_is_open(tmp_path: Path) -> None:
 
     with pytest.raises(FilesystemSourceError):
         tuple(source.iter_entries(_target(root)))
+
+
+@pytest.mark.parametrize("operation", ["read", "stream", "snapshot", "capture"])
+def test_all_content_paths_enforce_baseline_digest_with_fresh_metadata(
+    tmp_path: Path, operation: str
+) -> None:
+    root = tmp_path / "site"
+    root.mkdir()
+    path = root / "public.txt"
+    path.write_bytes(b"AAAA")
+    with _source(root) as source:
+        path.write_bytes(b"BBBB")
+        # Get a new entry after mutation, so stale timestamps cannot be the
+        # reason for rejection. Size, permissions and identity still match.
+        entries = tuple(source.iter_entries(_target(root)))
+        entry = next(item for item in entries if item.relative_path == path.name)
+        with pytest.raises(FilesystemSourceError, match="content differs from captured revision"):
+            if operation == "read":
+                source.read_file(_target(root), entry)
+            elif operation == "stream":
+                next(source.iter_file_chunks(_target(root), entry))
+            elif operation == "snapshot":
+                source.snapshot(_target(root))
+            else:
+                source.capture(_target(root))
+
+
+def test_baseline_secret_exclusion_is_monotonic_even_for_unremarkable_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "site"
+    root.mkdir()
+    (root / "notes.txt").write_bytes(b"private fixture")
+    (root / "public.txt").write_bytes(b"public fixture")
+    baseline = FilesystemBaselineCapturer().capture(root)
+    baseline = replace(
+        baseline,
+        entries=tuple(
+            replace(entry, classification="excluded-secret", sha256=None)
+            if entry.relative_path == "notes.txt"
+            else entry
+            for entry in baseline.entries
+        ),
+    )
+    revision = CapturedApplicationRevision.from_filesystem_baseline(
+        baseline,
+        tenant_id="tenant-appcare-1",
+        application_id="appcare-test-app",
+        target_reference="target-appcare-test",
+        host_identity="slab-prompt-ola",
+        captured_at=datetime(2026, 9, 3, 12, 0, tzinfo=UTC),
+    )
+    real_open = filesystem._open_relative_regular_file
+    opened: list[str] = []
+
+    def track_open(root_fd: int, relative_path: str) -> int:
+        opened.append(relative_path)
+        assert relative_path != "notes.txt"
+        return real_open(root_fd, relative_path)
+
+    monkeypatch.setattr(filesystem, "_open_relative_regular_file", track_open)
+    with LinuxFilesystemBackupSource.for_fixture(revision) as source:
+        entries = tuple(source.iter_entries(_target(root)))
+        excluded = next(item for item in entries if item.relative_path == "notes.txt")
+        assert excluded.classification is FilesystemEntryClass.SECRET_EXCLUDED
+        capture = source.capture(_target(root))
+        assert next(e for e in capture.entries if e.relative_path == "notes.txt") == excluded
+        assert [component.payload for component in source.snapshot(_target(root))] == [
+            b"public fixture"
+        ]
+        forged = replace(excluded, classification=FilesystemEntryClass.SAFE_FILE)
+        with pytest.raises(FilesystemSourceError, match="excluded secret"):
+            source.read_file(_target(root), forged)
+        with pytest.raises(FilesystemSourceError, match="excluded secret"):
+            next(source.iter_file_chunks(_target(root), forged))
+    assert opened == ["public.txt", "public.txt"]
+
+
+@pytest.mark.parametrize("mutation_point", ["rewind", "after-first-block"])
+def test_stream_mutation_never_releases_unchecked_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation_point: str
+) -> None:
+    root = tmp_path / "site"
+    root.mkdir()
+    block_size = 64 * 1024
+    original = b"A" * (block_size * 2)
+    path = root / "public.txt"
+    path.write_bytes(original)
+    with _source(root, limits=FilesystemSourceLimits(chunk_bytes=block_size)) as source:
+        entry = next(e for e in source.iter_entries(_target(root)) if e.relative_path == path.name)
+        captured_stat = path.stat()
+        real_fstat = os.fstat
+        real_lseek = os.lseek
+
+        def hide_timestamp_changes(descriptor: int) -> os.stat_result:
+            metadata = real_fstat(descriptor)
+            return captured_stat if metadata.st_ino == captured_stat.st_ino else metadata
+
+        def mutate() -> None:
+            with path.open("r+b") as stream:
+                if mutation_point == "after-first-block":
+                    stream.seek(block_size)
+                stream.write(b"password=fixture-value".ljust(block_size, b"B"))
+
+        def rewind_and_mutate(descriptor: int, offset: int, whence: int) -> int:
+            result = real_lseek(descriptor, offset, whence)
+            if mutation_point == "rewind":
+                mutate()
+            return result
+
+        monkeypatch.setattr(os, "fstat", hide_timestamp_changes)
+        monkeypatch.setattr(os, "lseek", rewind_and_mutate)
+        emitted: list[bytes] = []
+        stream = source.iter_file_chunks(_target(root), entry)
+        if mutation_point == "after-first-block":
+            emitted.append(next(stream))
+            mutate()
+        with pytest.raises(FilesystemSourceError, match="content changed during streaming"):
+            emitted.append(next(stream))
+        assert emitted == ([] if mutation_point == "rewind" else [original[:block_size]])
+
+
+def test_fifo_replacement_is_rejected_without_blocking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "site"
+    root.mkdir()
+    path = root / "public.txt"
+    path.write_bytes(b"public")
+    with _source(root) as source:
+        entry = next(e for e in source.iter_entries(_target(root)) if e.relative_path == path.name)
+        real_open = os.open
+        replaced = False
+
+        def replace_with_fifo(
+            name: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+            flags: int,
+            mode: int = 0o777,
+            *,
+            dir_fd: int | None = None,
+        ) -> int:
+            nonlocal replaced
+            if name == path.name and dir_fd is not None and not replaced:
+                # Assert before an unsafe open could hang CI.
+                assert flags & getattr(os, "O_NONBLOCK")  # noqa: B009
+                path.unlink()
+                getattr(os, "mkfifo")(path)  # noqa: B009
+                replaced = True
+            return real_open(name, flags, mode, dir_fd=dir_fd)
+
+        monkeypatch.setattr(os, "open", replace_with_fifo)
+        with pytest.raises(FilesystemSourceError, match="stable regular file"):
+            source.read_file(_target(root), entry)
+        assert replaced
+
+
+def test_file_directory_and_dangling_symlinks_match_baseline(tmp_path: Path) -> None:
+    root = tmp_path / "site"
+    root.mkdir()
+    (root / "public.txt").write_bytes(b"public")
+    (root / "assets").mkdir()
+    for name, target in [
+        ("file-link", "public.txt"),
+        ("dir-link", "assets"),
+        ("dangling", "absent"),
+    ]:
+        (root / name).symlink_to(target)
+    with _source(root) as source:
+        capture = source.capture(_target(root))
+    symlinks = [e for e in capture.entries if e.entry_type is FilesystemEntryType.SYMLINK]
+    assert {e.relative_path for e in symlinks} == {"file-link", "dir-link", "dangling"}
+    assert all(e.classification is FilesystemEntryClass.SYMLINK_DENIED for e in symlinks)
+    assert all(e.size_bytes == 0 and e.sha256 is None for e in symlinks)
+
+
+def test_directory_entry_limit_is_global_across_subdirectories(tmp_path: Path) -> None:
+    root = tmp_path / "site"
+    root.mkdir()
+    for name in ("one", "two"):
+        (root / name).mkdir()
+        (root / name / "public.txt").write_bytes(b"public")
+    with _source(root, limits=FilesystemSourceLimits(max_entries=4)) as source:
+        with pytest.raises(FilesystemSourceError, match="entry limit"):
+            tuple(source.iter_entries(_target(root)))

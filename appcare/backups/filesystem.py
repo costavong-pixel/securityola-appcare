@@ -17,9 +17,9 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import Final, cast
+from typing import Final
 
-from ..revision import CapturedApplicationRevision, EvidenceClass
+from ..revision import CapturedApplicationRevision, EvidenceClass, is_secret_path_name
 from .contracts import BackupBoundaryError, BackupTarget, validate_path_segment
 from .models import BackupComponent
 from .paths import validate_read_only_source
@@ -52,27 +52,6 @@ _MAX_FILE_BYTES: Final = 1 * 1024 * 1024 * 1024
 _MAX_TOTAL_BYTES: Final = 2 * 1024 * 1024 * 1024
 _MAX_CHUNK_BYTES: Final = 8 * 1024 * 1024
 _MAX_SYMLINK_BYTES: Final = 4096
-_SECRET_NAMES: Final = frozenset(
-    {
-        ".env",
-        ".env.local",
-        ".env.production",
-        ".env.staging",
-        "authorized_keys",
-        "credentials",
-        "credentials.json",
-        "id_ed25519",
-        "id_rsa",
-        "private.key",
-        "secret",
-        "secrets",
-        "secrets.json",
-        "settings.php",
-        "config.php",
-        "wp-config.php",
-    }
-)
-_SECRET_SUFFIXES: Final = (".pem", ".p12", ".pfx", ".key")
 _SECRET_DIRECTORY_NAMES: Final = frozenset({".ssh", "secrets", "credentials"})
 _CONFIG_SUFFIXES: Final = (
     ".cfg",
@@ -86,12 +65,6 @@ _CONFIG_SUFFIXES: Final = (
     ".yml",
 )
 _SECRET_CONTENT_PATTERNS: Final = (
-    re.compile(
-        rb"(?i)(?:[a-z0-9_.-]*[_-])?(?:password|passwd|secret|token|"
-        rb"api[_-]?key|private[_-]?key|client[_-]?secret|database[_-]?url|"
-        rb"authorization)"
-        rb"\s*['\"]?\s*(?:[:=]|=>)\s*['\"]?[^'\"\r\n,}\)]{1,4096}"
-    ),
     re.compile(rb"(?i)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"),
     re.compile(rb"(?i)\bAKIA[0-9A-Z]{16}\b"),
 )
@@ -105,15 +78,16 @@ _IDENTIFIER_BYTES: Final = frozenset(
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_"
 )
 _WHITESPACE_BYTES: Final = frozenset(b" \t\r\n\f\v")
+_WHITESPACE_PATTERN: Final = re.compile(rb"\s*")
+_VALUE_TERMINATORS: Final = frozenset(b"'\"\r\n,})")
+_STREAM_VALIDATION_BYTES: Final = 64 * 1024
 
 
 class _SecretContentScanner:
     """Scan bounded chunks, including long PHP ``define`` expressions.
 
-    The ordinary patterns use a fixed overlap. PHP define calls are parsed with
-    constant state so an arbitrarily long argument cannot move a secret-like
-    constant name beyond that overlap. A sensitive identifier anywhere inside
-    a define call is conservatively excluded.
+    Assignments and PHP define calls retain constant parser state, including
+    across arbitrarily long whitespace. Fixed-width markers use an overlap.
     """
 
     def __init__(self) -> None:
@@ -131,6 +105,9 @@ class _SecretContentScanner:
         self._escaped = False
         self._call_tail = b""
         self._found = False
+        self._assignment_tail = b""
+        self._assignment_state = 0
+        self._assignment_arrow_possible = False
 
     def feed(self, chunk: bytes) -> bool:
         """Consume one bounded chunk and report whether it contains a secret."""
@@ -141,9 +118,48 @@ class _SecretContentScanner:
         if any(pattern.search(window) for pattern in _SECRET_CONTENT_PATTERNS):
             self._found = True
             return True
-        self._found = self._scan_define_calls(chunk)
+        self._found = self._scan_assignments(chunk) or self._scan_define_calls(chunk)
         self._tail = window[-_SECRET_SCAN_TAIL_BYTES:]
         return self._found
+
+    def _scan_assignments(self, chunk: bytes) -> bool:
+        window = self._assignment_tail + chunk
+        self._assignment_tail = b""
+        index = 0
+        while index < len(window):
+            if self._assignment_state == 0:
+                match = _DEFINE_SECRET_IDENTIFIER_PATTERN.search(window, index)
+                if match is None:
+                    self._assignment_tail = window[-_DEFINE_SECRET_TAIL_BYTES:]
+                    return False
+                index = match.end()
+                self._assignment_state = 1
+            whitespace = _WHITESPACE_PATTERN.match(window, index)
+            assert whitespace is not None
+            index = whitespace.end()
+            if index == len(window):
+                return False
+            byte = window[index]
+            if self._assignment_state == 1 and byte in (ord("'"), ord('"')):
+                self._assignment_state = 2
+            elif self._assignment_state in (1, 2) and byte in (ord(":"), ord("=")):
+                self._assignment_state = 3
+                self._assignment_arrow_possible = byte == ord("=")
+            elif (
+                self._assignment_state == 3 and byte == ord(">") and self._assignment_arrow_possible
+            ):
+                self._assignment_arrow_possible = False
+            elif self._assignment_state == 3 and byte in (ord("'"), ord('"')):
+                self._assignment_state = 4
+                self._assignment_arrow_possible = False
+            elif self._assignment_state in (3, 4) and byte not in _VALUE_TERMINATORS:
+                return True
+            else:
+                self._assignment_state = 0
+                self._assignment_arrow_possible = False
+                continue
+            index += 1
+        return False
 
     def _scan_define_calls(self, chunk: bytes) -> bool:
         segment_start = 0
@@ -158,6 +174,8 @@ class _SecretContentScanner:
                         self._escaped = True
                     elif byte == self._quote:
                         self._quote = None
+                elif self._consume_comment(byte):
+                    pass
                 elif byte in (ord("'"), ord('"')):
                     self._quote = byte
                 elif byte == ord("("):
@@ -179,30 +197,9 @@ class _SecretContentScanner:
                 continue
 
             if self._waiting_for_open:
-                if self._line_comment:
-                    if byte in (ord("\r"), ord("\n")):
-                        self._line_comment = False
+                if self._consume_comment(byte):
                     index += 1
                     continue
-                if self._block_comment:
-                    if self._block_comment_star and byte == ord("/"):
-                        self._block_comment = False
-                        self._block_comment_star = False
-                    else:
-                        self._block_comment_star = byte == ord("*")
-                    index += 1
-                    continue
-                if self._pending_comment_slash:
-                    self._pending_comment_slash = False
-                    if byte == ord("/"):
-                        self._line_comment = True
-                        index += 1
-                        continue
-                    if byte == ord("*"):
-                        self._block_comment = True
-                        self._block_comment_star = False
-                        index += 1
-                        continue
                 if byte in _WHITESPACE_BYTES:
                     index += 1
                     continue
@@ -215,14 +212,6 @@ class _SecretContentScanner:
                     self._call_tail = b""
                     index += 1
                     segment_start = index
-                    continue
-                if byte == ord("/"):
-                    self._pending_comment_slash = True
-                    index += 1
-                    continue
-                if byte == ord("#"):
-                    self._line_comment = True
-                    index += 1
                     continue
                 self._waiting_for_open = False
 
@@ -262,6 +251,37 @@ class _SecretContentScanner:
             if _DEFINE_SECRET_IDENTIFIER_PATTERN.search(call_window):
                 return True
             self._call_tail = call_window[-_DEFINE_SECRET_TAIL_BYTES:]
+        return False
+
+    def _consume_comment(self, byte: int) -> bool:
+        """Ignore comment punctuation for call structure, retaining chunk state."""
+
+        if self._line_comment:
+            if byte in (ord("\r"), ord("\n")):
+                self._line_comment = False
+            return True
+        if self._block_comment:
+            if self._block_comment_star and byte == ord("/"):
+                self._block_comment = False
+                self._block_comment_star = False
+            else:
+                self._block_comment_star = byte == ord("*")
+            return True
+        if self._pending_comment_slash:
+            self._pending_comment_slash = False
+            if byte == ord("/"):
+                self._line_comment = True
+                return True
+            if byte == ord("*"):
+                self._block_comment = True
+                self._block_comment_star = False
+                return True
+        if byte == ord("/"):
+            self._pending_comment_slash = True
+            return True
+        if byte == ord("#"):
+            self._line_comment = True
+            return True
         return False
 
 
@@ -396,15 +416,6 @@ def _validate_relative_path(value: str) -> str:
     return value
 
 
-def _relative(root: Path, path: str | Path) -> str:
-    candidate = Path(path)
-    try:
-        relative = candidate.relative_to(root)
-    except ValueError as exc:
-        raise FilesystemSourceError("filesystem entry escaped source root") from exc
-    return relative.as_posix() if relative.parts else "."
-
-
 def filesystem_source_reference(
     root: Path,
     *,
@@ -435,11 +446,8 @@ def filesystem_source_reference(
 def _is_secret_path(relative_path: str) -> bool:
     parts = PurePosixPath(relative_path).parts
     lowered = tuple(part.casefold() for part in parts)
-    name = lowered[-1]
-    return (
-        name in _SECRET_NAMES
-        or name.endswith(_SECRET_SUFFIXES)
-        or any(part in _SECRET_DIRECTORY_NAMES for part in lowered[:-1])
+    return any(is_secret_path_name(part) for part in lowered) or any(
+        part in _SECRET_DIRECTORY_NAMES for part in lowered[:-1]
     )
 
 
@@ -532,7 +540,9 @@ class LinuxFilesystemBackupSource:
             raise FilesystemSourceError("filesystem revision lacks root identity")
         self.revision = revision
         self._revision_entries = {entry.relative_path: entry for entry in revision.manifest}
-        if os.name != "posix" or not hasattr(os, "fwalk") or not hasattr(os, "O_NOFOLLOW"):
+        if os.name != "posix" or not all(
+            hasattr(os, name) for name in ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")
+        ):
             raise FilesystemSourceError("Linux/POSIX descriptor-relative source is required")
         self.root = validate_read_only_source(Path(revision.approved_root))
         if self.root.is_symlink():
@@ -558,10 +568,10 @@ class LinuxFilesystemBackupSource:
             held = os.fstat(self._root_fd)
         except OSError as exc:
             if hasattr(self, "_root_fd"):
-                os.close(self._root_fd)
+                self.close()
             raise FilesystemSourceError("filesystem source root cannot be held safely") from exc
         if not stat.S_ISDIR(held.st_mode) or (held.st_dev, held.st_ino) != self._root_identity:
-            os.close(self._root_fd)
+            self.close()
             raise FilesystemSourceError("filesystem source root identity is unstable")
 
     def close(self) -> None:
@@ -630,11 +640,7 @@ class LinuxFilesystemBackupSource:
         seen_paths = {root_entry.relative_path}
         yield root_entry
         yielded += 1
-        if hasattr(os, "fwalk") and os.name == "posix":
-            iterator = self._iter_posix_entries()
-        else:
-            iterator = self._iter_portable_entries()
-        for entry in iterator:
+        for entry in self._iter_posix_entries():
             self._validate_revision_entry(entry)
             seen_paths.add(entry.relative_path)
             yielded += 1
@@ -660,106 +666,82 @@ class LinuxFilesystemBackupSource:
             raise FilesystemSourceError("filesystem metadata differs from captured revision")
 
     def _iter_posix_entries(self) -> Iterator[FilesystemEntry]:
-        fwalk = cast(
-            Callable[..., Iterator[tuple[str, list[str], list[str], int]]],
-            getattr(os, "fwalk"),  # noqa: B009
-        )
-        for directory, directories, files, directory_fd in fwalk(
-            ".",
-            topdown=True,
-            follow_symlinks=False,
-            dir_fd=self._root_fd,
-        ):
-            directory_relative = (
-                "" if directory in {"", "."} else PurePosixPath(directory).as_posix()
-            )
-            directories.sort()
-            files.sort()
-            for name in tuple(directories):
-                relative_path = name if not directory_relative else f"{directory_relative}/{name}"
-                metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-                if stat.S_ISLNK(metadata.st_mode):
-                    directories.remove(name)
-                    yield _entry_from_stat(
-                        relative_path,
-                        metadata,
-                        entry_type=FilesystemEntryType.SYMLINK,
-                        classification=FilesystemEntryClass.SYMLINK_DENIED,
-                        symlink_target=_readlink_at(directory_fd, name),
-                    )
-                    continue
-                if not stat.S_ISDIR(metadata.st_mode):
-                    directories.remove(name)
-                    yield _entry_from_stat(
-                        relative_path,
-                        metadata,
-                        entry_type=FilesystemEntryType.SPECIAL,
-                        classification=FilesystemEntryClass.SPECIAL_FILE_DENIED,
-                    )
-                elif _is_secret_path(relative_path):
-                    directories.remove(name)
-                    yield _entry_from_stat(
-                        relative_path,
-                        metadata,
-                        entry_type=FilesystemEntryType.DIRECTORY,
-                        classification=FilesystemEntryClass.SECRET_EXCLUDED,
-                    )
-                else:
-                    yield _entry_from_stat(
-                        relative_path,
-                        metadata,
+        # Reserve the global entry budget as names arrive, before sorting or
+        # materializing a directory. fwalk/scandir sorting alone is unbounded.
+        pending: list[tuple[str, FilesystemEntry | None]] = [(".", None)]
+        discovered = 1
+        while pending:
+            directory, expected = pending.pop()
+            directory_fd = _open_relative_directory(self._root_fd, directory)
+            try:
+                before = os.fstat(directory_fd)
+                if (
+                    expected is not None
+                    and _entry_from_stat(
+                        directory,
+                        before,
                         entry_type=FilesystemEntryType.DIRECTORY,
                         classification=FilesystemEntryClass.SAFE_DIRECTORY,
                     )
-            for name in files:
-                relative_path = name if not directory_relative else f"{directory_relative}/{name}"
-                metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-                yield self._classify_metadata(relative_path, metadata, directory_fd, name)
-
-    def _iter_portable_entries(self) -> Iterator[FilesystemEntry]:
-        pending = [self.root]
-        while pending:
-            directory = pending.pop()
-            children = sorted(os.scandir(directory), key=lambda item: item.name)
-            for child in children:
-                relative_path = _relative(self.root, child.path)
-                metadata = child.stat(follow_symlinks=False)
-                if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
-                    if _is_secret_path(relative_path):
+                    != expected
+                ):
+                    raise FilesystemSourceError("filesystem directory changed during capture")
+                names: list[str] = []
+                with os.scandir(directory_fd) as children:
+                    for child in children:
+                        if discovered >= self.limits.max_entries:
+                            raise FilesystemSourceError("filesystem entry limit exceeded")
+                        discovered += 1
+                        names.append(child.name)
+                names.sort(key=os.fsencode)
+                for name in names:
+                    relative_path = name if directory == "." else f"{directory}/{name}"
+                    metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                    if stat.S_ISLNK(metadata.st_mode):
                         yield _entry_from_stat(
                             relative_path,
                             metadata,
-                            entry_type=FilesystemEntryType.DIRECTORY,
-                            classification=FilesystemEntryClass.SECRET_EXCLUDED,
+                            entry_type=FilesystemEntryType.SYMLINK,
+                            classification=FilesystemEntryClass.SYMLINK_DENIED,
+                            symlink_target=_readlink_at(directory_fd, name),
                         )
-                        continue
-                    pending.append(Path(child.path))
-                    yield _entry_from_stat(
-                        relative_path,
-                        metadata,
-                        entry_type=FilesystemEntryType.DIRECTORY,
-                        classification=FilesystemEntryClass.SAFE_DIRECTORY,
-                    )
-                elif stat.S_ISLNK(metadata.st_mode):
-                    yield _entry_from_stat(
-                        relative_path,
-                        metadata,
-                        entry_type=FilesystemEntryType.SYMLINK,
-                        classification=FilesystemEntryClass.SYMLINK_DENIED,
-                        symlink_target=os.readlink(child.path),
-                    )
-                else:
-                    yield self._classify_metadata(
-                        relative_path, metadata, None, child.name, directory
-                    )
+                    elif stat.S_ISDIR(metadata.st_mode):
+                        excluded = _is_secret_path(relative_path) or self._baseline_excludes_secret(
+                            relative_path
+                        )
+                        entry = _entry_from_stat(
+                            relative_path,
+                            metadata,
+                            entry_type=FilesystemEntryType.DIRECTORY,
+                            classification=(
+                                FilesystemEntryClass.SECRET_EXCLUDED
+                                if excluded
+                                else FilesystemEntryClass.SAFE_DIRECTORY
+                            ),
+                        )
+                        if not excluded:
+                            pending.append((relative_path, entry))
+                        yield entry
+                    else:
+                        yield self._classify_metadata(relative_path, metadata)
+                if _stat_identity(before) != _stat_identity(os.fstat(directory_fd)):
+                    raise FilesystemSourceError("filesystem directory changed during capture")
+            except OSError as exc:
+                raise FilesystemSourceError("filesystem directory cannot be read safely") from exc
+            finally:
+                os.close(directory_fd)
+
+    def _baseline_excludes_secret(self, relative_path: str) -> bool:
+        baseline = self._revision_entries.get(relative_path)
+        return baseline is not None and baseline.classification in {
+            "excluded-secret",
+            "excluded-secret-tree",
+        }
 
     def _classify_metadata(
         self,
         relative_path: str,
         metadata: os.stat_result,
-        directory_fd: int | None,
-        name: str,
-        directory: Path | None = None,
     ) -> FilesystemEntry:
         if not stat.S_ISREG(metadata.st_mode):
             return _entry_from_stat(
@@ -770,7 +752,7 @@ class LinuxFilesystemBackupSource:
             )
         if os.name == "posix" and metadata.st_nlink > 1:
             classification = FilesystemEntryClass.HARDLINK_DENIED
-        elif _is_secret_path(relative_path):
+        elif _is_secret_path(relative_path) or self._baseline_excludes_secret(relative_path):
             classification = FilesystemEntryClass.SECRET_EXCLUDED
         elif _is_config_path(relative_path):
             classification = FilesystemEntryClass.CONFIG_METADATA_ONLY
@@ -785,34 +767,61 @@ class LinuxFilesystemBackupSource:
             classification=classification,
         )
 
-    def _contains_secret(self, target: BackupTarget, entry: FilesystemEntry) -> bool:
-        """Bound the preflight scan used before yielding streaming chunks."""
-
+    def _validate_readable_entry(self, target: BackupTarget, entry: FilesystemEntry) -> None:
         self._validate_target(target)
-        if entry.classification is not FilesystemEntryClass.SAFE_FILE:
-            return False
-        descriptor = _open_relative_regular_file(self._root_fd, entry.relative_path)
-        budget = _CaptureByteBudget(self.limits.max_file_bytes)
-        try:
-            before = os.fstat(descriptor)
-            _validate_file_identity(entry, before)
-            if before.st_size > self.limits.max_file_bytes:
+        self._check_root_identity()
+        self._validate_revision_entry(entry)
+        if self._baseline_excludes_secret(entry.relative_path):
+            raise FilesystemSourceError("filesystem file contains excluded secret material")
+        baseline = self._revision_entries[entry.relative_path]
+        if (
+            entry.entry_type is not FilesystemEntryType.FILE
+            or entry.classification is not FilesystemEntryClass.SAFE_FILE
+            or baseline.classification != "included"
+            or baseline.sha256 is None
+        ):
+            raise FilesystemSourceError("filesystem entry is not readable")
+        if entry.sha256 is not None and entry.sha256 != baseline.sha256:
+            raise FilesystemSourceError("filesystem digest differs from captured revision")
+
+    def _scan_open_file(
+        self,
+        descriptor: int,
+        entry: FilesystemEntry,
+        budget: _CaptureByteBudget,
+        *,
+        consume: Callable[[bytes], object] | None = None,
+        block_bytes: int | None = None,
+    ) -> tuple[bool, int, str]:
+        """Check exactly the bytes hashed, scanned, and optionally buffered."""
+
+        before = os.fstat(descriptor)
+        _validate_file_identity(entry, before)
+        if before.st_size > self.limits.max_file_bytes:
+            raise FilesystemSourceError("filesystem file exceeds size limit")
+        digest = hashlib.sha256()
+        total = 0
+        scanner = _SecretContentScanner()
+        contains_secret = False
+        while chunk := _read_block(
+            descriptor, block_bytes or self.limits.chunk_bytes, self.limits.chunk_bytes
+        ):
+            budget.account(len(chunk))
+            total += len(chunk)
+            if total > self.limits.max_file_bytes:
                 raise FilesystemSourceError("filesystem file exceeds size limit")
-            secret_scanner = _SecretContentScanner()
-            contains_secret = False
-            while True:
-                chunk = os.read(descriptor, self.limits.chunk_bytes)
-                if not chunk:
-                    break
-                budget.account(len(chunk))
-                contains_secret = secret_scanner.feed(chunk) or contains_secret
-            after = os.fstat(descriptor)
-            _validate_file_identity(entry, after)
-            if before.st_size != budget.consumed_bytes:
-                raise FilesystemSourceError("filesystem file changed during capture")
-            return contains_secret
-        finally:
-            os.close(descriptor)
+            digest.update(chunk)
+            contains_secret = scanner.feed(chunk) or contains_secret
+            if consume is not None:
+                consume(chunk)
+        _validate_file_identity(entry, os.fstat(descriptor))
+        self._check_root_identity()
+        if total != before.st_size:
+            raise FilesystemSourceError("filesystem file changed during capture")
+        hexdigest = digest.hexdigest()
+        if hexdigest != self._revision_entries[entry.relative_path].sha256:
+            raise FilesystemSourceError("filesystem content differs from captured revision")
+        return contains_secret, total, hexdigest
 
     def _read_file_once(
         self,
@@ -822,34 +831,13 @@ class LinuxFilesystemBackupSource:
     ) -> tuple[bytes, bool]:
         """Read one bounded file while classifying its content in one pass."""
 
-        self._validate_target(target)
-        if entry.classification is not FilesystemEntryClass.SAFE_FILE:
-            raise FilesystemSourceError("filesystem entry is not readable")
+        self._validate_readable_entry(target, entry)
         descriptor = _open_relative_regular_file(self._root_fd, entry.relative_path)
         try:
-            before = os.fstat(descriptor)
-            _validate_file_identity(entry, before)
-            if before.st_size > self.limits.max_file_bytes:
-                raise FilesystemSourceError("filesystem file exceeds size limit")
             content = bytearray()
-            secret_scanner = _SecretContentScanner()
-            contains_secret = False
-            while True:
-                chunk = os.read(
-                    descriptor,
-                    min(self.limits.chunk_bytes, self.limits.max_file_bytes + 1),
-                )
-                if not chunk:
-                    break
-                budget.account(len(chunk))
-                content.extend(chunk)
-                if len(content) > self.limits.max_file_bytes:
-                    raise FilesystemSourceError("filesystem file exceeds size limit")
-                contains_secret = secret_scanner.feed(chunk) or contains_secret
-            after = os.fstat(descriptor)
-            _validate_file_identity(entry, after)
-            if len(content) != before.st_size:
-                raise FilesystemSourceError("filesystem file changed during capture")
+            contains_secret, _, _ = self._scan_open_file(
+                descriptor, entry, budget, consume=content.extend
+            )
             return bytes(content), contains_secret
         finally:
             os.close(descriptor)
@@ -862,30 +850,10 @@ class LinuxFilesystemBackupSource:
     ) -> tuple[bool, int, str]:
         """Classify and digest one file in one bounded read pass."""
 
-        self._validate_target(target)
+        self._validate_readable_entry(target, entry)
         descriptor = _open_relative_regular_file(self._root_fd, entry.relative_path)
         try:
-            before = os.fstat(descriptor)
-            _validate_file_identity(entry, before)
-            if before.st_size > self.limits.max_file_bytes:
-                raise FilesystemSourceError("filesystem file exceeds size limit")
-            digest = hashlib.sha256()
-            total = 0
-            secret_scanner = _SecretContentScanner()
-            contains_secret = False
-            while True:
-                chunk = os.read(descriptor, self.limits.chunk_bytes)
-                if not chunk:
-                    break
-                budget.account(len(chunk))
-                digest.update(chunk)
-                total += len(chunk)
-                contains_secret = secret_scanner.feed(chunk) or contains_secret
-            after = os.fstat(descriptor)
-            _validate_file_identity(entry, after)
-            if total != before.st_size:
-                raise FilesystemSourceError("filesystem file changed during capture")
-            return contains_secret, total, digest.hexdigest()
+            return self._scan_open_file(descriptor, entry, budget)
         finally:
             os.close(descriptor)
 
@@ -905,32 +873,44 @@ class LinuxFilesystemBackupSource:
         return content
 
     def iter_file_chunks(self, target: BackupTarget, entry: FilesystemEntry) -> Iterator[bytes]:
-        """Stream one safe file with fixed-size chunks and no full-file buffer."""
+        """Yield only blocks verified against a complete baseline-bound scan.
 
-        self._validate_target(target)
-        if entry.classification is not FilesystemEntryClass.SAFE_FILE:
-            raise FilesystemSourceError("filesystem entry is not readable")
-        if self._contains_secret(target, entry):
-            raise FilesystemSourceError("filesystem file contains excluded secret material")
+        Hold one descriptor across both passes. Store only SHA-256 block hashes
+        (at most 512 KiB at the file cap), then verify each bounded reread before
+        releasing any of it. A late mutation can never leak unchecked bytes.
+        """
+
+        self._validate_readable_entry(target, entry)
         descriptor = _open_relative_regular_file(self._root_fd, entry.relative_path)
-        total = 0
         try:
-            before = os.fstat(descriptor)
-            _validate_file_identity(entry, before)
-            if before.st_size > self.limits.max_file_bytes:
-                raise FilesystemSourceError("filesystem file exceeds size limit")
-            while True:
-                chunk = os.read(descriptor, self.limits.chunk_bytes)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > self.limits.max_file_bytes:
-                    raise FilesystemSourceError("filesystem file exceeds size limit")
-                yield chunk
-            after = os.fstat(descriptor)
-            _validate_file_identity(entry, after)
-            if total != before.st_size:
+            block_digests = bytearray()
+            contains_secret, total, _ = self._scan_open_file(
+                descriptor,
+                entry,
+                _CaptureByteBudget(self.limits.max_total_bytes),
+                consume=lambda chunk: block_digests.extend(hashlib.sha256(chunk).digest()),
+                block_bytes=_STREAM_VALIDATION_BYTES,
+            )
+            if contains_secret:
+                raise FilesystemSourceError("filesystem file contains excluded secret material")
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            remaining = total
+            for offset in range(0, len(block_digests), 32):
+                self._check_root_identity()
+                _validate_file_identity(entry, os.fstat(descriptor))
+                block = _read_block(
+                    descriptor, min(remaining, _STREAM_VALIDATION_BYTES), self.limits.chunk_bytes
+                )
+                _validate_file_identity(entry, os.fstat(descriptor))
+                if hashlib.sha256(block).digest() != block_digests[offset : offset + 32]:
+                    raise FilesystemSourceError("filesystem content changed during streaming")
+                remaining -= len(block)
+                for start in range(0, len(block), self.limits.chunk_bytes):
+                    yield block[start : start + self.limits.chunk_bytes]
+            if remaining or os.read(descriptor, 1):
                 raise FilesystemSourceError("filesystem file changed during capture")
+            _validate_file_identity(entry, os.fstat(descriptor))
+            self._check_root_identity()
         finally:
             os.close(descriptor)
 
@@ -1002,13 +982,67 @@ def _readlink_at(directory_fd: int, name: str) -> str:
     return target
 
 
+def _read_block(descriptor: int, size: int, read_size: int) -> bytes:
+    """Keep verification framing stable even when read() returns short reads."""
+
+    block = bytearray()
+    while len(block) < size:
+        chunk = os.read(descriptor, min(read_size, size - len(block)))
+        if not chunk:
+            break
+        block.extend(chunk)
+    return bytes(block)
+
+
+def _stat_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_uid,
+        metadata.st_gid,
+        metadata.st_nlink,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _open_relative_directory(root_fd: int, relative_path: str) -> int:
+    _validate_relative_path(relative_path)
+    descriptor = os.dup(root_fd)
+    try:
+        for part in PurePosixPath(relative_path).parts:
+            child_fd = os.open(
+                part,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_NONBLOCK", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=descriptor,
+            )
+            os.close(descriptor)
+            descriptor = child_fd
+        return descriptor
+    except OSError as exc:
+        os.close(descriptor)
+        raise FilesystemSourceError("filesystem directory cannot be opened safely") from exc
+
+
 def _open_relative_regular_file(root_fd: int, relative_path: str) -> int:
     _validate_relative_path(relative_path)
     parts = PurePosixPath(relative_path).parts
     if not parts or parts == (".",):
         raise FilesystemSourceError("filesystem file path is invalid")
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
     parent_fd = os.dup(root_fd)
+    descriptor = -1
     try:
         for part in parts[:-1]:
             child_fd = os.open(
@@ -1021,6 +1055,8 @@ def _open_relative_regular_file(root_fd: int, relative_path: str) -> int:
         descriptor = os.open(parts[-1], flags, dir_fd=parent_fd)
         metadata = os.fstat(descriptor)
     except OSError as exc:
+        if descriptor >= 0:
+            os.close(descriptor)
         raise FilesystemSourceError("filesystem file cannot be opened safely") from exc
     finally:
         os.close(parent_fd)
