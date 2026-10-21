@@ -117,6 +117,7 @@ class BackupCoordinator:
 
     def __init__(self) -> None:
         self._outcomes: dict[str, BackupOutcome] = {}
+        self._requests: dict[str, BackupRequest] = {}
         self._idempotency: dict[str, str] = {}
         self._events: list[BackupJobEvent] = []
 
@@ -168,6 +169,7 @@ class BackupCoordinator:
             failure_code=code,
         )
         self._outcomes[request.idempotency_key] = outcome
+        self._requests[request.idempotency_key] = request
         return outcome
 
     def create_backup(
@@ -196,6 +198,8 @@ class BackupCoordinator:
         )
         existing = self._outcomes.get(request.idempotency_key)
         if existing is not None:
+            if self._requests[request.idempotency_key] != request:
+                raise BackupError("idempotency key belongs to another backup request")
             event = self._event(
                 request=request, status="duplicate", now=now, reason_code="duplicate_job"
             )
@@ -279,6 +283,7 @@ class BackupCoordinator:
                 tuple(events),
             )
             self._outcomes[request.idempotency_key] = outcome
+            self._requests[request.idempotency_key] = request
             self._idempotency[request.idempotency_key] = request.backup_id
             return outcome
         except Exception as exc:

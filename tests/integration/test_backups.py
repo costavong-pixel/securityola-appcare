@@ -21,6 +21,7 @@ from appcare.backups import (
     UnavailableCloudVault,
 )
 from appcare.backups.models import BackupArtifact, EncryptedEnvelope, VaultReceipt
+from appcare.backups.pipeline import BackupError
 from appcare.backups.stores import RetentionLockedError, VaultError
 
 NOW = datetime(2026, 8, 17, 10, 0, tzinfo=UTC)
@@ -209,6 +210,56 @@ def test_duplicate_job_does_not_run_source_twice() -> None:
     assert first.healthy is True
     assert second.healthy is False
     assert second.failure_code == "duplicate_job"
+    assert source.calls == 1
+
+
+@pytest.mark.parametrize("changed_field", ["target", "tenant", "backup_id", "source"])
+def test_idempotency_key_cannot_return_a_foreign_backup_receipt(changed_field: str) -> None:
+    source = SyntheticAppSource()
+    destination = _destination()
+    vault = InMemoryImmutableVault(destination)
+    coordinator = BackupCoordinator()
+    original = _request(destination=destination)
+    first = coordinator.create_backup(
+        original, source=source, vault=vault, encryptor=_encryptor(), now=NOW
+    )
+    assert first.healthy and first.receipt is not None
+    target = original.target
+    if changed_field == "target":
+        target = BackupTarget(
+            target.tenant_id,
+            target.application_id,
+            target.environment,
+            target.source_reference,
+            "target-appcare-other",
+        )
+    elif changed_field == "tenant":
+        target = BackupTarget(
+            "tenant-appcare-other",
+            target.application_id,
+            target.environment,
+            target.source_reference,
+            target.target_reference,
+        )
+    elif changed_field == "source":
+        target = BackupTarget(
+            target.tenant_id,
+            target.application_id,
+            target.environment,
+            "synthetic://appcare/other",
+            target.target_reference,
+        )
+    attempted = BackupRequest(
+        target,
+        destination,
+        "backup-other" if changed_field == "backup_id" else original.backup_id,
+        original.idempotency_key,
+        original.source_captured_at,
+    )
+    with pytest.raises(BackupError, match="idempotency key belongs to another backup request"):
+        coordinator.create_backup(
+            attempted, source=source, vault=vault, encryptor=_encryptor(), now=NOW
+        )
     assert source.calls == 1
 
 
