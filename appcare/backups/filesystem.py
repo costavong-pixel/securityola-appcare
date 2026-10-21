@@ -75,14 +75,13 @@ _SECRET_CONTENT_PATTERNS: Final = (
 )
 _SECRET_SCAN_TAIL_BYTES: Final = 4096
 _DEFINE_SECRET_IDENTIFIER_PATTERN: Final = re.compile(
-    rb"(?i)(?:" + SECRET_IDENTIFIER_PATTERN_BYTES + rb"|passwd|authorization)"
+    rb"(?i)(?:" + SECRET_IDENTIFIER_PATTERN_BYTES + rb"|(?:db[_-]?)?passwd|authorization)"
 )
 _DEFINE_SECRET_TAIL_BYTES: Final = 128
 _IDENTIFIER_BYTES: Final = frozenset(
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
 )
 _WHITESPACE_BYTES: Final = frozenset(b" \t\r\n\f\v")
-_WHITESPACE_PATTERN: Final = re.compile(rb"\s*")
 _VALUE_TERMINATORS: Final = frozenset(b"'\"\r\n,})")
 _STREAM_VALIDATION_BYTES: Final = 64 * 1024
 
@@ -109,11 +108,13 @@ class _SecretContentScanner:
         self._escaped = False
         self._call_tail = b""
         self._found = False
-        self._assignment_tail = b""
         self._assignment_state = 0
         self._assignment_arrow_possible = False
         self._assignment_quote: int | None = None
-        self._assignment_key_quote: int | None = None
+        self._assignment_search_quote: int | None = None
+        self._assignment_search_escape = False
+        self._assignment_token = bytearray()
+        self._assignment_token_overflow = False
         self._assignment_comment = 0
         self._assignment_comment_star = False
 
@@ -131,48 +132,34 @@ class _SecretContentScanner:
         return self._found
 
     def _scan_assignments(self, chunk: bytes) -> bool:
-        window = self._assignment_tail + chunk
-        self._assignment_tail = b""
         index = 0
-        while index < len(window):
+        while index < len(chunk):
+            byte = chunk[index]
             if self._assignment_state == 0:
-                match = _DEFINE_SECRET_IDENTIFIER_PATTERN.search(window, index)
-                if match is None:
-                    self._assignment_tail = window[-_DEFINE_SECRET_TAIL_BYTES:]
-                    return False
-                if match.end() == len(window):
-                    # A shorter credential name may be the prefix of a longer
-                    # one split at this chunk boundary (for example secret_key).
-                    token_start = match.start()
-                    while token_start and window[token_start - 1] in _IDENTIFIER_BYTES:
-                        token_start -= 1
-                    if token_start and window[token_start - 1] in (ord("'"), ord('"')):
-                        token_start -= 1
-                    self._assignment_tail = window[
-                        max(token_start, len(window) - _DEFINE_SECRET_TAIL_BYTES) :
-                    ]
-                    return False
-                self._assignment_key_quote = (
-                    window[match.start() - 1]
-                    if match.start() and window[match.start() - 1] in (ord("'"), ord('"'))
-                    else None
-                )
-                index = match.end()
-                self._assignment_state = 1
-            if self._assignment_state == 1 and self._assignment_key_quote is not None:
-                if window[index] in _WHITESPACE_BYTES:
+                if self._assignment_search_quote is not None:
+                    if self._assignment_search_escape:
+                        self._assignment_search_escape = False
+                        self._assignment_token_overflow = True
+                    elif byte == ord("\\"):
+                        self._assignment_search_escape = True
+                    elif byte == self._assignment_search_quote:
+                        self._assignment_search_quote = None
+                        self._finish_assignment_token(quoted=True)
+                    else:
+                        self._append_assignment_token(byte, quoted=True)
                     index += 1
                     continue
-                if window[index] != self._assignment_key_quote:
-                    self._assignment_state = 0
-                    self._assignment_key_quote = None
+                if byte in _IDENTIFIER_BYTES or byte == ord("$"):
+                    self._append_assignment_token(byte, quoted=False)
+                    index += 1
                     continue
-                self._assignment_state = 2
-                self._assignment_key_quote = None
-                index += 1
-                continue
+                self._finish_assignment_token(quoted=False)
+                if self._assignment_state == 0:
+                    if byte in (ord("'"), ord('"')):
+                        self._assignment_search_quote = byte
+                    index += 1
+                    continue
             if self._assignment_comment:
-                byte = window[index]
                 if self._assignment_comment == 1:
                     if byte == ord("*"):
                         self._assignment_comment = 3
@@ -192,23 +179,18 @@ class _SecretContentScanner:
                     self._assignment_comment_star = byte == ord("*")
                 index += 1
                 continue
-            whitespace = _WHITESPACE_PATTERN.match(window, index)
-            assert whitespace is not None
-            index = whitespace.end()
-            if index == len(window):
-                return False
-            byte = window[index]
-            if self._assignment_state in (1, 2) and byte == ord("/"):
+            if byte in _WHITESPACE_BYTES:
+                index += 1
+                continue
+            if self._assignment_state == 1 and byte == ord("/"):
                 self._assignment_comment = 1
                 index += 1
                 continue
-            if self._assignment_state in (1, 2) and byte == ord("#"):
+            if self._assignment_state == 1 and byte == ord("#"):
                 self._assignment_comment = 2
                 index += 1
                 continue
-            if self._assignment_state == 1 and byte in (ord("'"), ord('"')):
-                self._assignment_state = 2
-            elif self._assignment_state in (1, 2) and byte in (ord(":"), ord("=")):
+            if self._assignment_state == 1 and byte in (ord(":"), ord("=")):
                 self._assignment_state = 3
                 self._assignment_arrow_possible = byte == ord("=")
             elif (
@@ -227,10 +209,28 @@ class _SecretContentScanner:
                 self._assignment_state = 0
                 self._assignment_arrow_possible = False
                 self._assignment_quote = None
-                self._assignment_key_quote = None
                 continue
             index += 1
         return False
+
+    def _append_assignment_token(self, byte: int, *, quoted: bool) -> None:
+        if quoted and byte in _WHITESPACE_BYTES and not self._assignment_token:
+            return
+        if len(self._assignment_token) < _DEFINE_SECRET_TAIL_BYTES:
+            self._assignment_token.append(byte)
+        elif not quoted or byte not in _WHITESPACE_BYTES:
+            self._assignment_token_overflow = True
+
+    def _finish_assignment_token(self, *, quoted: bool) -> None:
+        token = bytes(self._assignment_token).strip() if quoted else bytes(self._assignment_token)
+        if token.startswith(b"$"):
+            token = token[1:]
+        if not self._assignment_token_overflow and _DEFINE_SECRET_IDENTIFIER_PATTERN.fullmatch(
+            token
+        ):
+            self._assignment_state = 1
+        self._assignment_token.clear()
+        self._assignment_token_overflow = False
 
     def _scan_define_calls(self, chunk: bytes) -> bool:
         segment_start = 0

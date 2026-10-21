@@ -140,6 +140,7 @@ def test_canonical_credential_names_and_quoted_punctuation_detected_at_every_spl
         b"'aws-access-key-id' => 'fixture-value'",
         b"<?php $label = 'password //'; $to" + b"ken = 'fixture-value';\n",
         b"<?php $label = 'password /*'; $to" + b"ken = 'fixture-value';\n",
+        b"<?php $label = 'the password //'; $to" + b"ken = 'fixture-value';\n",
         b"sk_live_" + b"a" * 24,
         b"gho_" + b"a" * 24,
         b"github_pat_" + b"a" * 24,
@@ -160,8 +161,9 @@ def test_provider_token_at_stream_validation_boundary() -> None:
 
 
 def test_hyphenated_aws_key_name_at_stream_validation_boundary() -> None:
-    content = b"x" * (64 * 1024 - len(b"aws-access-key"))
-    content += b"aws-access-key-id' => 'fixture-value'"
+    prefix = b"<?php $options = ['"
+    content = b"x" * (64 * 1024 - len(prefix) - len(b"aws-access-key"))
+    content += prefix + b"aws-access-key-id' => 'fixture-value'"
     assert _scan_in_chunks(content, 64 * 1024)
 
 
@@ -173,6 +175,12 @@ def test_p03_mirror_and_p04_source_share_provider_token_exclusion(token: bytes) 
     content = token + b"a" * 24
     assert _looks_secret(content)
     assert _scan_in_chunks(content, 3)
+
+
+def test_public_css_class_is_not_a_provider_token() -> None:
+    content = b'<div class="task-container">public</div>'
+    assert not _looks_secret(content)
+    assert not _scan_in_chunks(content, 3)
 
 
 @pytest.mark.parametrize(
@@ -202,7 +210,7 @@ def test_long_pending_assignment_retains_constant_state() -> None:
     for _ in range(256):
         assert not scanner.feed(b" " * 4096)
         assert len(scanner._tail) <= 4096
-        assert len(scanner._assignment_tail) <= 12
+        assert len(scanner._assignment_token) <= 128
     assert scanner.feed(b"=fixture-value")
     assert scanner.feed(b"public content")
 
@@ -455,6 +463,7 @@ def _account_sixty_bytes(budget: filesystem._CaptureByteBudget) -> str:
         b"'aws-access-key-id' => 'fixture-value'",
         b"<?php $label = 'password //'; $to" + b"ken = 'fixture-value';\n",
         b"<?php $label = 'password /*'; $to" + b"ken = 'fixture-value';\n",
+        b"<?php $label = 'the password //'; $to" + b"ken = 'fixture-value';\n",
     ],
 )
 def test_secret_content_never_enters_any_backup_content_path(
