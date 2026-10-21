@@ -125,6 +125,8 @@ class _SecretContentScanner:
         self._quoted_key_token = bytearray()
         self._quoted_key_comment = 0
         self._quoted_key_comment_star = False
+        self._quoted_key_line_context = False
+        self._quoted_key_previous_slash = False
 
     def feed(self, chunk: bytes) -> bool:
         """Consume one bounded chunk and report whether it contains a secret."""
@@ -273,6 +275,14 @@ class _SecretContentScanner:
         """Catch quoted credential keys even inside comments and long gaps."""
 
         for byte in chunk:
+            was_line_context = self._quoted_key_line_context
+            if byte in (ord("\r"), ord("\n")):
+                self._quoted_key_line_context = False
+                self._quoted_key_previous_slash = False
+            elif self._quoted_key_state == 0 and self._quoted_key_comment == 0:
+                if self._quoted_key_previous_slash and byte == ord("/"):
+                    self._quoted_key_line_context = True
+                self._quoted_key_previous_slash = byte == ord("/")
             if self._quoted_key_comment == 1:
                 self._quoted_key_comment = 0
                 if byte == ord("*"):
@@ -289,6 +299,11 @@ class _SecretContentScanner:
                     self._quoted_key_comment = 0
                 continue
             elif self._quoted_key_comment == 3:
+                if was_line_context and byte in (ord("\r"), ord("\n")):
+                    self._quoted_key_comment = 0
+                    self._quoted_key_comment_star = False
+                    self._quoted_key_state = 0
+                    continue
                 if self._quoted_key_comment_star and byte == ord("/"):
                     self._quoted_key_comment = 0
                     self._quoted_key_comment_star = False
@@ -325,6 +340,10 @@ class _SecretContentScanner:
                     self._quoted_key_comment = 2
                 else:
                     self._quoted_key_state = 0
+                    if byte in (ord("'"), ord('"')):
+                        self._quoted_key_quote = byte
+                        self._quoted_key_token.clear()
+                        self._quoted_key_state = 1
             elif self._quoted_key_state == 3:
                 if byte in _WHITESPACE_BYTES or byte == ord(">"):
                     continue

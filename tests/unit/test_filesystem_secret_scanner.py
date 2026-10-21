@@ -152,6 +152,8 @@ def test_canonical_credential_names_and_quoted_punctuation_detected_at_every_spl
         b"<?php /* '\"pass" + b'word": "fixture-value"\' */',
         b"<?php /* 'pass" + b"word' => '\nfixture-value' */",
         b"<?php // 'pass" + b"word' /* comment */ => 'fixture-value'\n",
+        b'<?php /* "token" "pass' + b'word": "fixture-value" */',
+        b"<?php // 'token' /*\n// {'pass" + b"word': 'fixture-value'}\n",
         b"sk_live_" + b"a" * 24,
         b"gho_" + b"a" * 24,
         b"github_pat_" + b"a" * 24,
@@ -512,6 +514,8 @@ def _account_sixty_bytes(budget: filesystem._CaptureByteBudget) -> str:
         b"<?php /* '\"pass" + b'word": "fixture-value"\' */',
         b"<?php /* 'pass" + b"word' => '\nfixture-value' */",
         b"<?php // 'pass" + b"word' /* comment */ => 'fixture-value'\n",
+        b'<?php /* "token" "pass' + b'word": "fixture-value" */',
+        b"<?php // 'token' /*\n// {'pass" + b"word': 'fixture-value'}\n",
         pytest.param(
             b"Don't panic <?php $pass" + b"word" + b" " * 90_000 + b"= 'fixture-value';\n",
             id="html-php-long-gap",
