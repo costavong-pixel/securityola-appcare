@@ -5,6 +5,10 @@ from __future__ import annotations
 import base64
 import json
 import os
+import stat
+import weakref
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -66,9 +70,135 @@ def _scope(
         raise VaultError(str(exc)) from exc
 
 
-def _write_private(path: Path, payload: bytes) -> None:
+@contextmanager
+def _directory_descriptor(
+    root: int, parts: tuple[str, ...], *, create: bool = False, ancestry: bool = False
+) -> Iterator[int]:
+    """Walk from an already trusted descriptor, never resolving a symlink."""
+    descriptor = os.dup(root)
+    try:
+        root_info = os.fstat(descriptor)
+        if not ancestry and (root_info.st_uid != os.geteuid() or root_info.st_mode & 0o077):
+            raise VaultError("vault root requires private owner permissions")
+        for part in parts:
+            if part in {"", ".", ".."} or "/" in part:
+                raise VaultError("invalid vault directory segment")
+            if create:
+                try:
+                    os.mkdir(part, 0o700, dir_fd=descriptor)
+                except FileExistsError:
+                    pass
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+            info = os.fstat(descriptor)
+            if ancestry:
+                # Root-owned sticky temporary ancestors are safe for private test roots.
+                trusted = info.st_uid in {0, os.geteuid()}
+                writable = info.st_mode & 0o022
+                sticky = info.st_uid == 0 and info.st_mode & stat.S_ISVTX
+                if not trusted or (writable and not sticky):
+                    raise VaultError("untrusted vault ancestry")
+            elif info.st_uid != os.geteuid() or info.st_mode & 0o077:
+                raise VaultError("vault directories require private owner permissions")
+        yield descriptor
+    except OSError as exc:
+        raise VaultError("unsafe or unavailable vault directory") from exc
+    finally:
+        os.close(descriptor)
+
+
+class _DescriptorPath:
+    """Small internal path interface whose IO is relative to the pinned vault root."""
+
+    def __init__(self, root: int, parts: tuple[str, ...]) -> None:
+        self.root = root
+        self.parts = parts
+
+    @property
+    def parent(self) -> _DescriptorPath:
+        return _DescriptorPath(self.root, self.parts[:-1])
+
+    def mkdir(self, *, parents: bool, exist_ok: bool, mode: int) -> None:
+        del parents, exist_ok, mode
+        with _directory_descriptor(self.root, self.parts, create=True):
+            pass
+
+    def _stat(self) -> os.stat_result | None:
+        with _directory_descriptor(self.root, self.parts[:-1]) as parent:
+            try:
+                info = os.stat(self.parts[-1], dir_fd=parent, follow_symlinks=False)
+            except FileNotFoundError:
+                return None
+            if stat.S_ISLNK(info.st_mode):
+                raise VaultError("vault entry is a symlink")
+            return info
+
+    def exists(self) -> bool:
+        # Missing parents also mean absence; unsafe parents must still fail closed.
+        try:
+            return self._stat() is not None
+        except VaultError as exc:
+            if isinstance(exc.__cause__, FileNotFoundError):
+                return False
+            raise
+
+    def is_dir(self) -> bool:
+        info = self._stat()
+        return info is not None and stat.S_ISDIR(info.st_mode)
+
+    def is_file(self) -> bool:
+        info = self._stat()
+        return info is not None and stat.S_ISREG(info.st_mode)
+
+    def read_bytes(self) -> bytes:
+        with _directory_descriptor(self.root, self.parts[:-1]) as parent:
+            descriptor = os.open(
+                self.parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent
+            )
+            with os.fdopen(descriptor, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                if (
+                    not stat.S_ISREG(info.st_mode)
+                    or info.st_uid != os.geteuid()
+                    or info.st_mode & 0o077
+                    or info.st_nlink != 1
+                ):
+                    raise VaultError("unsafe vault artifact file")
+                return stream.read()
+
+    def read_text(self, *, encoding: str) -> str:
+        return self.read_bytes().decode(encoding)
+
+    def write_private(self, payload: bytes) -> None:
+        with _directory_descriptor(self.root, self.parts[:-1]) as parent:
+            descriptor = os.open(
+                self.parts[-1],
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=parent,
+            )
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(payload)
+
+    def unlink(self) -> None:
+        with _directory_descriptor(self.root, self.parts[:-1]) as parent:
+            os.unlink(self.parts[-1], dir_fd=parent)
+
+    def rmdir(self) -> None:
+        with _directory_descriptor(self.root, self.parts[:-1]) as parent:
+            os.rmdir(self.parts[-1], dir_fd=parent)
+
+
+def _write_private(path: Path | _DescriptorPath, payload: bytes) -> None:
     """Create one sensitive artifact file without following an existing path."""
 
+    if isinstance(path, _DescriptorPath):
+        try:
+            path.write_private(payload)
+        except OSError as exc:
+            raise VaultError("backup artifact file cannot be created") from exc
+        return
     file_path = os.fspath(path)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     try:
@@ -233,8 +363,40 @@ class FilesystemImmutableVault:
             raise ValueError("filesystem vault is only for the isolated test provider")
         self.destination = destination
         self.filesystem = filesystem
-        self.filesystem.ensure_data_dirs()
+        self._root_descriptor: int | None = None
+        if os.name == "posix":
+            anchor = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                with _directory_descriptor(
+                    anchor, filesystem.backup_root.parts[1:], create=True, ancestry=True
+                ) as root:
+                    info = os.fstat(root)
+                    if info.st_uid != os.geteuid() or info.st_mode & 0o077:
+                        raise VaultError("vault root requires private owner permissions")
+                    self._root_descriptor = os.dup(root)
+            finally:
+                os.close(anchor)
+            weakref.finalize(self, os.close, self._root_descriptor)
+            for name in (
+                "staging",
+                "snapshots",
+                "manifests",
+                "restore-rehearsal",
+                "jobs",
+                "failed",
+            ):
+                with _directory_descriptor(self._root_descriptor, (name,), create=True):
+                    pass
+        else:
+            self.filesystem.ensure_data_dirs()
         self._memory = InMemoryImmutableVault(destination)
+
+    def _vault_path(self, path: Path) -> Path | _DescriptorPath:
+        if self._root_descriptor is None:
+            return path
+        return _DescriptorPath(
+            self._root_descriptor, path.relative_to(self.filesystem.backup_root).parts
+        )
 
     @staticmethod
     def _require_target_reference(target_reference: str | None) -> str:
@@ -248,13 +410,15 @@ class FilesystemImmutableVault:
         tenant_id: str,
         application_id: str,
         target_reference: str,
-    ) -> Path:
+    ) -> Path | _DescriptorPath:
         try:
-            return self.filesystem.snapshot_path(
-                tenant_id,
-                application_id,
-                backup_id,
-                target_reference=target_reference,
+            return self._vault_path(
+                self.filesystem.snapshot_path(
+                    tenant_id,
+                    application_id,
+                    backup_id,
+                    target_reference=target_reference,
+                )
             )
         except BackupBoundaryError as exc:
             raise VaultError(str(exc)) from exc
@@ -266,16 +430,18 @@ class FilesystemImmutableVault:
         application_id: str,
         filename: str,
         target_reference: str,
-    ) -> Path:
+    ) -> Path | _DescriptorPath:
         if filename not in self._SNAPSHOT_FILES:
             raise VaultError("unsupported backup artifact filename")
         try:
-            return self.filesystem.snapshot_file(
-                tenant_id,
-                application_id,
-                backup_id,
-                filename,
-                target_reference=target_reference,
+            return self._vault_path(
+                self.filesystem.snapshot_file(
+                    tenant_id,
+                    application_id,
+                    backup_id,
+                    filename,
+                    target_reference=target_reference,
+                )
             )
         except BackupBoundaryError as exc:
             raise VaultError(str(exc)) from exc
@@ -286,13 +452,15 @@ class FilesystemImmutableVault:
         tenant_id: str,
         application_id: str,
         target_reference: str,
-    ) -> Path:
+    ) -> Path | _DescriptorPath:
         try:
-            return self.filesystem.manifest_path(
-                tenant_id,
-                application_id,
-                backup_id,
-                target_reference=target_reference,
+            return self._vault_path(
+                self.filesystem.manifest_path(
+                    tenant_id,
+                    application_id,
+                    backup_id,
+                    target_reference=target_reference,
+                )
             )
         except BackupBoundaryError as exc:
             raise VaultError(str(exc)) from exc

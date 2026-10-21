@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -660,3 +661,156 @@ def test_restore_does_not_delete_preexisting_staging_on_mkdir_failure(tmp_path: 
 
     assert evidence.status == "restore_failed"
     assert marker.read_text(encoding="utf-8") == "pre-existing"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX descriptor-relative IO")
+@pytest.mark.parametrize("operation", ["put", "get", "delete"])
+def test_vault_parent_swap_at_artifact_io_stays_on_pinned_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    destination = _destination()
+    memory = InMemoryImmutableVault(destination)
+    assert (
+        BackupCoordinator()
+        .create_backup(
+            _request(destination=destination),
+            source=SyntheticAppSource(),
+            vault=memory,
+            encryptor=_encryptor(),
+            now=NOW,
+        )
+        .healthy
+    )
+    scope = dict(
+        tenant_id="tenant-appcare-1",
+        application_id="appcare-test-app",
+        target_reference="target-appcare-test",
+    )
+    artifact = memory.get("backup-beta04-1", **scope)
+    filesystem = BackupFilesystemBoundary.for_test(tmp_path / "vault")
+    vault = FilesystemImmutableVault(filesystem, destination)
+    manifest = filesystem.manifest_path(
+        "tenant-appcare-1",
+        "appcare-test-app",
+        "backup-beta04-1",
+        target_reference="target-appcare-test",
+    )
+    if operation != "put":
+        vault.put(artifact, idempotency_key="fixture")
+    else:
+        manifest.parent.mkdir(parents=True, mode=0o700)
+        # pathlib creates intermediate parents using the default mode.
+        for parent in manifest.parents:
+            if parent == filesystem.backup_root:
+                break
+            parent.chmod(0o700)
+    outside = tmp_path / "outside"
+    outside.mkdir(mode=0o700)
+    sentinel = outside / manifest.name
+    sentinel.write_bytes(b"outside sentinel")
+    swapped = False
+    original_open = os.open
+    original_unlink = os.unlink
+
+    def swap() -> None:
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            manifest.parent.rename(manifest.parent.with_name("held-original"))
+            manifest.parent.symlink_to(outside, target_is_directory=True)
+
+    def racing_open(
+        path: object, flags: int, mode: int = 0o777, *, dir_fd: int | None = None
+    ) -> int:
+        if path == manifest.name and dir_fd is not None:
+            swap()
+        return original_open(path, flags, mode, dir_fd=dir_fd)  # type: ignore[arg-type]
+
+    def racing_unlink(path: object, *, dir_fd: int | None = None) -> None:
+        if path == manifest.name and dir_fd is not None:
+            swap()
+        original_unlink(path, dir_fd=dir_fd)  # type: ignore[arg-type]
+
+    if operation == "delete":
+        monkeypatch.setattr(os, "unlink", racing_unlink)
+        vault.delete("backup-beta04-1", **scope, now=NOW + timedelta(days=8))
+    else:
+        monkeypatch.setattr(os, "open", racing_open)
+        if operation == "put":
+            vault.put(artifact, idempotency_key="fixture")
+        else:
+            assert vault.get("backup-beta04-1", **scope).manifest_bytes == artifact.manifest_bytes
+    assert swapped
+    assert sentinel.read_bytes() == b"outside sentinel"
+    assert list(outside.iterdir()) == [sentinel]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX permissions and symlinks")
+def test_vault_put_rejects_parent_swap_during_mkdir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = _destination()
+    memory = InMemoryImmutableVault(destination)
+    assert (
+        BackupCoordinator()
+        .create_backup(
+            _request(destination=destination),
+            source=SyntheticAppSource(),
+            vault=memory,
+            encryptor=_encryptor(),
+            now=NOW,
+        )
+        .healthy
+    )
+    artifact = memory.get(
+        "backup-beta04-1",
+        tenant_id="tenant-appcare-1",
+        application_id="appcare-test-app",
+        target_reference="target-appcare-test",
+    )
+    filesystem = BackupFilesystemBoundary.for_test(tmp_path / "vault")
+    vault = FilesystemImmutableVault(filesystem, destination)
+    snapshots = filesystem.backup_root / "snapshots"
+    outside = tmp_path / "outside"
+    outside.mkdir(mode=0o700)
+    original_mkdir = os.mkdir
+    swapped = False
+
+    def racing_mkdir(path: object, mode: int = 0o777, *, dir_fd: int | None = None) -> None:
+        nonlocal swapped
+        if path == "snapshots" and dir_fd is not None and not swapped:
+            swapped = True
+            snapshots.rename(snapshots.with_name("held-snapshots"))
+            snapshots.symlink_to(outside, target_is_directory=True)
+        original_mkdir(path, mode, dir_fd=dir_fd)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "mkdir", racing_mkdir)
+    with pytest.raises(VaultError):
+        vault.put(artifact, idempotency_key="fixture")
+    assert swapped
+    assert not list(outside.iterdir())
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX permissions and symlinks")
+@pytest.mark.parametrize("unsafe", ["symlink", "permissions"])
+def test_vault_rejects_unsafe_parent(tmp_path: Path, unsafe: str) -> None:
+    filesystem = BackupFilesystemBoundary.for_test(tmp_path / "vault")
+    vault = FilesystemImmutableVault(filesystem, _destination())
+    parent = filesystem.backup_root / "snapshots" / "tenant-appcare-1"
+    if unsafe == "symlink":
+        outside = tmp_path / "outside"
+        outside.mkdir(mode=0o700)
+        parent.symlink_to(outside, target_is_directory=True)
+    else:
+        parent.mkdir(mode=0o700)
+        parent.chmod(0o777)
+    with pytest.raises(VaultError):
+        vault.get(
+            "backup-beta04-1",
+            tenant_id="tenant-appcare-1",
+            application_id="appcare-test-app",
+            target_reference="target-appcare-test",
+        )
