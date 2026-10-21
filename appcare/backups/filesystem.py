@@ -123,6 +123,8 @@ class _SecretContentScanner:
         self._quoted_key_state = 0
         self._quoted_key_quote = 0
         self._quoted_key_token = bytearray()
+        self._quoted_key_comment = 0
+        self._quoted_key_comment_star = False
 
     def feed(self, chunk: bytes) -> bool:
         """Consume one bounded chunk and report whether it contains a secret."""
@@ -185,6 +187,8 @@ class _SecretContentScanner:
                     elif byte == ord("/"):
                         self._assignment_comment = 2
                     else:
+                        if self._assignment_state == 3:
+                            return True
                         self._assignment_state = 0
                         self._assignment_comment = 0
                         continue
@@ -217,6 +221,14 @@ class _SecretContentScanner:
                 self._assignment_comment = 2
                 index += 1
                 continue
+            if self._assignment_state == 3 and byte == ord("/"):
+                self._assignment_comment = 1
+                index += 1
+                continue
+            if self._assignment_state == 3 and byte == ord("#"):
+                self._assignment_comment = 2
+                index += 1
+                continue
             if self._assignment_state == 1 and byte in (ord(":"), ord("=")):
                 self._assignment_state = 3
                 self._assignment_arrow_possible = byte == ord("=")
@@ -243,9 +255,8 @@ class _SecretContentScanner:
     def _advance_php_tag(self, byte: int) -> None:
         """Begin a fresh PHP expression after an HTML text apostrophe."""
 
-        marker = b"<?php"
-        lowered = byte | 0x20 if ord("A") <= byte <= ord("Z") else byte
-        if lowered == marker[self._php_tag_match]:
+        marker = b"<?"
+        if byte == marker[self._php_tag_match]:
             self._php_tag_match += 1
             if self._php_tag_match == len(marker):
                 self._php_tag_match = 0
@@ -262,6 +273,28 @@ class _SecretContentScanner:
         """Catch quoted credential keys even inside comments and long gaps."""
 
         for byte in chunk:
+            if self._quoted_key_comment == 1:
+                self._quoted_key_comment = 0
+                if byte == ord("*"):
+                    self._quoted_key_comment = 3
+                    continue
+                if byte == ord("/"):
+                    self._quoted_key_comment = 2
+                    continue
+                if self._quoted_key_state == 3:
+                    return True
+                self._quoted_key_state = 0
+            elif self._quoted_key_comment == 2:
+                if byte in (ord("\r"), ord("\n")):
+                    self._quoted_key_comment = 0
+                continue
+            elif self._quoted_key_comment == 3:
+                if self._quoted_key_comment_star and byte == ord("/"):
+                    self._quoted_key_comment = 0
+                    self._quoted_key_comment_star = False
+                else:
+                    self._quoted_key_comment_star = byte == ord("*")
+                continue
             if self._quoted_key_state == 0:
                 if byte in (ord("'"), ord('"')):
                     self._quoted_key_quote = byte
@@ -277,11 +310,19 @@ class _SecretContentScanner:
                     self._quoted_key_token.append(byte)
                 else:
                     self._quoted_key_state = 0
+                    if byte in (ord("'"), ord('"')):
+                        self._quoted_key_quote = byte
+                        self._quoted_key_token.clear()
+                        self._quoted_key_state = 1
             elif self._quoted_key_state == 2:
                 if byte in _WHITESPACE_BYTES:
                     continue
                 if byte in (ord(":"), ord("=")):
                     self._quoted_key_state = 3
+                elif byte == ord("/"):
+                    self._quoted_key_comment = 1
+                elif byte == ord("#"):
+                    self._quoted_key_comment = 2
                 else:
                     self._quoted_key_state = 0
             elif self._quoted_key_state == 3:
@@ -290,12 +331,16 @@ class _SecretContentScanner:
                 if byte in (ord("'"), ord('"')):
                     self._quoted_key_quote = byte
                     self._quoted_key_state = 4
+                elif byte == ord("/"):
+                    self._quoted_key_comment = 1
+                elif byte == ord("#"):
+                    self._quoted_key_comment = 2
                 elif byte in _VALUE_TERMINATORS:
                     self._quoted_key_state = 0
                 else:
                     return True
             else:
-                if byte == self._quoted_key_quote or byte in (ord("\r"), ord("\n")):
+                if byte == self._quoted_key_quote:
                     self._quoted_key_state = 0
                 else:
                     return True

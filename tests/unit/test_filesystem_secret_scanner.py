@@ -149,6 +149,9 @@ def test_canonical_credential_names_and_quoted_punctuation_detected_at_every_spl
         b'<?php /* {"pass' + b'word": "fixture-value"} */',
         b'<?php // {"pass' + b'word": "fixture-value"}\n',
         b'<?php /* {"pass' + b'word": "\'fixture-value"} */',
+        b"<?php /* '\"pass" + b'word": "fixture-value"\' */',
+        b"<?php /* 'pass" + b"word' => '\nfixture-value' */",
+        b"<?php // 'pass" + b"word' /* comment */ => 'fixture-value'\n",
         b"sk_live_" + b"a" * 24,
         b"gho_" + b"a" * 24,
         b"github_pat_" + b"a" * 24,
@@ -171,6 +174,12 @@ def test_provider_token_at_stream_validation_boundary() -> None:
 @pytest.mark.parametrize("chunk_size", [256, 64 * 1024])
 def test_php_tag_resets_html_quote_before_long_assignment(chunk_size: int) -> None:
     content = b"Don't panic <?php $pass" + b"word" + b" " * 90_000 + b"= 'fixture-value';\n"
+    assert _scan_in_chunks(content, chunk_size)
+
+
+@pytest.mark.parametrize("chunk_size", [256, 64 * 1024])
+def test_short_echo_tag_resets_html_quote_before_long_assignment(chunk_size: int) -> None:
+    content = b"Don't panic <?= $pass" + b"word" + b" " * 90_000 + b"= 'fixture-value'; ?>"
     assert _scan_in_chunks(content, chunk_size)
 
 
@@ -209,10 +218,18 @@ def test_public_css_class_is_not_a_provider_token() -> None:
         b"const secret_name = 'public-label';",
         b"token" + b" " * 9000 + b"description",
         b"password = ''\npublic content",
+        b"<?php $options = ['token' => /* public */ ''];",
         b"define('APP_ROOT', '/srv/app');",
         b"public content " * 9000,
     ],
-    ids=["identifier-suffix", "no-separator", "empty-value", "public-define", "large-public"],
+    ids=[
+        "identifier-suffix",
+        "no-separator",
+        "empty-value",
+        "commented-empty-value",
+        "public-define",
+        "large-public",
+    ],
 )
 def test_assignment_scanner_keeps_legitimate_controls(content: bytes) -> None:
     assert not _scan_in_chunks(content, 17)
@@ -492,9 +509,16 @@ def _account_sixty_bytes(budget: filesystem._CaptureByteBudget) -> str:
         b'<?php /* {"pass' + b'word": "fixture-value"} */',
         b'<?php // {"pass' + b'word": "fixture-value"}\n',
         b'<?php /* {"pass' + b'word": "\'fixture-value"} */',
+        b"<?php /* '\"pass" + b'word": "fixture-value"\' */',
+        b"<?php /* 'pass" + b"word' => '\nfixture-value' */",
+        b"<?php // 'pass" + b"word' /* comment */ => 'fixture-value'\n",
         pytest.param(
             b"Don't panic <?php $pass" + b"word" + b" " * 90_000 + b"= 'fixture-value';\n",
             id="html-php-long-gap",
+        ),
+        pytest.param(
+            b"Don't panic <?= $pass" + b"word" + b" " * 90_000 + b"= 'fixture-value'; ?>",
+            id="html-short-echo-long-gap",
         ),
         pytest.param(
             b'<?php /* {"pass' + b'word"' + b" " * 90_000 + b': "\'fixture-value"} */',
