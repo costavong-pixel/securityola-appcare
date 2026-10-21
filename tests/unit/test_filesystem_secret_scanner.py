@@ -16,6 +16,7 @@ import appcare.backups.filesystem as filesystem
 from appcare.backups.contracts import BackupTarget
 from appcare.backups.filesystem import _is_secret_path, _SecretContentScanner
 from appcare.revision import BaselineEntry
+from appcare.revision.mirror import _looks_secret
 
 
 def _scan_in_chunks(content: bytes, chunk_size: int = 257) -> bool:
@@ -137,6 +138,10 @@ def test_canonical_credential_names_and_quoted_punctuation_detected_at_every_spl
         b"$password // comment\n = 'fixture-value';",
         b"$password # comment\n = 'fixture-value';",
         b"sk_live_" + b"a" * 24,
+        b"gho_" + b"a" * 24,
+        b"github_pat_" + b"a" * 24,
+        b"xoxb-" + b"a" * 24,
+        b"sk-" + b"a" * 24,
     ],
 )
 def test_adversarial_secret_markers_detected_at_every_split(content: bytes) -> None:
@@ -149,6 +154,16 @@ def test_adversarial_secret_markers_detected_at_every_split(content: bytes) -> N
 def test_provider_token_at_stream_validation_boundary() -> None:
     content = b"x" * (64 * 1024 - 5) + b"sk_live_" + b"a" * 24
     assert _scan_in_chunks(content, 64 * 1024)
+
+
+@pytest.mark.parametrize(
+    "token",
+    [b"sk_live_", b"gho_", b"github_pat_", b"xoxb-", b"sk-"],
+)
+def test_p03_mirror_and_p04_source_share_provider_token_exclusion(token: bytes) -> None:
+    content = token + b"a" * 24
+    assert _looks_secret(content)
+    assert _scan_in_chunks(content, 3)
 
 
 @pytest.mark.parametrize(
@@ -424,6 +439,10 @@ def _account_sixty_bytes(budget: filesystem._CaptureByteBudget) -> str:
         b"$password /* comment */ = 'fixture-value';",
         b"'client_secret' /* comment */ => 'fixture-value'",
         b"sk_live_" + b"a" * 24,
+        b"gho_" + b"a" * 24,
+        b"github_pat_" + b"a" * 24,
+        b"xoxb-" + b"a" * 24,
+        b"sk-" + b"a" * 24,
     ],
 )
 def test_secret_content_never_enters_any_backup_content_path(
