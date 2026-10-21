@@ -148,6 +148,7 @@ def test_canonical_credential_names_and_quoted_punctuation_detected_at_every_spl
         b"Don't panic <?php $pass" + b"word = 'fixture-value';\n",
         b'<?php /* {"pass' + b'word": "fixture-value"} */',
         b'<?php // {"pass' + b'word": "fixture-value"}\n',
+        b'<?php /* {"pass' + b'word": "\'fixture-value"} */',
         b"sk_live_" + b"a" * 24,
         b"gho_" + b"a" * 24,
         b"github_pat_" + b"a" * 24,
@@ -165,6 +166,18 @@ def test_adversarial_secret_markers_detected_at_every_split(content: bytes) -> N
 def test_provider_token_at_stream_validation_boundary() -> None:
     content = b"x" * (64 * 1024 - 5) + b"sk_live_" + b"a" * 24
     assert _scan_in_chunks(content, 64 * 1024)
+
+
+@pytest.mark.parametrize("chunk_size", [256, 64 * 1024])
+def test_php_tag_resets_html_quote_before_long_assignment(chunk_size: int) -> None:
+    content = b"Don't panic <?php $pass" + b"word" + b" " * 90_000 + b"= 'fixture-value';\n"
+    assert _scan_in_chunks(content, chunk_size)
+
+
+@pytest.mark.parametrize("chunk_size", [256, 64 * 1024])
+def test_commented_quoted_key_with_long_assignment_gap(chunk_size: int) -> None:
+    content = b'<?php /* {"pass' + b'word"' + b" " * 90_000 + b': "\'fixture-value"} */'
+    assert _scan_in_chunks(content, chunk_size)
 
 
 def test_hyphenated_aws_key_name_at_stream_validation_boundary() -> None:
@@ -478,6 +491,15 @@ def _account_sixty_bytes(budget: filesystem._CaptureByteBudget) -> str:
         b"Don't panic <?php $pass" + b"word = 'fixture-value';\n",
         b'<?php /* {"pass' + b'word": "fixture-value"} */',
         b'<?php // {"pass' + b'word": "fixture-value"}\n',
+        b'<?php /* {"pass' + b'word": "\'fixture-value"} */',
+        pytest.param(
+            b"Don't panic <?php $pass" + b"word" + b" " * 90_000 + b"= 'fixture-value';\n",
+            id="html-php-long-gap",
+        ),
+        pytest.param(
+            b'<?php /* {"pass' + b'word"' + b" " * 90_000 + b': "\'fixture-value"} */',
+            id="commented-quoted-long-gap",
+        ),
     ],
 )
 def test_secret_content_never_enters_any_backup_content_path(

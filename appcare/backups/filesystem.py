@@ -77,12 +77,6 @@ _SECRET_SCAN_TAIL_BYTES: Final = 4096
 _DEFINE_SECRET_IDENTIFIER_PATTERN: Final = re.compile(
     rb"(?i)(?:" + SECRET_IDENTIFIER_PATTERN_BYTES + rb"|(?:db[_-]?)?passwd|authorization)"
 )
-_QUOTED_OR_PHP_SECRET_VALUE_PATTERN: Final = re.compile(
-    rb"(?i)(?<![A-Z0-9_-])\$?(?:"
-    + SECRET_IDENTIFIER_PATTERN_BYTES
-    + rb"|(?:db[_-]?)?passwd|authorization)(?![A-Z0-9_-])[\"']?\s*(?:=>|:|=(?!>))\s*"
-    + rb"(?:[\"'][^\"'\r\n]|[^\"'\s,})])"
-)
 _DEFINE_SECRET_TAIL_BYTES: Final = 128
 _IDENTIFIER_BYTES: Final = frozenset(
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
@@ -125,6 +119,10 @@ class _SecretContentScanner:
         self._assignment_token_overflow = False
         self._assignment_comment = 0
         self._assignment_comment_star = False
+        self._php_tag_match = 0
+        self._quoted_key_state = 0
+        self._quoted_key_quote = 0
+        self._quoted_key_token = bytearray()
 
     def feed(self, chunk: bytes) -> bool:
         """Consume one bounded chunk and report whether it contains a secret."""
@@ -132,12 +130,14 @@ class _SecretContentScanner:
         if self._found:
             return True
         window = self._tail + chunk
-        if any(pattern.search(window) for pattern in _SECRET_CONTENT_PATTERNS) or (
-            _QUOTED_OR_PHP_SECRET_VALUE_PATTERN.search(window) is not None
-        ):
+        if any(pattern.search(window) for pattern in _SECRET_CONTENT_PATTERNS):
             self._found = True
             return True
-        self._found = self._scan_assignments(chunk) or self._scan_define_calls(chunk)
+        self._found = (
+            self._scan_assignments(chunk)
+            or self._scan_define_calls(chunk)
+            or self._scan_quoted_keys(chunk)
+        )
         self._tail = window[-_SECRET_SCAN_TAIL_BYTES:]
         return self._found
 
@@ -145,6 +145,7 @@ class _SecretContentScanner:
         index = 0
         while index < len(chunk):
             byte = chunk[index]
+            self._advance_php_tag(byte)
             if self._assignment_state == 0:
                 self._advance_assignment_search_comment(byte)
                 if self._assignment_search_quote is not None:
@@ -237,6 +238,67 @@ class _SecretContentScanner:
                 self._assignment_quote = None
                 continue
             index += 1
+        return False
+
+    def _advance_php_tag(self, byte: int) -> None:
+        """Begin a fresh PHP expression after an HTML text apostrophe."""
+
+        marker = b"<?php"
+        lowered = byte | 0x20 if ord("A") <= byte <= ord("Z") else byte
+        if lowered == marker[self._php_tag_match]:
+            self._php_tag_match += 1
+            if self._php_tag_match == len(marker):
+                self._php_tag_match = 0
+                self._assignment_state = 0
+                self._assignment_search_quote = None
+                self._assignment_search_escape = False
+                self._assignment_search_comment = 0
+                self._assignment_token.clear()
+                self._assignment_token_overflow = False
+        else:
+            self._php_tag_match = 1 if byte == marker[0] else 0
+
+    def _scan_quoted_keys(self, chunk: bytes) -> bool:
+        """Catch quoted credential keys even inside comments and long gaps."""
+
+        for byte in chunk:
+            if self._quoted_key_state == 0:
+                if byte in (ord("'"), ord('"')):
+                    self._quoted_key_quote = byte
+                    self._quoted_key_token.clear()
+                    self._quoted_key_state = 1
+            elif self._quoted_key_state == 1:
+                if byte == self._quoted_key_quote:
+                    if _DEFINE_SECRET_IDENTIFIER_PATTERN.fullmatch(bytes(self._quoted_key_token)):
+                        self._quoted_key_state = 2
+                    else:
+                        self._quoted_key_state = 0
+                elif byte in _IDENTIFIER_BYTES and len(self._quoted_key_token) < 128:
+                    self._quoted_key_token.append(byte)
+                else:
+                    self._quoted_key_state = 0
+            elif self._quoted_key_state == 2:
+                if byte in _WHITESPACE_BYTES:
+                    continue
+                if byte in (ord(":"), ord("=")):
+                    self._quoted_key_state = 3
+                else:
+                    self._quoted_key_state = 0
+            elif self._quoted_key_state == 3:
+                if byte in _WHITESPACE_BYTES or byte == ord(">"):
+                    continue
+                if byte in (ord("'"), ord('"')):
+                    self._quoted_key_quote = byte
+                    self._quoted_key_state = 4
+                elif byte in _VALUE_TERMINATORS:
+                    self._quoted_key_state = 0
+                else:
+                    return True
+            else:
+                if byte == self._quoted_key_quote or byte in (ord("\r"), ord("\n")):
+                    self._quoted_key_state = 0
+                else:
+                    return True
         return False
 
     def _assignment_token_may_be_key(self) -> bool:
