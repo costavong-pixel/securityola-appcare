@@ -141,6 +141,8 @@ def test_canonical_credential_names_and_quoted_punctuation_detected_at_every_spl
         b"<?php $label = 'password //'; $to" + b"ken = 'fixture-value';\n",
         b"<?php $label = 'password /*'; $to" + b"ken = 'fixture-value';\n",
         b"<?php $label = 'the password //'; $to" + b"ken = 'fixture-value';\n",
+        b"// 'foo\ntoken=fixture",
+        b"/* 'foo */\ntoken=fixture",
         b"sk_live_" + b"a" * 24,
         b"gho_" + b"a" * 24,
         b"github_pat_" + b"a" * 24,
@@ -464,6 +466,8 @@ def _account_sixty_bytes(budget: filesystem._CaptureByteBudget) -> str:
         b"<?php $label = 'password //'; $to" + b"ken = 'fixture-value';\n",
         b"<?php $label = 'password /*'; $to" + b"ken = 'fixture-value';\n",
         b"<?php $label = 'the password //'; $to" + b"ken = 'fixture-value';\n",
+        b"// 'foo\ntoken=fixture",
+        b"/* 'foo */\ntoken=fixture",
     ],
 )
 def test_secret_content_never_enters_any_backup_content_path(

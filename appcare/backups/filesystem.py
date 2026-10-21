@@ -113,6 +113,8 @@ class _SecretContentScanner:
         self._assignment_quote: int | None = None
         self._assignment_search_quote: int | None = None
         self._assignment_search_escape = False
+        self._assignment_search_comment = 0
+        self._assignment_search_comment_star = False
         self._assignment_token = bytearray()
         self._assignment_token_overflow = False
         self._assignment_comment = 0
@@ -136,6 +138,7 @@ class _SecretContentScanner:
         while index < len(chunk):
             byte = chunk[index]
             if self._assignment_state == 0:
+                self._advance_assignment_search_comment(byte)
                 if self._assignment_search_quote is not None:
                     if self._assignment_search_escape:
                         self._assignment_search_escape = False
@@ -155,7 +158,7 @@ class _SecretContentScanner:
                     continue
                 self._finish_assignment_token(quoted=False)
                 if self._assignment_state == 0:
-                    if byte in (ord("'"), ord('"')):
+                    if self._assignment_search_comment == 0 and byte in (ord("'"), ord('"')):
                         self._assignment_search_quote = byte
                     index += 1
                     continue
@@ -212,6 +215,35 @@ class _SecretContentScanner:
                 continue
             index += 1
         return False
+
+    def _advance_assignment_search_comment(self, byte: int) -> None:
+        """Keep comment quotes from suppressing subsequent real assignments."""
+
+        if self._assignment_search_quote is not None:
+            return
+        if self._assignment_search_comment == 2:
+            if byte in (ord("\r"), ord("\n")):
+                self._assignment_search_comment = 0
+            return
+        if self._assignment_search_comment == 3:
+            if self._assignment_search_comment_star and byte == ord("/"):
+                self._assignment_search_comment = 0
+                self._assignment_search_comment_star = False
+            else:
+                self._assignment_search_comment_star = byte == ord("*")
+            return
+        if self._assignment_search_comment == 1:
+            self._assignment_search_comment = 0
+            if byte == ord("/"):
+                self._assignment_search_comment = 2
+                return
+            if byte == ord("*"):
+                self._assignment_search_comment = 3
+                return
+        if byte == ord("/"):
+            self._assignment_search_comment = 1
+        elif byte == ord("#"):
+            self._assignment_search_comment = 2
 
     def _append_assignment_token(self, byte: int, *, quoted: bool) -> None:
         if quoted and byte in _WHITESPACE_BYTES and not self._assignment_token:
