@@ -79,7 +79,7 @@ _DEFINE_SECRET_IDENTIFIER_PATTERN: Final = re.compile(
 )
 _DEFINE_SECRET_TAIL_BYTES: Final = 128
 _IDENTIFIER_BYTES: Final = frozenset(
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_"
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
 )
 _WHITESPACE_BYTES: Final = frozenset(b" \t\r\n\f\v")
 _WHITESPACE_PATTERN: Final = re.compile(rb"\s*")
@@ -113,6 +113,7 @@ class _SecretContentScanner:
         self._assignment_state = 0
         self._assignment_arrow_possible = False
         self._assignment_quote: int | None = None
+        self._assignment_key_quote: int | None = None
         self._assignment_comment = 0
         self._assignment_comment_star = False
 
@@ -145,12 +146,31 @@ class _SecretContentScanner:
                     token_start = match.start()
                     while token_start and window[token_start - 1] in _IDENTIFIER_BYTES:
                         token_start -= 1
+                    if token_start and window[token_start - 1] in (ord("'"), ord('"')):
+                        token_start -= 1
                     self._assignment_tail = window[
                         max(token_start, len(window) - _DEFINE_SECRET_TAIL_BYTES) :
                     ]
                     return False
+                self._assignment_key_quote = (
+                    window[match.start() - 1]
+                    if match.start() and window[match.start() - 1] in (ord("'"), ord('"'))
+                    else None
+                )
                 index = match.end()
                 self._assignment_state = 1
+            if self._assignment_state == 1 and self._assignment_key_quote is not None:
+                if window[index] in _WHITESPACE_BYTES:
+                    index += 1
+                    continue
+                if window[index] != self._assignment_key_quote:
+                    self._assignment_state = 0
+                    self._assignment_key_quote = None
+                    continue
+                self._assignment_state = 2
+                self._assignment_key_quote = None
+                index += 1
+                continue
             if self._assignment_comment:
                 byte = window[index]
                 if self._assignment_comment == 1:
@@ -207,6 +227,7 @@ class _SecretContentScanner:
                 self._assignment_state = 0
                 self._assignment_arrow_possible = False
                 self._assignment_quote = None
+                self._assignment_key_quote = None
                 continue
             index += 1
         return False

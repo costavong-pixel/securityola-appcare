@@ -137,6 +137,9 @@ def test_canonical_credential_names_and_quoted_punctuation_detected_at_every_spl
         b"'client_secret' /* comment */ => 'fixture-value'",
         b"$password // comment\n = 'fixture-value';",
         b"$password # comment\n = 'fixture-value';",
+        b"'aws-access-key-id' => 'fixture-value'",
+        b"<?php $label = 'password //'; $token = 'fixture-value';\n",
+        b"<?php $label = 'password /*'; $token = 'fixture-value';\n",
         b"sk_live_" + b"a" * 24,
         b"gho_" + b"a" * 24,
         b"github_pat_" + b"a" * 24,
@@ -153,6 +156,12 @@ def test_adversarial_secret_markers_detected_at_every_split(content: bytes) -> N
 
 def test_provider_token_at_stream_validation_boundary() -> None:
     content = b"x" * (64 * 1024 - 5) + b"sk_live_" + b"a" * 24
+    assert _scan_in_chunks(content, 64 * 1024)
+
+
+def test_hyphenated_aws_key_name_at_stream_validation_boundary() -> None:
+    content = b"x" * (64 * 1024 - len(b"aws-access-key"))
+    content += b"aws-access-key-id' => 'fixture-value'"
     assert _scan_in_chunks(content, 64 * 1024)
 
 
@@ -443,6 +452,9 @@ def _account_sixty_bytes(budget: filesystem._CaptureByteBudget) -> str:
         b"github_pat_" + b"a" * 24,
         b"xoxb-" + b"a" * 24,
         b"sk-" + b"a" * 24,
+        b"'aws-access-key-id' => 'fixture-value'",
+        b"<?php $label = 'password //'; $token = 'fixture-value';\n",
+        b"<?php $label = 'password /*'; $token = 'fixture-value';\n",
     ],
 )
 def test_secret_content_never_enters_any_backup_content_path(
