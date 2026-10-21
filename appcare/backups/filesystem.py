@@ -140,6 +140,13 @@ class _SecretContentScanner:
             if self._assignment_state == 0:
                 self._advance_assignment_search_comment(byte)
                 if self._assignment_search_quote is not None:
+                    if byte in (ord("\r"), ord("\n")) and not self._assignment_token_may_be_key():
+                        self._assignment_search_quote = None
+                        self._assignment_search_escape = False
+                        self._assignment_token.clear()
+                        self._assignment_token_overflow = False
+                        index += 1
+                        continue
                     if self._assignment_search_escape:
                         self._assignment_search_escape = False
                         self._assignment_token_overflow = True
@@ -183,13 +190,21 @@ class _SecretContentScanner:
                 index += 1
                 continue
             if byte in _WHITESPACE_BYTES:
+                if self._assignment_search_comment == 2 and byte in (ord("\r"), ord("\n")):
+                    self._assignment_search_comment = 0
                 index += 1
                 continue
             if self._assignment_state == 1 and byte == ord("/"):
+                if self._assignment_search_comment in (2, 3):
+                    self._assignment_state = 0
+                    continue
                 self._assignment_comment = 1
                 index += 1
                 continue
             if self._assignment_state == 1 and byte == ord("#"):
+                if self._assignment_search_comment in (2, 3):
+                    self._assignment_state = 0
+                    continue
                 self._assignment_comment = 2
                 index += 1
                 continue
@@ -215,6 +230,12 @@ class _SecretContentScanner:
                 continue
             index += 1
         return False
+
+    def _assignment_token_may_be_key(self) -> bool:
+        token = bytes(self._assignment_token).strip()
+        return not self._assignment_token_overflow and bool(
+            _DEFINE_SECRET_IDENTIFIER_PATTERN.fullmatch(token)
+        )
 
     def _advance_assignment_search_comment(self, byte: int) -> None:
         """Keep comment quotes from suppressing subsequent real assignments."""
