@@ -59,6 +59,7 @@ from appcare.release.gate import REQUIRED_AUTHORITATIVE_RECEIPTS, ReleaseGate
 
 TENANT_ID = "tenant-appcare-e2e"
 APPLICATION_ID = "appcare-e2e-app"
+TARGET_REFERENCE = "target-appcare-e2e"
 USER_ID = "appcare-e2e-user"
 BASELINE_REVISION = "c1dc80ba3fb838bbf36a2e8fceec3ca312a965f1"
 STAGING_ROOT = Path("/opt/securityola/appcare-staging")
@@ -211,7 +212,13 @@ def _backup(backup_id: str, backup_job_id: str, restore_job_id: str) -> dict[str
         "local-test",
         now + timedelta(days=7),
     )
-    target = BackupTarget(TENANT_ID, APPLICATION_ID, "test", "synthetic://appcare/reference")
+    target = BackupTarget(
+        TENANT_ID,
+        APPLICATION_ID,
+        "test",
+        "synthetic://appcare/reference",
+        TARGET_REFERENCE,
+    )
     request = BackupRequest(
         target,
         destination,
@@ -234,7 +241,12 @@ def _backup(backup_id: str, backup_job_id: str, restore_job_id: str) -> dict[str
     if not outcome.healthy or outcome.receipt is None or outcome.evidence is None:
         raise RuntimeError("synthetic backup did not verify")
     reopened = FilesystemImmutableVault(filesystem, destination)
-    artifact = reopened.get(backup_id, tenant_id=TENANT_ID, application_id=APPLICATION_ID)
+    artifact = reopened.get(
+        backup_id,
+        tenant_id=TENANT_ID,
+        application_id=APPLICATION_ID,
+        target_reference=TARGET_REFERENCE,
+    )
     restore_root = filesystem.restore_rehearsal_path(TENANT_ID, APPLICATION_ID, restore_job_id)
     restore = coordinator.restore_backup(
         backup_id=backup_id,
@@ -249,6 +261,7 @@ def _backup(backup_id: str, backup_job_id: str, restore_job_id: str) -> dict[str
             "test",
             restore_root,
             restore_job_id,
+            target_reference=TARGET_REFERENCE,
             filesystem=filesystem,
         ),
         now=now + timedelta(seconds=5),

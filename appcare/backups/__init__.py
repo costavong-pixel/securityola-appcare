@@ -9,6 +9,16 @@ from .contracts import (
     RestoreTarget,
 )
 from .crypto import AesGcmEnvelopeEncryptor, EnvelopeEncryptionError
+from .filesystem import (
+    FilesystemCapture,
+    FilesystemEntry,
+    FilesystemEntryClass,
+    FilesystemEntryType,
+    FilesystemSourceError,
+    FilesystemSourceLimits,
+    LinuxFilesystemBackupSource,
+    filesystem_source_reference,
+)
 from .models import (
     BackupArtifact,
     BackupComponent,
@@ -64,6 +74,14 @@ __all__ = [
     "EncryptedEnvelope",
     "EnvelopeEncryptor",
     "EnvelopeEncryptionError",
+    "FilesystemCapture",
+    "FilesystemEntry",
+    "FilesystemEntryClass",
+    "FilesystemEntryType",
+    "FilesystemSourceError",
+    "FilesystemSourceLimits",
+    "LinuxFilesystemBackupSource",
+    "filesystem_source_reference",
     "InMemoryImmutableVault",
     "FilesystemImmutableVault",
     "RestoreEvidence",

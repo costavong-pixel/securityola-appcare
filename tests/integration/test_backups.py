@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from appcare.backups import (
     UnavailableCloudVault,
 )
 from appcare.backups.models import BackupArtifact, EncryptedEnvelope, VaultReceipt
+from appcare.backups.pipeline import BackupError
 from appcare.backups.stores import RetentionLockedError, VaultError
 
 NOW = datetime(2026, 8, 17, 10, 0, tzinfo=UTC)
@@ -45,7 +47,11 @@ class SyntheticAppSource:
 
 def _target() -> BackupTarget:
     return BackupTarget(
-        "tenant-appcare-1", "appcare-test-app", "test", "synthetic://appcare/test-app"
+        "tenant-appcare-1",
+        "appcare-test-app",
+        "test",
+        "synthetic://appcare/test-app",
+        "target-appcare-test",
     )
 
 
@@ -78,7 +84,10 @@ def _encryptor() -> AesGcmEnvelopeEncryptor:
 
 
 def _restore_target(
-    tmp_path: Path, isolation_id: str
+    tmp_path: Path,
+    isolation_id: str,
+    *,
+    target_reference: str = "target-appcare-test",
 ) -> tuple[RestoreTarget, BackupFilesystemBoundary]:
     filesystem = BackupFilesystemBoundary.for_test(tmp_path / f"boundary-{isolation_id}")
     root = filesystem.restore_rehearsal_path(
@@ -93,6 +102,7 @@ def _restore_target(
             "test",
             root,
             isolation_id,
+            target_reference=target_reference,
             filesystem=filesystem,
         ),
         filesystem,
@@ -204,6 +214,56 @@ def test_duplicate_job_does_not_run_source_twice() -> None:
     assert source.calls == 1
 
 
+@pytest.mark.parametrize("changed_field", ["target", "tenant", "backup_id", "source"])
+def test_idempotency_key_cannot_return_a_foreign_backup_receipt(changed_field: str) -> None:
+    source = SyntheticAppSource()
+    destination = _destination()
+    vault = InMemoryImmutableVault(destination)
+    coordinator = BackupCoordinator()
+    original = _request(destination=destination)
+    first = coordinator.create_backup(
+        original, source=source, vault=vault, encryptor=_encryptor(), now=NOW
+    )
+    assert first.healthy and first.receipt is not None
+    target = original.target
+    if changed_field == "target":
+        target = BackupTarget(
+            target.tenant_id,
+            target.application_id,
+            target.environment,
+            target.source_reference,
+            "target-appcare-other",
+        )
+    elif changed_field == "tenant":
+        target = BackupTarget(
+            "tenant-appcare-other",
+            target.application_id,
+            target.environment,
+            target.source_reference,
+            target.target_reference,
+        )
+    elif changed_field == "source":
+        target = BackupTarget(
+            target.tenant_id,
+            target.application_id,
+            target.environment,
+            "synthetic://appcare/other",
+            target.target_reference,
+        )
+    attempted = BackupRequest(
+        target,
+        destination,
+        "backup-other" if changed_field == "backup_id" else original.backup_id,
+        original.idempotency_key,
+        original.source_captured_at,
+    )
+    with pytest.raises(BackupError, match="idempotency key belongs to another backup request"):
+        coordinator.create_backup(
+            attempted, source=source, vault=vault, encryptor=_encryptor(), now=NOW
+        )
+    assert source.calls == 1
+
+
 def test_large_database_component_is_verified() -> None:
     source = SyntheticAppSource(large_database=True)
     destination = _destination()
@@ -237,12 +297,14 @@ def test_retention_lock_rejects_delete_until_expiry() -> None:
             "backup-beta04-1",
             tenant_id="tenant-appcare-1",
             application_id="appcare-test-app",
+            target_reference="target-appcare-test",
             now=NOW + timedelta(hours=1),
         )
     vault.delete(
         "backup-beta04-1",
         tenant_id="tenant-appcare-1",
         application_id="appcare-test-app",
+        target_reference="target-appcare-test",
         now=NOW + timedelta(days=2),
     )
     with pytest.raises(VaultError):
@@ -250,6 +312,7 @@ def test_retention_lock_rejects_delete_until_expiry() -> None:
             "backup-beta04-1",
             tenant_id="tenant-appcare-1",
             application_id="appcare-test-app",
+            target_reference="target-appcare-test",
         )
 
 
@@ -269,6 +332,7 @@ def test_restore_integrity_failure_never_promotes_partial_content(tmp_path: Path
         "backup-beta04-1",
         tenant_id="tenant-appcare-1",
         application_id="appcare-test-app",
+        target_reference="target-appcare-test",
     )
     corrupted = EncryptedEnvelope(
         original.envelope.algorithm,
@@ -276,7 +340,9 @@ def test_restore_integrity_failure_never_promotes_partial_content(tmp_path: Path
         original.envelope.nonce,
         bytes([original.envelope.ciphertext[0] ^ 1]) + original.envelope.ciphertext[1:],
     )
-    vault._artifacts[("tenant-appcare-1", "appcare-test-app", "backup-beta04-1")] = BackupArtifact(
+    vault._artifacts[
+        ("tenant-appcare-1", "appcare-test-app", "backup-beta04-1", "target-appcare-test")
+    ] = BackupArtifact(
         original.manifest,
         original.manifest_bytes,
         corrupted,
@@ -333,14 +399,58 @@ def test_filesystem_vault_reads_persisted_artifact_after_reopen(tmp_path: Path) 
         "backup-beta04-1",
         tenant_id="tenant-appcare-1",
         application_id="appcare-test-app",
+        target_reference="target-appcare-test",
     )
     assert filesystem.snapshot_path(
-        "tenant-appcare-1", "appcare-test-app", "backup-beta04-1"
+        "tenant-appcare-1",
+        "appcare-test-app",
+        "backup-beta04-1",
+        target_reference="target-appcare-test",
     ).is_dir()
     assert filesystem.manifest_path(
-        "tenant-appcare-1", "appcare-test-app", "backup-beta04-1"
+        "tenant-appcare-1",
+        "appcare-test-app",
+        "backup-beta04-1",
+        target_reference="target-appcare-test",
     ).is_file()
     assert restored.artifact_digest == outcome.evidence.artifact_digest
+    assert restored.manifest_bytes == restored.manifest.canonical_bytes()
+
+
+def test_filesystem_vault_preserves_target_reference_in_manifest(tmp_path: Path) -> None:
+    destination = _destination()
+    filesystem = BackupFilesystemBoundary.for_test(tmp_path / "target-reference-boundary")
+    target = BackupTarget(
+        "tenant-appcare-1",
+        "appcare-test-app",
+        "test",
+        "synthetic://appcare/test-app",
+        "target-reference-1",
+    )
+    request = BackupRequest(
+        target,
+        destination,
+        "backup-target-reference-1",
+        "job-target-reference-1",
+        NOW - timedelta(hours=1),
+    )
+    vault = FilesystemImmutableVault(filesystem, destination)
+    outcome = BackupCoordinator().create_backup(
+        request,
+        source=SyntheticAppSource(),
+        vault=vault,
+        encryptor=_encryptor(),
+        now=NOW,
+    )
+
+    assert outcome.healthy is True
+    restored = vault.get(
+        "backup-target-reference-1",
+        tenant_id="tenant-appcare-1",
+        application_id="appcare-test-app",
+        target_reference="target-reference-1",
+    )
+    assert restored.manifest.target.target_reference == "target-reference-1"
     assert restored.manifest_bytes == restored.manifest.canonical_bytes()
 
 
@@ -362,13 +472,164 @@ def test_filesystem_vault_rejects_foreign_tenant_scope(tmp_path: Path) -> None:
             "backup-beta04-1",
             tenant_id="tenant-foreign",
             application_id="appcare-test-app",
+            target_reference="target-appcare-test",
         )
     with pytest.raises(VaultError):
         vault.get(
             "backup-beta04-1",
             tenant_id="tenant-appcare-1",
             application_id="foreign-app",
+            target_reference="target-appcare-test",
         )
+
+
+def test_filesystem_vault_namespaces_same_backup_id_by_target(tmp_path: Path) -> None:
+    destination = _destination()
+    filesystem = BackupFilesystemBoundary.for_test(tmp_path / "target-namespace-boundary")
+    vault = FilesystemImmutableVault(filesystem, destination)
+    coordinator = BackupCoordinator()
+    targets = (
+        "target-appcare-test",
+        "target-appcare-other",
+    )
+
+    for target_reference in targets:
+        target = BackupTarget(
+            "tenant-appcare-1",
+            "appcare-test-app",
+            "test",
+            "synthetic://appcare/test-app",
+            target_reference,
+        )
+        outcome = coordinator.create_backup(
+            BackupRequest(
+                target,
+                destination,
+                "backup-shared-id",
+                f"job-{target_reference}",
+                NOW - timedelta(hours=1),
+            ),
+            source=SyntheticAppSource(),
+            vault=vault,
+            encryptor=_encryptor(),
+            now=NOW,
+        )
+        assert outcome.healthy is True
+
+    first_path = filesystem.snapshot_path(
+        "tenant-appcare-1",
+        "appcare-test-app",
+        "backup-shared-id",
+        target_reference=targets[0],
+    )
+    second_path = filesystem.snapshot_path(
+        "tenant-appcare-1",
+        "appcare-test-app",
+        "backup-shared-id",
+        target_reference=targets[1],
+    )
+    assert first_path.is_dir()
+    assert second_path.is_dir()
+    assert first_path != second_path
+    assert (
+        vault.get(
+            "backup-shared-id",
+            tenant_id="tenant-appcare-1",
+            application_id="appcare-test-app",
+            target_reference=targets[0],
+        ).manifest.target.target_reference
+        == targets[0]
+    )
+    assert (
+        vault.get(
+            "backup-shared-id",
+            tenant_id="tenant-appcare-1",
+            application_id="appcare-test-app",
+            target_reference=targets[1],
+        ).manifest.target.target_reference
+        == targets[1]
+    )
+
+
+def test_vault_target_scope_rejects_cross_target_retrieval_and_restore(
+    tmp_path: Path,
+) -> None:
+    destination = _destination()
+    filesystem = BackupFilesystemBoundary.for_test(tmp_path / "cross-target-boundary")
+    vault = FilesystemImmutableVault(filesystem, destination)
+    coordinator = BackupCoordinator()
+    outcome = coordinator.create_backup(
+        _request(destination=destination),
+        source=SyntheticAppSource(),
+        vault=vault,
+        encryptor=_encryptor(),
+        now=NOW,
+    )
+    assert outcome.healthy is True
+
+    with pytest.raises(VaultError):
+        vault.get(
+            "backup-beta04-1",
+            tenant_id="tenant-appcare-1",
+            application_id="appcare-test-app",
+            target_reference="target-foreign",
+        )
+
+    restore_target, _ = _restore_target(
+        tmp_path,
+        "rehearsal-cross-target",
+        target_reference="target-foreign",
+    )
+    evidence = coordinator.restore_backup(
+        backup_id="backup-beta04-1",
+        vault=vault,
+        encryptor=_encryptor(),
+        target=restore_target,
+        now=NOW,
+    )
+
+    assert evidence.status == "restore_failed"
+    assert evidence.failure_code == "vault_failed"
+    assert not (restore_target.root / "restored" / "backup-beta04-1").exists()
+
+
+def test_restore_rejects_legacy_manifest_without_target_reference(tmp_path: Path) -> None:
+    destination = _destination()
+    legacy_target = BackupTarget(
+        "tenant-appcare-1",
+        "appcare-test-app",
+        "test",
+        "synthetic://appcare/test-app",
+    )
+    request = BackupRequest(
+        legacy_target,
+        destination,
+        "backup-legacy-target-reference",
+        "job-legacy-target-reference",
+        NOW - timedelta(hours=1),
+    )
+    vault = InMemoryImmutableVault(destination)
+    coordinator = BackupCoordinator()
+    outcome = coordinator.create_backup(
+        request,
+        source=SyntheticAppSource(),
+        vault=vault,
+        encryptor=_encryptor(),
+        now=NOW,
+    )
+    assert outcome.healthy is True
+
+    restore_target, _ = _restore_target(tmp_path, "rehearsal-legacy-target")
+    evidence = coordinator.restore_backup(
+        backup_id="backup-legacy-target-reference",
+        vault=vault,
+        encryptor=_encryptor(),
+        target=restore_target,
+        now=NOW,
+    )
+
+    assert evidence.status == "restore_failed"
+    assert evidence.failure_code == "vault_failed"
 
 
 def test_restore_does_not_delete_preexisting_staging_on_mkdir_failure(tmp_path: Path) -> None:
@@ -400,3 +661,156 @@ def test_restore_does_not_delete_preexisting_staging_on_mkdir_failure(tmp_path: 
 
     assert evidence.status == "restore_failed"
     assert marker.read_text(encoding="utf-8") == "pre-existing"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX descriptor-relative IO")
+@pytest.mark.parametrize("operation", ["put", "get", "delete"])
+def test_vault_parent_swap_at_artifact_io_stays_on_pinned_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    destination = _destination()
+    memory = InMemoryImmutableVault(destination)
+    assert (
+        BackupCoordinator()
+        .create_backup(
+            _request(destination=destination),
+            source=SyntheticAppSource(),
+            vault=memory,
+            encryptor=_encryptor(),
+            now=NOW,
+        )
+        .healthy
+    )
+    scope = dict(
+        tenant_id="tenant-appcare-1",
+        application_id="appcare-test-app",
+        target_reference="target-appcare-test",
+    )
+    artifact = memory.get("backup-beta04-1", **scope)
+    filesystem = BackupFilesystemBoundary.for_test(tmp_path / "vault")
+    vault = FilesystemImmutableVault(filesystem, destination)
+    manifest = filesystem.manifest_path(
+        "tenant-appcare-1",
+        "appcare-test-app",
+        "backup-beta04-1",
+        target_reference="target-appcare-test",
+    )
+    if operation != "put":
+        vault.put(artifact, idempotency_key="fixture")
+    else:
+        manifest.parent.mkdir(parents=True, mode=0o700)
+        # pathlib creates intermediate parents using the default mode.
+        for parent in manifest.parents:
+            if parent == filesystem.backup_root:
+                break
+            parent.chmod(0o700)
+    outside = tmp_path / "outside"
+    outside.mkdir(mode=0o700)
+    sentinel = outside / manifest.name
+    sentinel.write_bytes(b"outside sentinel")
+    swapped = False
+    original_open = os.open
+    original_unlink = os.unlink
+
+    def swap() -> None:
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            manifest.parent.rename(manifest.parent.with_name("held-original"))
+            manifest.parent.symlink_to(outside, target_is_directory=True)
+
+    def racing_open(
+        path: object, flags: int, mode: int = 0o777, *, dir_fd: int | None = None
+    ) -> int:
+        if path == manifest.name and dir_fd is not None:
+            swap()
+        return original_open(path, flags, mode, dir_fd=dir_fd)  # type: ignore[arg-type]
+
+    def racing_unlink(path: object, *, dir_fd: int | None = None) -> None:
+        if path == manifest.name and dir_fd is not None:
+            swap()
+        original_unlink(path, dir_fd=dir_fd)  # type: ignore[arg-type]
+
+    if operation == "delete":
+        monkeypatch.setattr(os, "unlink", racing_unlink)
+        vault.delete("backup-beta04-1", **scope, now=NOW + timedelta(days=8))
+    else:
+        monkeypatch.setattr(os, "open", racing_open)
+        if operation == "put":
+            vault.put(artifact, idempotency_key="fixture")
+        else:
+            assert vault.get("backup-beta04-1", **scope).manifest_bytes == artifact.manifest_bytes
+    assert swapped
+    assert sentinel.read_bytes() == b"outside sentinel"
+    assert list(outside.iterdir()) == [sentinel]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX permissions and symlinks")
+def test_vault_put_rejects_parent_swap_during_mkdir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = _destination()
+    memory = InMemoryImmutableVault(destination)
+    assert (
+        BackupCoordinator()
+        .create_backup(
+            _request(destination=destination),
+            source=SyntheticAppSource(),
+            vault=memory,
+            encryptor=_encryptor(),
+            now=NOW,
+        )
+        .healthy
+    )
+    artifact = memory.get(
+        "backup-beta04-1",
+        tenant_id="tenant-appcare-1",
+        application_id="appcare-test-app",
+        target_reference="target-appcare-test",
+    )
+    filesystem = BackupFilesystemBoundary.for_test(tmp_path / "vault")
+    vault = FilesystemImmutableVault(filesystem, destination)
+    snapshots = filesystem.backup_root / "snapshots"
+    outside = tmp_path / "outside"
+    outside.mkdir(mode=0o700)
+    original_mkdir = os.mkdir
+    swapped = False
+
+    def racing_mkdir(path: object, mode: int = 0o777, *, dir_fd: int | None = None) -> None:
+        nonlocal swapped
+        if path == "snapshots" and dir_fd is not None and not swapped:
+            swapped = True
+            snapshots.rename(snapshots.with_name("held-snapshots"))
+            snapshots.symlink_to(outside, target_is_directory=True)
+        original_mkdir(path, mode, dir_fd=dir_fd)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "mkdir", racing_mkdir)
+    with pytest.raises(VaultError):
+        vault.put(artifact, idempotency_key="fixture")
+    assert swapped
+    assert not list(outside.iterdir())
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX permissions and symlinks")
+@pytest.mark.parametrize("unsafe", ["symlink", "permissions"])
+def test_vault_rejects_unsafe_parent(tmp_path: Path, unsafe: str) -> None:
+    filesystem = BackupFilesystemBoundary.for_test(tmp_path / "vault")
+    vault = FilesystemImmutableVault(filesystem, _destination())
+    parent = filesystem.backup_root / "snapshots" / "tenant-appcare-1"
+    if unsafe == "symlink":
+        outside = tmp_path / "outside"
+        outside.mkdir(mode=0o700)
+        parent.symlink_to(outside, target_is_directory=True)
+    else:
+        parent.mkdir(mode=0o700)
+        parent.chmod(0o777)
+    with pytest.raises(VaultError):
+        vault.get(
+            "backup-beta04-1",
+            tenant_id="tenant-appcare-1",
+            application_id="appcare-test-app",
+            target_reference="target-appcare-test",
+        )

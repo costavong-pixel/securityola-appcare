@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 
+from ..services.security import SECRET_IDENTIFIER_PATTERN_BYTES, SECRET_PROVIDER_TOKEN_PATTERN_BYTES
 from .capture import FilesystemBaselineCapturer
 from .contracts import (
     BaselineCaptureError,
@@ -44,20 +45,9 @@ _SECRET_CONTENT_MARKERS = (
     b"api_key=",
     b"api-key=",
 )
+_SECRET_NAME = SECRET_IDENTIFIER_PATTERN_BYTES
 _SECRET_ASSIGNMENT = re.compile(
-    rb"(?ix)"
-    rb"(?:^|[\s\"'{}\[\](,;])"
-    rb"\$?(?:password|passphrase|secret|token|api[_-]?key|client[_-]?secret|"
-    rb"private[_-]?key|access[_-]?key|aws[_-]?access[_-]?key[_-]?id|"
-    rb"aws[_-]?secret[_-]?access[_-]?key|database[_-]?url|connection[_-]?string|dsn)"
-    rb"\$?(?:\s*[\"'])?\s*[:=]\s*(?:[\"'])?"
-)
-_SECRET_NAME = (
-    rb"(?:db[_-]?)?(?:password|passphrase|secret|token|api[_-]?key|"
-    rb"client[_-]?secret|private[_-]?key|access[_-]?key|auth[_-]?key|"
-    rb"security[_-]?key|encryption[_-]?key|signing[_-]?key|cookie[_-]?key|"
-    rb"aws[_-]?access[_-]?key[_-]?id|aws[_-]?secret[_-]?access[_-]?key|"
-    rb"database[_-]?url|connection[_-]?string|dsn)"
+    rb"(?ix)(?:^|[\s\"'{}\[\](,;])\$?" + _SECRET_NAME + rb"\$?(?:\s*[\"'])?\s*[:=]\s*(?:[\"'])?"
 )
 _PHP_SECRET_DEFINE = re.compile(rb"(?ix)\bdefine\s*\(\s*[\"']" + _SECRET_NAME + rb"[\"']\s*,")
 _SECRET_CONFIG_KEY = re.compile(
@@ -65,7 +55,7 @@ _SECRET_CONFIG_KEY = re.compile(
     rb"\s*(?:=>|[:=])"
 )
 _SECRET_AUTHORIZATION = re.compile(rb"(?ix)\bauthorization\s*:\s*bearer\s+\S+")
-_SECRET_PROVIDER_TOKEN = re.compile(rb"(?ix)\b(?:sk|rk)_(?:live|test)_[a-z0-9]{16,}\b")
+_SECRET_PROVIDER_TOKEN = re.compile(SECRET_PROVIDER_TOKEN_PATTERN_BYTES)
 _SECRET_SCAN_CARRY = 8 * 1024
 _RESERVED_MIRROR_NAMES = frozenset({"manifest.json", "receipt.json", "SEALED"})
 _MAX_MIRROR_ENTRIES = 100_000

@@ -5,6 +5,21 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 
+# Shared source-content credential vocabulary. The P03 mirror and P04
+# filesystem source must exclude the same named secrets.
+SECRET_IDENTIFIER_PATTERN_BYTES = (
+    rb"(?:db[_-]?)?(?:password|passphrase|secret(?:[_-]?key)?|token|api[_-]?key|"
+    rb"client[_-]?secret|private[_-]?key|access[_-]?key|auth[_-]?key|"
+    rb"security[_-]?key|encryption[_-]?key|signing[_-]?key|cookie[_-]?key|"
+    rb"aws[_-]?access[_-]?key[_-]?id|aws[_-]?secret[_-]?access[_-]?key|"
+    rb"database[_-]?url|connection[_-]?string|dsn)"
+)
+SECRET_PROVIDER_TOKEN_PATTERN_BYTES = (
+    rb"(?i)(?:(?:sk|rk)_(?:live|test)_[a-z0-9]{16,}|"
+    rb"(?<![a-z0-9_-])(?:gh[oprus]_|github_pat_|xox[baprs]-)[a-z0-9_-]{8,}|"
+    rb"(?<![a-z0-9_-])sk-[a-z0-9_-]{20,})"
+)
+
 _REFERENCE = re.compile(
     r"^(?:vault|secret|appcare-secret)://[a-z0-9][a-z0-9._/-]{2,240}$",
     re.IGNORECASE,

@@ -117,6 +117,7 @@ class BackupCoordinator:
 
     def __init__(self) -> None:
         self._outcomes: dict[str, BackupOutcome] = {}
+        self._requests: dict[str, BackupRequest] = {}
         self._idempotency: dict[str, str] = {}
         self._events: list[BackupJobEvent] = []
 
@@ -168,6 +169,7 @@ class BackupCoordinator:
             failure_code=code,
         )
         self._outcomes[request.idempotency_key] = outcome
+        self._requests[request.idempotency_key] = request
         return outcome
 
     def create_backup(
@@ -183,6 +185,8 @@ class BackupCoordinator:
 
         if vault.destination != request.destination:
             raise BackupError("vault destination does not match backup request")
+        if getattr(source, "requires_streaming", False) is True:
+            raise BackupError("backup source requires the streaming artifact path")
         # BackupTarget and BackupDestination validate in their constructors;
         # repeat the identity checks before invoking injected source/vault code.
         BackupTarget(
@@ -190,9 +194,12 @@ class BackupCoordinator:
             request.target.application_id,
             request.target.environment,
             request.target.source_reference,
+            request.target.target_reference,
         )
         existing = self._outcomes.get(request.idempotency_key)
         if existing is not None:
+            if self._requests[request.idempotency_key] != request:
+                raise BackupError("idempotency key belongs to another backup request")
             event = self._event(
                 request=request, status="duplicate", now=now, reason_code="duplicate_job"
             )
@@ -239,9 +246,16 @@ class BackupCoordinator:
                 request.backup_id,
                 tenant_id=request.target.tenant_id,
                 application_id=request.target.application_id,
+                target_reference=request.target.target_reference,
             )
             if stored.manifest.backup_id != request.backup_id:
                 raise ArtifactIntegrityError("stored artifact ID does not match request")
+            if (
+                stored.manifest.target.tenant_id != request.target.tenant_id
+                or stored.manifest.target.application_id != request.target.application_id
+                or stored.manifest.target.target_reference != request.target.target_reference
+            ):
+                raise ArtifactIntegrityError("stored artifact target does not match request")
             if stored.manifest.destination != vault.destination:
                 raise ArtifactIntegrityError("stored artifact destination does not match vault")
             verified_components = self._verify_artifact(stored, encryptor=encryptor)
@@ -269,6 +283,7 @@ class BackupCoordinator:
                 tuple(events),
             )
             self._outcomes[request.idempotency_key] = outcome
+            self._requests[request.idempotency_key] = request
             self._idempotency[request.idempotency_key] = request.backup_id
             return outcome
         except Exception as exc:
@@ -320,10 +335,13 @@ class BackupCoordinator:
         staging: Path | None = None
         try:
             backup_id = validate_backup_id(backup_id)
+            if target.target_reference is None:
+                raise BackupBoundaryError("restore target_reference is required")
             artifact = vault.get(
                 backup_id,
                 tenant_id=target.tenant_id,
                 application_id=target.application_id,
+                target_reference=target.target_reference,
             )
             if artifact.manifest.backup_id != backup_id:
                 raise BackupError("restore artifact ID does not match request")
@@ -333,6 +351,8 @@ class BackupCoordinator:
                 raise BackupError("restore tenant mismatch")
             if artifact.manifest.target.application_id != target.application_id:
                 raise BackupError("restore application mismatch")
+            if artifact.manifest.target.target_reference != target.target_reference:
+                raise BackupError("restore target mismatch")
             components = self._verify_artifact(artifact, encryptor=encryptor)
             restored_root = validate_isolated_child(
                 target.root, "restored", field="restore destination"
