@@ -149,6 +149,30 @@ def test_streaming_file_chunks_are_bounded_and_identity_bound(tmp_path: Path) ->
     assert source.read_file(_target(root), entry) == payload
 
 
+def test_streaming_total_byte_limit_is_shared_across_files(tmp_path: Path) -> None:
+    root = tmp_path / "site"
+    root.mkdir()
+    (root / "first.txt").write_bytes(b"a" * 60)
+    (root / "second.txt").write_bytes(b"b" * 60)
+    source = _source(
+        root,
+        limits=FilesystemSourceLimits(max_file_bytes=100, max_total_bytes=100),
+    )
+    entries = {
+        entry.relative_path: entry
+        for entry in source.iter_entries(_target(root))
+        if entry.classification is FilesystemEntryClass.SAFE_FILE
+    }
+
+    assert b"".join(source.iter_file_chunks(_target(root), entries["first.txt"])) == b"a" * 60
+    with pytest.raises(FilesystemSourceError, match="total size limit"):
+        tuple(source.iter_file_chunks(_target(root), entries["second.txt"]))
+
+    # Restarting a file iterator on the same source cannot reset the budget.
+    with pytest.raises(FilesystemSourceError, match="total size limit"):
+        tuple(source.iter_file_chunks(_target(root), entries["first.txt"]))
+
+
 def test_unsafe_entry_types_are_classified_without_following(tmp_path: Path) -> None:
     root = tmp_path / "site"
     root.mkdir()

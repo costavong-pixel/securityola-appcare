@@ -4,6 +4,7 @@ import hashlib
 import os
 import stat
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -103,6 +104,25 @@ def test_assignment_whitespace_cannot_outgrow_chunk_overlap(
     ],
 )
 def test_secret_markers_detected_at_every_two_chunk_split(content: bytes) -> None:
+    for split in range(len(content) + 1):
+        scanner = _SecretContentScanner()
+        assert scanner.feed(content[:split]) or scanner.feed(content[split:])
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"passphrase=fixture-value",
+        b"secret_key=fixture-value",
+        b"connection_string=fixture-value",
+        b"dsn=fixture-value",
+        b"password=" + b'",fixture-value"',
+        b"token=" + b"'}fixture-value'",
+    ],
+)
+def test_canonical_credential_names_and_quoted_punctuation_detected_at_every_split(
+    content: bytes,
+) -> None:
     for split in range(len(content) + 1):
         scanner = _SecretContentScanner()
         assert scanner.feed(content[:split]) or scanner.feed(content[split:])
@@ -221,6 +241,7 @@ def _memory_source(
     source = filesystem.LinuxFilesystemBackupSource.__new__(filesystem.LinuxFilesystemBackupSource)
     source._root_fd = -1
     source.limits = filesystem.FilesystemSourceLimits(chunk_bytes=257)
+    source._stream_budget = filesystem._CaptureByteBudget(source.limits.max_total_bytes)
     baseline = BaselineEntry(
         "public.txt",
         "file",
@@ -335,6 +356,69 @@ def test_full_secret_preflight_finishes_before_stream_releases_any_bytes(
         for chunk in source.iter_file_chunks(target, entry):
             emitted.append(chunk)
     assert emitted == []
+    assert memory.closed
+
+
+def test_shared_stream_budget_cannot_overcommit_concurrently() -> None:
+    budget = filesystem._CaptureByteBudget(100)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(lambda _: _account_sixty_bytes(budget), range(2)))
+    assert sorted(outcomes) == ["accepted", "rejected"]
+    assert budget.consumed_bytes == 60
+
+
+def test_streaming_same_file_again_does_not_reset_source_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, target, entry, memory = _memory_source(monkeypatch, b"A" * 60)
+    source.limits = filesystem.FilesystemSourceLimits(max_file_bytes=100, max_total_bytes=100)
+    source._stream_budget = filesystem._CaptureByteBudget(source.limits.max_total_bytes)
+    assert b"".join(source.iter_file_chunks(target, entry)) == b"A" * 60
+    memory.position = 0
+    with pytest.raises(filesystem.FilesystemSourceError, match="total size limit"):
+        tuple(source.iter_file_chunks(target, entry))
+
+
+def _account_sixty_bytes(budget: filesystem._CaptureByteBudget) -> str:
+    try:
+        budget.account(60)
+    except filesystem.FilesystemSourceError:
+        return "rejected"
+    return "accepted"
+
+
+@pytest.mark.parametrize("operation", ["read", "stream", "snapshot", "capture"])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"passphrase=fixture-value",
+        b"secret_key=fixture-value",
+        b"connection_string=fixture-value",
+        b"dsn=fixture-value",
+        b"password=" + b'",fixture-value"',
+        b"token=" + b"'}fixture-value'",
+    ],
+)
+def test_secret_content_never_enters_any_backup_content_path(
+    monkeypatch: pytest.MonkeyPatch, operation: str, payload: bytes
+) -> None:
+    source, target, _, memory = _memory_source(monkeypatch, payload)
+    entry = next(source.iter_entries(target))
+    if operation == "read":
+        with pytest.raises(filesystem.FilesystemSourceError, match="excluded secret"):
+            source.read_file(target, entry)
+    elif operation == "stream":
+        with pytest.raises(filesystem.FilesystemSourceError, match="excluded secret"):
+            next(source.iter_file_chunks(target, entry))
+    elif operation == "snapshot":
+        with pytest.raises(filesystem.FilesystemSourceError, match="no safe files"):
+            source.snapshot(target)
+    else:
+        source.root = Path("/fixture")
+        source._root_identity = (1, 1)
+        capture = source.capture(target)
+        assert capture.entries[0].classification is filesystem.FilesystemEntryClass.SECRET_EXCLUDED
+        assert capture.entries[0].sha256 is None
     assert memory.closed
 
 

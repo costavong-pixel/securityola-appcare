@@ -13,13 +13,17 @@ import hashlib
 import os
 import re
 import stat
+from _thread import LockType
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
+from dataclasses import field as dataclass_field
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
+from threading import Lock
 from typing import Final
 
 from ..revision import CapturedApplicationRevision, EvidenceClass, is_secret_path_name
+from ..services.security import SECRET_IDENTIFIER_PATTERN_BYTES
 from .contracts import BackupBoundaryError, BackupTarget, validate_path_segment
 from .models import BackupComponent
 from .paths import validate_read_only_source
@@ -70,10 +74,9 @@ _SECRET_CONTENT_PATTERNS: Final = (
 )
 _SECRET_SCAN_TAIL_BYTES: Final = 4096
 _DEFINE_SECRET_IDENTIFIER_PATTERN: Final = re.compile(
-    rb"(?i)(?:password|passwd|secret|token|api[_-]?key|private[_-]?key|"
-    rb"client[_-]?secret|database[_-]?url|authorization)"
+    rb"(?i)(?:" + SECRET_IDENTIFIER_PATTERN_BYTES + rb"|passwd|authorization)"
 )
-_DEFINE_SECRET_TAIL_BYTES: Final = 12
+_DEFINE_SECRET_TAIL_BYTES: Final = 128
 _IDENTIFIER_BYTES: Final = frozenset(
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_"
 )
@@ -108,6 +111,7 @@ class _SecretContentScanner:
         self._assignment_tail = b""
         self._assignment_state = 0
         self._assignment_arrow_possible = False
+        self._assignment_quote: int | None = None
 
     def feed(self, chunk: bytes) -> bool:
         """Consume one bounded chunk and report whether it contains a secret."""
@@ -132,6 +136,11 @@ class _SecretContentScanner:
                 if match is None:
                     self._assignment_tail = window[-_DEFINE_SECRET_TAIL_BYTES:]
                     return False
+                if match.end() == len(window):
+                    # A shorter credential name may be the prefix of a longer
+                    # one split at this chunk boundary (for example secret_key).
+                    self._assignment_tail = window[match.start() :]
+                    return False
                 index = match.end()
                 self._assignment_state = 1
             whitespace = _WHITESPACE_PATTERN.match(window, index)
@@ -151,12 +160,16 @@ class _SecretContentScanner:
                 self._assignment_arrow_possible = False
             elif self._assignment_state == 3 and byte in (ord("'"), ord('"')):
                 self._assignment_state = 4
+                self._assignment_quote = byte
                 self._assignment_arrow_possible = False
-            elif self._assignment_state in (3, 4) and byte not in _VALUE_TERMINATORS:
+            elif self._assignment_state == 4 and byte != self._assignment_quote:
+                return True
+            elif self._assignment_state == 3 and byte not in _VALUE_TERMINATORS:
                 return True
             else:
                 self._assignment_state = 0
                 self._assignment_arrow_possible = False
+                self._assignment_quote = None
                 continue
             index += 1
         return False
@@ -399,11 +412,13 @@ class _CaptureByteBudget:
 
     max_bytes: int
     consumed_bytes: int = 0
+    _lock: LockType = dataclass_field(default_factory=Lock, repr=False)
 
     def account(self, amount: int) -> None:
-        self.consumed_bytes += amount
-        if self.consumed_bytes > self.max_bytes:
-            raise FilesystemSourceError("filesystem capture exceeds total size limit")
+        with self._lock:
+            if amount < 0 or amount > self.max_bytes - self.consumed_bytes:
+                raise FilesystemSourceError("filesystem capture exceeds total size limit")
+            self.consumed_bytes += amount
 
 
 def _validate_relative_path(value: str) -> str:
@@ -548,6 +563,9 @@ class LinuxFilesystemBackupSource:
         if self.root.is_symlink():
             raise FilesystemSourceError("filesystem source root cannot be a symlink")
         self.limits = limits or FilesystemSourceLimits()
+        # One source instance represents one streaming operation. Per-file budgets
+        # would allow a multi-file tree to exceed the aggregate capture limit.
+        self._stream_budget = _CaptureByteBudget(self.limits.max_total_bytes)
         try:
             metadata = self.root.lstat()
         except OSError as exc:
@@ -887,7 +905,7 @@ class LinuxFilesystemBackupSource:
             contains_secret, total, _ = self._scan_open_file(
                 descriptor,
                 entry,
-                _CaptureByteBudget(self.limits.max_total_bytes),
+                self._stream_budget,
                 consume=lambda chunk: block_digests.extend(hashlib.sha256(chunk).digest()),
                 block_bytes=_STREAM_VALIDATION_BYTES,
             )
