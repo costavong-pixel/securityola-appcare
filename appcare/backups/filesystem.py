@@ -77,6 +77,12 @@ _SECRET_SCAN_TAIL_BYTES: Final = 4096
 _DEFINE_SECRET_IDENTIFIER_PATTERN: Final = re.compile(
     rb"(?i)(?:" + SECRET_IDENTIFIER_PATTERN_BYTES + rb"|(?:db[_-]?)?passwd|authorization)"
 )
+_QUOTED_OR_PHP_SECRET_VALUE_PATTERN: Final = re.compile(
+    rb"(?i)(?<![A-Z0-9_-])\$?(?:"
+    + SECRET_IDENTIFIER_PATTERN_BYTES
+    + rb"|(?:db[_-]?)?passwd|authorization)(?![A-Z0-9_-])[\"']?\s*(?:=>|:|=(?!>))\s*"
+    + rb"(?:[\"'][^\"'\r\n]|[^\"'\s,})])"
+)
 _DEFINE_SECRET_TAIL_BYTES: Final = 128
 _IDENTIFIER_BYTES: Final = frozenset(
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
@@ -126,7 +132,9 @@ class _SecretContentScanner:
         if self._found:
             return True
         window = self._tail + chunk
-        if any(pattern.search(window) for pattern in _SECRET_CONTENT_PATTERNS):
+        if any(pattern.search(window) for pattern in _SECRET_CONTENT_PATTERNS) or (
+            _QUOTED_OR_PHP_SECRET_VALUE_PATTERN.search(window) is not None
+        ):
             self._found = True
             return True
         self._found = self._scan_assignments(chunk) or self._scan_define_calls(chunk)
