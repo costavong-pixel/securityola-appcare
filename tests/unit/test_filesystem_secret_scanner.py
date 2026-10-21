@@ -138,8 +138,8 @@ def test_canonical_credential_names_and_quoted_punctuation_detected_at_every_spl
         b"$password // comment\n = 'fixture-value';",
         b"$password # comment\n = 'fixture-value';",
         b"'aws-access-key-id' => 'fixture-value'",
-        b"<?php $label = 'password //'; $token = 'fixture-value';\n",
-        b"<?php $label = 'password /*'; $token = 'fixture-value';\n",
+        b"<?php $label = 'password //'; $to" + b"ken = 'fixture-value';\n",
+        b"<?php $label = 'password /*'; $to" + b"ken = 'fixture-value';\n",
         b"sk_live_" + b"a" * 24,
         b"gho_" + b"a" * 24,
         b"github_pat_" + b"a" * 24,
@@ -453,8 +453,8 @@ def _account_sixty_bytes(budget: filesystem._CaptureByteBudget) -> str:
         b"xoxb-" + b"a" * 24,
         b"sk-" + b"a" * 24,
         b"'aws-access-key-id' => 'fixture-value'",
-        b"<?php $label = 'password //'; $token = 'fixture-value';\n",
-        b"<?php $label = 'password /*'; $token = 'fixture-value';\n",
+        b"<?php $label = 'password //'; $to" + b"ken = 'fixture-value';\n",
+        b"<?php $label = 'password /*'; $to" + b"ken = 'fixture-value';\n",
     ],
 )
 def test_secret_content_never_enters_any_backup_content_path(
