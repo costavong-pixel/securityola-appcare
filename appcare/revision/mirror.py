@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 
-from ..services.security import SECRET_IDENTIFIER_PATTERN_BYTES
+from ..services.security import SECRET_IDENTIFIER_PATTERN_BYTES, SECRET_PROVIDER_TOKEN_PATTERN_BYTES
 from .capture import FilesystemBaselineCapturer
 from .contracts import (
     BaselineCaptureError,
@@ -55,7 +55,7 @@ _SECRET_CONFIG_KEY = re.compile(
     rb"\s*(?:=>|[:=])"
 )
 _SECRET_AUTHORIZATION = re.compile(rb"(?ix)\bauthorization\s*:\s*bearer\s+\S+")
-_SECRET_PROVIDER_TOKEN = re.compile(rb"(?ix)\b(?:sk|rk)_(?:live|test)_[a-z0-9]{16,}\b")
+_SECRET_PROVIDER_TOKEN = re.compile(SECRET_PROVIDER_TOKEN_PATTERN_BYTES)
 _SECRET_SCAN_CARRY = 8 * 1024
 _RESERVED_MIRROR_NAMES = frozenset({"manifest.json", "receipt.json", "SEALED"})
 _MAX_MIRROR_ENTRIES = 100_000

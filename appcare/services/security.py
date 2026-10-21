@@ -14,6 +14,7 @@ SECRET_IDENTIFIER_PATTERN_BYTES = (
     rb"aws[_-]?access[_-]?key[_-]?id|aws[_-]?secret[_-]?access[_-]?key|"
     rb"database[_-]?url|connection[_-]?string|dsn)"
 )
+SECRET_PROVIDER_TOKEN_PATTERN_BYTES = rb"(?i)(?:sk|rk)_(?:live|test)_[a-z0-9]{16,}"
 
 _REFERENCE = re.compile(
     r"^(?:vault|secret|appcare-secret)://[a-z0-9][a-z0-9._/-]{2,240}$",

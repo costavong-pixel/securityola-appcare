@@ -23,7 +23,7 @@ from threading import Lock
 from typing import Final
 
 from ..revision import CapturedApplicationRevision, EvidenceClass, is_secret_path_name
-from ..services.security import SECRET_IDENTIFIER_PATTERN_BYTES
+from ..services.security import SECRET_IDENTIFIER_PATTERN_BYTES, SECRET_PROVIDER_TOKEN_PATTERN_BYTES
 from .contracts import BackupBoundaryError, BackupTarget, validate_path_segment
 from .models import BackupComponent
 from .paths import validate_read_only_source
@@ -71,6 +71,7 @@ _CONFIG_SUFFIXES: Final = (
 _SECRET_CONTENT_PATTERNS: Final = (
     re.compile(rb"(?i)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"),
     re.compile(rb"(?i)\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(SECRET_PROVIDER_TOKEN_PATTERN_BYTES),
 )
 _SECRET_SCAN_TAIL_BYTES: Final = 4096
 _DEFINE_SECRET_IDENTIFIER_PATTERN: Final = re.compile(
@@ -112,6 +113,8 @@ class _SecretContentScanner:
         self._assignment_state = 0
         self._assignment_arrow_possible = False
         self._assignment_quote: int | None = None
+        self._assignment_comment = 0
+        self._assignment_comment_star = False
 
     def feed(self, chunk: bytes) -> bool:
         """Consume one bounded chunk and report whether it contains a secret."""
@@ -139,16 +142,50 @@ class _SecretContentScanner:
                 if match.end() == len(window):
                     # A shorter credential name may be the prefix of a longer
                     # one split at this chunk boundary (for example secret_key).
-                    self._assignment_tail = window[match.start() :]
+                    token_start = match.start()
+                    while token_start and window[token_start - 1] in _IDENTIFIER_BYTES:
+                        token_start -= 1
+                    self._assignment_tail = window[
+                        max(token_start, len(window) - _DEFINE_SECRET_TAIL_BYTES) :
+                    ]
                     return False
                 index = match.end()
                 self._assignment_state = 1
+            if self._assignment_comment:
+                byte = window[index]
+                if self._assignment_comment == 1:
+                    if byte == ord("*"):
+                        self._assignment_comment = 3
+                    elif byte == ord("/"):
+                        self._assignment_comment = 2
+                    else:
+                        self._assignment_state = 0
+                        self._assignment_comment = 0
+                        continue
+                elif self._assignment_comment == 2:
+                    if byte in (ord("\r"), ord("\n")):
+                        self._assignment_comment = 0
+                elif self._assignment_comment_star and byte == ord("/"):
+                    self._assignment_comment = 0
+                    self._assignment_comment_star = False
+                else:
+                    self._assignment_comment_star = byte == ord("*")
+                index += 1
+                continue
             whitespace = _WHITESPACE_PATTERN.match(window, index)
             assert whitespace is not None
             index = whitespace.end()
             if index == len(window):
                 return False
             byte = window[index]
+            if self._assignment_state in (1, 2) and byte == ord("/"):
+                self._assignment_comment = 1
+                index += 1
+                continue
+            if self._assignment_state in (1, 2) and byte == ord("#"):
+                self._assignment_comment = 2
+                index += 1
+                continue
             if self._assignment_state == 1 and byte in (ord("'"), ord('"')):
                 self._assignment_state = 2
             elif self._assignment_state in (1, 2) and byte in (ord(":"), ord("=")):

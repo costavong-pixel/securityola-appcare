@@ -131,6 +131,29 @@ def test_canonical_credential_names_and_quoted_punctuation_detected_at_every_spl
 @pytest.mark.parametrize(
     "content",
     [
+        b"aws_access_key_id=fixture-value",
+        b"$password /* comment */ = 'fixture-value';",
+        b"'client_secret' /* comment */ => 'fixture-value'",
+        b"$password // comment\n = 'fixture-value';",
+        b"$password # comment\n = 'fixture-value';",
+        b"sk_live_" + b"a" * 24,
+    ],
+)
+def test_adversarial_secret_markers_detected_at_every_split(content: bytes) -> None:
+    for split in range(len(content) + 1):
+        scanner = _SecretContentScanner()
+        assert scanner.feed(content[:split]) or scanner.feed(content[split:])
+    assert _scan_in_chunks(content, 1)
+
+
+def test_provider_token_at_stream_validation_boundary() -> None:
+    content = b"x" * (64 * 1024 - 5) + b"sk_live_" + b"a" * 24
+    assert _scan_in_chunks(content, 64 * 1024)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
         b"const secret_name = 'public-label';",
         b"token" + b" " * 9000 + b"description",
         b"password = ''\npublic content",
@@ -397,6 +420,10 @@ def _account_sixty_bytes(budget: filesystem._CaptureByteBudget) -> str:
         b"dsn=fixture-value",
         b"password=" + b'",fixture-value"',
         b"token=" + b"'}fixture-value'",
+        b"aws_access_key_id=fixture-value",
+        b"$password /* comment */ = 'fixture-value';",
+        b"'client_secret' /* comment */ => 'fixture-value'",
+        b"sk_live_" + b"a" * 24,
     ],
 )
 def test_secret_content_never_enters_any_backup_content_path(
